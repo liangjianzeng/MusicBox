@@ -1,0 +1,632 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../../core/api_client.dart';
+import '../../core/models.dart';
+import '../../core/share_channel.dart';
+import '../../core/state.dart';
+import '../../shared/widgets/ai_badge.dart';
+import '../../shared/widgets/waveform_canvas.dart';
+import '../create/credit_guard.dart';
+import '../create/progress_page.dart';
+import '../player/player_provider.dart';
+import 'dsp_page.dart';
+
+/// 作品详情：播放+peaks 波形 / 星级 / 元数据编辑 / 谱系父链+children / 
+/// seed-pack 分享 / dsp 入口 / 导出下载 / 谱系动作
+class WorkDetailPage extends ConsumerStatefulWidget {
+  const WorkDetailPage({super.key, required this.workId});
+
+  final String workId;
+
+  @override
+  ConsumerState<WorkDetailPage> createState() => _WorkDetailPageState();
+}
+
+class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
+  WorkDetail? _detail;
+  Work? _cached;
+  String? _error;
+  List<double>? _peaks;
+  bool _loading = true;
+
+  ApiClient get _api => ref.read(apiClientProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    // 先读缓存，网络失败不白屏
+    try {
+      final c = await ref.read(localDbProvider).cachedWork(widget.workId);
+      if (mounted && _detail == null) setState(() => _cached = c);
+    } catch (_) {}
+    try {
+      final d = await _api.work(widget.workId);
+      if (!mounted) return;
+      setState(() {
+        _detail = d;
+        _error = null;
+      });
+      await ref.read(localDbProvider).cacheWork(d.work);
+      if (d.work.waveformUrl != null) {
+        final p = await _api.fetchPeaks(d.work.waveformUrl!);
+        if (mounted && p != null && p.isNotEmpty) {
+          setState(() => _peaks = p);
+        }
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() => _error = e.zh);
+        if (_cached == null && _detail == null) _loading = false;
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _toast(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+
+  Work? get _work => _detail?.work ?? _cached;
+
+  String _fmt(double sec) {
+    final s = sec.round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  // ---------- 星级 ----------
+
+  Future<void> _rate(int stars) async {
+    try {
+      final w = await _api.patchWork(widget.workId, {'rating': stars});
+      await ref.read(localDbProvider).cacheWork(w);
+      if (!mounted) return;
+      setState(() {
+        _detail = WorkDetail(
+            work: w,
+            parents: _detail?.parents ?? const [],
+            childrenCount: _detail?.childrenCount ?? 0);
+      });
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  // ---------- 元数据编辑 ----------
+
+  Future<void> _editMeta() async {
+    final w = _work;
+    if (w == null) return;
+    final titleC = TextEditingController(text: w.title);
+    final moodC = TextEditingController(text: w.mood ?? '');
+    final genresC = TextEditingController(text: w.genres.join(','));
+    String visibility = w.visibility;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          title: const Text('编辑信息'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                  controller: titleC,
+                  decoration: const InputDecoration(labelText: '标题')),
+              const SizedBox(height: 10),
+              TextField(
+                  controller: moodC,
+                  decoration: const InputDecoration(labelText: '心情（逗号分隔）')),
+              const SizedBox(height: 10),
+              TextField(
+                  controller: genresC,
+                  decoration: const InputDecoration(labelText: '流派（逗号分隔）')),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Text('公开广场：'),
+                  Switch(
+                    value: visibility == 'public',
+                    onChanged: (v) => setDlg(
+                        () => visibility = v ? 'public' : 'private'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('保存')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    try {
+      final nw = await _api.patchWork(widget.workId, {
+        'title': titleC.text.trim(),
+        'mood': moodC.text.trim(),
+        'genres': genresC.text
+            .split(RegExp('[,，]'))
+            .where((e) => e.trim().isNotEmpty)
+            .toList(),
+        'visibility': visibility,
+      });
+      await ref.read(localDbProvider).cacheWork(nw);
+      _load();
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  // ---------- seed-pack 分享 ----------
+
+  Future<void> _shareSeedPack() async {
+    try {
+      final sp = await _api.seedPack(widget.workId);
+      if (!mounted) return;
+      final text = sp.toShareText(title: _work?.title);
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Seed Pack · 复刻配方'),
+          content: SingleChildScrollView(
+            child: SelectableText(text),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: text));
+                if (ctx.mounted) Navigator.pop(ctx);
+                _toast('已复制配方');
+              },
+              child: const Text('复制'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                final ok = await SystemShare.shareText(text);
+                if (ctx.mounted) Navigator.pop(ctx);
+                if (!ok) _toast('分享不可用，已可手动复制');
+              },
+              icon: const Icon(Icons.ios_share, size: 18),
+              label: const Text('系统分享'),
+            ),
+          ],
+        ),
+      );
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  // ---------- 谱系动作 ----------
+
+  Future<void> _moreActions() async {
+    final w = _work;
+    if (w == null) return;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+                leading: const Icon(Icons.expand_rounded),
+                title: const Text('延长（约 20 积分）'),
+                onTap: () => Navigator.pop(ctx, 'extend')),
+            ListTile(
+                leading: const Icon(Icons.graphic_eq_rounded),
+                title: const Text('用人格翻唱（约 20 积分）'),
+                onTap: () => Navigator.pop(ctx, 'cover')),
+            ListTile(
+                leading: const Icon(Icons.science_outlined),
+                title: const Text('实验台 variation（约 10 积分）'),
+                onTap: () => Navigator.pop(ctx, 'variation')),
+            ListTile(
+                leading: const Icon(Icons.cut_rounded),
+                title: const Text('DSP：裁剪/淡化/变调/变速（约 5 积分）'),
+                onTap: () => Navigator.pop(ctx, 'dsp')),
+            ListTile(
+                leading: const Icon(Icons.download_rounded),
+                title: const Text('导出下载'),
+                onTap: () => Navigator.pop(ctx, 'download')),
+            ListTile(
+                leading: const Icon(Icons.mic_external_on_outlined),
+                title: const Text('从本作生成人格'),
+                onTap: () => Navigator.pop(ctx, 'to-persona')),
+            ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('举报'),
+                onTap: () => Navigator.pop(ctx, 'report')),
+          ],
+        ),
+      ),
+    );
+    switch (picked) {
+      case 'extend':
+        _extend();
+        break;
+      case 'cover':
+        _cover();
+        break;
+      case 'variation':
+        _variation();
+        break;
+      case 'dsp':
+        Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => DspPage(workId: widget.workId)));
+        break;
+      case 'download':
+        _download();
+        break;
+      case 'to-persona':
+        _toPersona();
+        break;
+      case 'report':
+        _report();
+        break;
+    }
+  }
+
+  Future<void> _extend() async {
+    if (!await ensureCredits(context, ref, kCreditExtendCover, action: '延长')) {
+      return;
+    }
+    final c = TextEditingController(text: '30');
+    final sec = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('延长几秒？'),
+        content: TextField(
+            controller: c,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(suffixText: '秒')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, int.tryParse(c.text.trim()) ?? 30),
+              child: const Text('开始')),
+        ],
+      ),
+    );
+    if (sec == null) return;
+    try {
+      final jobId = await _api.extend(widget.workId, sec);
+      if (!mounted) return;
+      ProgressPage.push(context, jobId, title: '延长中');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  Future<void> _cover() async {
+    if (!await ensureCredits(context, ref, kCreditExtendCover, action: '翻唱')) {
+      return;
+    }
+    await ref.read(personasProvider.notifier).load();
+    if (!mounted) return;
+    final personas = ref.read(personasProvider);
+    if (personas.isEmpty) {
+      _toast('还没有可用的人格，先去人格页登记一个');
+      return;
+    }
+    final pid = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('选择人格'),
+        children: personas
+            .map((p) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, p.id),
+                  child: Text('${p.name}${p.isPublic ? ' · 公开' : ''}'),
+                ))
+            .toList(),
+      ),
+    );
+    if (pid == null) return;
+    try {
+      final jobId = await _api.cover(widget.workId, pid);
+      if (!mounted) return;
+      ProgressPage.push(context, jobId, title: '翻唱中');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  Future<void> _variation() async {
+    if (!await ensureCredits(context, ref, kCreditAdjust, action: '实验台')) {
+      return;
+    }
+    final bpmC = TextEditingController();
+    final tagsC = TextEditingController();
+    final delta = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('控制变量实验台'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+                controller: bpmC,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'BPM（留空不改）')),
+            const SizedBox(height: 10),
+            TextField(
+                controller: tagsC,
+                decoration:
+                    const InputDecoration(labelText: '标签（留空不改）')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              final d = <String, dynamic>{};
+              final b = int.tryParse(bpmC.text.trim());
+              if (b != null) d['bpm'] = b;
+              if (tagsC.text.trim().isNotEmpty) {
+                d['tags'] = tagsC.text
+                    .split(RegExp('[,，]'))
+                    .where((e) => e.trim().isNotEmpty)
+                    .toList();
+              }
+              Navigator.pop(ctx, d);
+            },
+            child: const Text('开跑'),
+          ),
+        ],
+      ),
+    );
+    if (delta == null || delta.isEmpty) return;
+    try {
+      final jobId = await _api.variation(widget.workId, delta);
+      if (!mounted) return;
+      ProgressPage.push(context, jobId, title: '实验中');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  Future<void> _download() async {
+    final w = _work;
+    if (w?.audioUrl == null) {
+      _toast('没有可下载的音频');
+      return;
+    }
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final name =
+          '${(w!.title.isEmpty ? 'work' : w.title).replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')}.${w.audioUrl!.endsWith('.wav') ? 'wav' : 'mp3'}';
+      final path = await _api.download(w.audioUrl!, '${dir.path}/$name');
+      _toast('已导出到 $path');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  Future<void> _toPersona() async {
+    final c = TextEditingController(text: '${_work?.title ?? '作品'}声线');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('从本作生成人格'),
+        content: TextField(controller: c, decoration: const InputDecoration(labelText: '人格名称')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, c.text.trim()),
+              child: const Text('生成')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    try {
+      await _api.workToPersona(widget.workId, name);
+      await ref.read(personasProvider.notifier).load(force: true);
+      _toast('人格已生成，去人格页查看');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  Future<void> _report() async {
+    final c = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('举报'),
+        content: TextField(
+            controller: c,
+            maxLines: 3,
+            decoration: const InputDecoration(labelText: '原因')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, c.text.trim()),
+              child: const Text('提交')),
+        ],
+      ),
+    );
+    if (reason == null || reason.isEmpty) return;
+    try {
+      await _api.report(widget.workId, reason);
+      _toast('已提交举报，感谢帮助维护社区');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = _work;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('作品详情'),
+        actions: [
+          IconButton(
+              onPressed: _editMeta,
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: '编辑'),
+          IconButton(
+              onPressed: _moreActions,
+              icon: const Icon(Icons.more_horiz),
+              tooltip: '更多'),
+        ],
+      ),
+      body: _loading && w == null
+          ? const Center(child: CircularProgressIndicator())
+          : w == null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_error ?? '加载失败',
+                          style: const TextStyle(color: Colors.white54)),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                          onPressed: _load,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('重试')),
+                    ],
+                  ),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 标题 + AI 角标
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(w.title.isEmpty ? '未命名作品' : w.title,
+                                style: const TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.w800)),
+                          ),
+                          if (w.aiLabel) const AiBadge(),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        [
+                          ...w.genres,
+                          if (w.mood != null) w.mood!,
+                          if (w.bpm != null) 'BPM ${w.bpm}',
+                          (_fmt(w.durationSec)),
+                          if (w.seed != null) 'Seed ${w.seed}',
+                          if (w.visibility == 'public') '公开' else '仅自己',
+                        ].join(' · '),
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                      const SizedBox(height: 18),
+                      // 大波形 + 播放
+                      WaveformCanvas(
+                        peaks: _peaks ?? pseudoPeaks(w.id, n: 96),
+                        height: 72,
+                        barWidth: 3,
+                        gap: 3,
+                      ),
+                      Row(
+                        children: [
+                          FilledButton.icon(
+                            onPressed: () => ref
+                                .read(playerProvider.notifier)
+                                .playQueue([w], 0),
+                            icon: const Icon(Icons.play_arrow_rounded),
+                            label: const Text('播放'),
+                          ),
+                          const SizedBox(width: 10),
+                          OutlinedButton.icon(
+                            onPressed: _shareSeedPack,
+                            icon: const Icon(Icons.ios_share, size: 18),
+                            label: const Text('Seed Pack 分享'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      // 星级
+                      Row(
+                        children: [
+                          const Text('我的评分：',
+                              style: TextStyle(color: Colors.white70)),
+                          ...List.generate(5, (i) {
+                            final v = (w.rating ?? 0) > i;
+                            return InkWell(
+                              onTap: () => _rate(i + 1),
+                              child: Icon(
+                                v ? Icons.star_rounded : Icons.star_outline_rounded,
+                                color: Colors.amber,
+                                size: 26,
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                      const Divider(height: 32),
+                      // 谱系
+                      const Text('谱系',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white70)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          ...(_detail?.parents ?? const <Work>[]).map((p) => Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Chip(
+                                    label: Text(
+                                        '${p.title.isEmpty ? '源作品' : p.title} · ${p.lineageKind}',
+                                        style: const TextStyle(fontSize: 12)),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                  const Icon(Icons.chevron_right,
+                                      size: 16, color: Colors.white30),
+                                ],
+                              )),
+                          Chip(
+                            label: Text('本作（深度 ${w.depth} · ${w.lineageKind}）',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          if ((_detail?.childrenCount ?? 0) > 0)
+                            Text('衍生 ${_detail!.childrenCount} 首',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white38)),
+                        ],
+                      ),
+                      const Divider(height: 32),
+                      if (w.lyrics != null && w.lyrics!.isNotEmpty) ...[
+                        const Text('歌词',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white70)),
+                        const SizedBox(height: 8),
+                        SelectableText(w.lyrics!,
+                            style: const TextStyle(height: 1.5)),
+                      ],
+                    ],
+                  ),
+                ),
+    );
+  }
+}

@@ -1,0 +1,29 @@
+# MusicBox API（VPS 侧）—— Node ≥22 零依赖服务端（2026-11-23）
+# 安装：cp 到 /etc/systemd/system/ 后 systemctl enable --now musicbox-api
+[Unit]
+Description=MusicBox API (Node zero-dep)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbox
+Group=musicbox
+WorkingDirectory=/srv/musicbox
+ExecStart=/usr/bin/node src/server/index.js
+Environment=NODE_ENV=production
+Environment=PORT=7900
+EnvironmentFile=-/etc/musicbox/api.env
+Restart=always
+RestartSec=3
+# 资源与安全加固（2C4G 起步）
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/musicbox/var
+PrivateTmp=true
+MemoryHigh=1200M
+MemoryMax=1600M
+
+[Install]
+WantedBy=multi-user.target

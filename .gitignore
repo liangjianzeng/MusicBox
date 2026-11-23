@@ -1,0 +1,59 @@
+# ── 运行时数据（含用户 DB/令牌/音频产物/上传/日志/模型权重/临时截图，绝不入仓）──
+var/
+var-test/
+
+# ── Python 执行环境（uv 独立 venv，重建命令见 README 快速开始 2b）──
+venv/
+venv-*/
+__pycache__/
+*.pyc
+
+# ── 构建产物 ──
+builds/
+*.apk
+*.aab
+*.ap_
+*.symbols
+
+# ── 签名密钥（口令与 keystore 位置在本地 android/key.properties，绝不入仓）──
+*.jks
+*.keystore
+src/app/android/key.properties
+src/app/android/local.properties
+
+# ── Flutter/Dart ──
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+doc/api/
+app.*.symbols
+app.*.map.json
+
+# ── Android/IDE ──
+src/app/android/.gradle/
+src/app/android/app/build/
+src/app/android/app/debug/
+src/app/android/app/profile/
+src/app/android/app/release/
+src/app/android/.cxx/
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# ── 验收自带 ffmpeg 二进制（能力探测目录，只留 .gitkeep）──
+test/acceptance/tools/ffmpeg/*
+!test/acceptance/tools/ffmpeg/.gitkeep
+
+# ── 杂项 ──
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+node_modules/

@@ -1,0 +1,34 @@
+# MusicBox 执行器 daemon —— 装在「执行机」（5060 Ti 生乐机 / 任意 ffmpeg 机），非 VPS（2026-11-23）
+# 安装：cp 到 /etc/systemd/system/ 后 systemctl enable --now musicbox-executor
+# 机密（API 地址/执行器令牌）一律走 EnvironmentFile，勿写死在本文件。
+[Unit]
+Description=MusicBox Executor (lane worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbox
+Group=musicbox
+WorkingDirectory=/srv/musicbox
+ExecStart=/usr/bin/node src/executor/index.js
+EnvironmentFile=-/etc/musicbox/executor.env
+# /etc/musicbox/executor.env 示例：
+#   MB_API_URL=https://musicbox.example.com
+#   MB_EXECUTOR_TOKEN=<executorToken>
+#   MB_LANES=music,intent,ffmpeg
+#   MB_MUSIC_URL=http://127.0.0.1:8190
+#   MB_ASR_URL=http://127.0.0.1:8191
+#   MB_LLM_VLM_URL=http://<spark内网IP>:8193/v1
+Restart=always
+RestartSec=5
+TimeoutStopSec=320          # 给 SIGINT 优雅退出留足收尾时间（任务级 300s）
+KillSignal=SIGINT
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/musicbox/var
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+# 文本统一按 LF 入库；Windows 检出时脚本必须保持 LF（否则 gradlew/sh 不可执行）
+* text=auto
+*.sh    text eol=lf
+*.py    text eol=lf
+gradlew text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary
+*.jar binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.apk binary
+*.aab binary

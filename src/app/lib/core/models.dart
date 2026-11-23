@@ -1,0 +1,445 @@
+/// 数据模型：与 CONTRACTS.md 的 REST 形状逐字对齐
+/// 纪律：gen.engine（引擎型号名）一律不进入任何 UI 字符串
+library;
+
+int _asInt(dynamic v, [int d = 0]) =>
+    v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? d);
+
+double _asDouble(dynamic v, [double d = 0]) =>
+    v is double ? v : (v is num ? v.toDouble() : double.tryParse('$v') ?? d);
+
+List<String> _asStrList(dynamic v) {
+  if (v is List) return v.map((e) => '$e').toList();
+  return const [];
+}
+
+class AppUser {
+  AppUser(
+      {required this.id,
+      required this.nickname,
+      this.phoneMasked,
+      required this.isGuest});
+
+  final String id;
+  final String nickname;
+  final String? phoneMasked;
+  final bool isGuest;
+
+  factory AppUser.fromMap(Map m) => AppUser(
+        id: '${m['id'] ?? ''}',
+        nickname: '${m['nickname'] ?? '音乐旅人'}',
+        phoneMasked: m['phone_masked']?.toString(),
+        isGuest: m['is_guest'] == true,
+      );
+}
+
+class Credits {
+  Credits({required this.balance, required this.dailyQuota, required this.dailyUsed});
+
+  final int balance;
+  final int dailyQuota;
+  final int dailyUsed;
+
+  factory Credits.fromMap(Map m) => Credits(
+        balance: _asInt(m['balance']),
+        dailyQuota: _asInt(m['daily_quota']),
+        dailyUsed: _asInt(m['daily_used']),
+      );
+}
+
+/// POST /v1/me 响应
+class MeInfo {
+  MeInfo({required this.user, required this.credits});
+
+  final AppUser user;
+  final Credits credits;
+
+  factory MeInfo.fromMap(Map m) => MeInfo(
+        user: AppUser.fromMap(m['user'] ?? {}),
+        credits: Credits.fromMap(m['credits'] ?? {}),
+      );
+}
+
+/// candidate = {id, seq, title, audio_url, duration_sec, format, waveform_url, meta}
+class Candidate {
+  Candidate({
+    required this.id,
+    required this.seq,
+    required this.title,
+    required this.audioUrl,
+    required this.durationSec,
+    required this.format,
+    this.waveformUrl,
+    this.meta = const {},
+  });
+
+  final String id;
+  final int seq;
+  final String title;
+  final String audioUrl;
+  final double durationSec;
+  final String format;
+  final String? waveformUrl;
+  final Map meta;
+
+  factory Candidate.fromMap(Map m) => Candidate(
+        id: '${m['id'] ?? ''}',
+        seq: _asInt(m['seq']),
+        title: '${m['title'] ?? ''}',
+        audioUrl: '${m['audio_url'] ?? ''}',
+        durationSec: _asDouble(m['duration_sec']),
+        format: '${m['format'] ?? 'mp3'}',
+        waveformUrl: m['waveform_url']?.toString(),
+        meta: (m['meta'] as Map?) ?? const {},
+      );
+}
+
+/// work 形状（全接口一致）
+class Work {
+  Work({
+    required this.id,
+    required this.title,
+    required this.status,
+    this.mood,
+    this.genres = const [],
+    this.bpm,
+    required this.durationSec,
+    this.lyrics,
+    this.language,
+    this.seed,
+    this.lineageKind = 'origin',
+    this.parentId,
+    this.depth = 0,
+    this.personaId,
+    this.rating,
+    this.aiLabel = true,
+    this.visibility = 'private',
+    this.audioUrl,
+    this.waveformUrl,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String status;
+  final String? mood;
+  final List<String> genres;
+  final int? bpm;
+  final double durationSec;
+  final String? lyrics;
+  final String? language;
+  final int? seed; // gen.seed（engine 不解析、不展示）
+  final String lineageKind; // origin/adjust/variation/extend/cover
+  final String? parentId;
+  final int depth;
+  final String? personaId;
+  final int? rating;
+  final bool aiLabel;
+  final String visibility;
+  final String? audioUrl;
+  final String? waveformUrl;
+  final int createdAt;
+
+  factory Work.fromMap(Map m) {
+    final gen = (m['gen'] as Map?) ?? const {};
+    final lineage = (m['lineage'] as Map?) ?? const {};
+    return Work(
+      id: '${m['id'] ?? ''}',
+      title: '${m['title'] ?? '未命名作品'}',
+      status: '${m['status'] ?? 'draft'}',
+      mood: m['mood']?.toString(),
+      genres: _asStrList(m['genres']),
+      bpm: m['bpm'] == null ? null : _asInt(m['bpm']),
+      durationSec: _asDouble(m['duration_sec']),
+      lyrics: m['lyrics']?.toString(),
+      language: m['language']?.toString(),
+      seed: gen['seed'] == null ? null : _asInt(gen['seed']),
+      lineageKind: '${lineage['kind'] ?? 'origin'}',
+      parentId: lineage['parent_id']?.toString(),
+      depth: _asInt(lineage['depth']),
+      personaId: m['persona_id']?.toString(),
+      rating: m['rating'] == null ? null : _asInt(m['rating']),
+      aiLabel: m['ai_label'] != false,
+      visibility: '${m['visibility'] ?? 'private'}',
+      audioUrl: m['audio_url']?.toString(),
+      waveformUrl: m['waveform_url']?.toString(),
+      createdAt: _asInt(m['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'title': title,
+        'status': status,
+        'mood': mood,
+        'genres': genres,
+        'bpm': bpm,
+        'duration_sec': durationSec,
+      'lyrics': lyrics,
+      'language': language,
+      'gen': {'seed': seed}, // engine 型号名不落本地、不进 UI
+      'lineage': {
+        'kind': lineageKind,
+        'parent_id': parentId,
+        'depth': depth,
+      },
+      'persona_id': personaId,
+        'rating': rating,
+        'ai_label': aiLabel,
+        'visibility': visibility,
+        'audio_url': audioUrl,
+        'waveform_url': waveformUrl,
+        'created_at': createdAt,
+      };
+
+}
+
+/// GET /v1/jobs/:id
+class Job {
+  Job({
+    required this.id,
+    required this.type,
+    required this.status,
+    required this.progress,
+    this.note,
+    this.candidates,
+    this.error,
+    this.resultWorkId,
+  });
+
+  final String id;
+  final String type;
+  final String status; // queued/leased/running/done/failed/canceled
+  final int progress;
+  final String? note;
+  final List<Candidate>? candidates;
+  final Map? error;
+  final String? resultWorkId;
+
+  bool get isDone => status == 'done';
+  bool get isFailed => status == 'failed' || status == 'canceled';
+  bool get isQueued => status == 'queued' || status == 'leased';
+
+  factory Job.fromMap(Map m) {
+    List<Candidate>? cands;
+    if (m['candidates'] is List) {
+      cands = (m['candidates'] as List)
+          .whereType<Map>()
+          .map(Candidate.fromMap)
+          .toList();
+    }
+    return Job(
+      id: '${m['id'] ?? ''}',
+      type: '${m['type'] ?? ''}',
+      status: '${m['status'] ?? 'queued'}',
+      progress: _asInt(m['progress']),
+      note: m['note']?.toString(),
+      candidates: cands,
+      error: m['error'] as Map?,
+      resultWorkId: m['result_work_id']?.toString(),
+    );
+  }
+}
+
+/// 意图卡（多模态意图线）
+class IntentOption {
+  IntentOption({required this.idx, required this.label});
+
+  final int idx;
+  final String label;
+
+  factory IntentOption.fromMap(Map m) =>
+      IntentOption(idx: _asInt(m['idx']), label: '${m['label'] ?? ''}');
+}
+
+class IntentQuestion {
+  IntentQuestion(
+      {required this.qIdx,
+      required this.q,
+      required this.options,
+      this.recommendedIdx});
+
+  final int qIdx;
+  final String q;
+  final List<IntentOption> options;
+  final int? recommendedIdx;
+
+  factory IntentQuestion.fromMap(Map m) => IntentQuestion(
+        qIdx: _asInt(m['q_idx']),
+        q: '${m['q'] ?? ''}',
+        options: (m['options'] as List? ?? const [])
+            .whereType<Map>()
+            .map(IntentOption.fromMap)
+            .toList(),
+        recommendedIdx: m['recommended_idx'] == null
+            ? null
+            : _asInt(m['recommended_idx']),
+      );
+}
+
+class IntentAnswer {
+  IntentAnswer({required this.qIdx, required this.optionIdx});
+
+  final int qIdx;
+  final int optionIdx;
+
+  Map<String, dynamic> toJson() => {'q_idx': qIdx, 'option_idx': optionIdx};
+}
+
+class Intent {
+  Intent({
+    required this.id,
+    required this.sourceKind,
+    required this.status,
+    this.mood = const [],
+    this.sceneDesc,
+    this.genreHypotheses = const [],
+    this.vocal = 'unknown',
+    this.durationHint,
+    required this.confidence,
+    this.questions = const [],
+    this.answers = const [],
+    required this.createdAt,
+  });
+
+  final String id;
+  final String sourceKind; // voice/image/text
+  final String status; // clarifying/ready/consumed
+  final List<String> mood;
+  final String? sceneDesc;
+  final List<String> genreHypotheses;
+  final String vocal; // song/instrumental/unknown
+  final String? durationHint;
+  final double confidence;
+  final List<IntentQuestion> questions;
+  final List<IntentAnswer> answers;
+  final int createdAt;
+
+  bool get ready => status == 'ready';
+  bool get clarifying => status == 'clarifying';
+  bool get consumed => status == 'consumed';
+  bool get processing =>
+      status != 'clarifying' && status != 'ready' && status != 'consumed';
+
+  factory Intent.fromMap(Map m) => Intent(
+        id: '${m['id'] ?? ''}',
+        sourceKind: '${m['source_kind'] ?? 'text'}',
+        status: '${m['status'] ?? 'processing'}',
+        mood: _asStrList(m['mood']),
+        sceneDesc: m['scene_desc']?.toString(),
+        genreHypotheses: _asStrList(m['genre_hypotheses']),
+        vocal: '${m['vocal'] ?? 'unknown'}',
+        durationHint: m['duration_hint']?.toString(),
+        confidence: _asDouble(m['confidence']),
+        questions: (m['questions'] as List? ?? const [])
+            .whereType<Map>()
+            .map(IntentQuestion.fromMap)
+            .toList(),
+        answers: (m['answers'] as List? ?? const [])
+            .whereType<Map>()
+            .map((e) =>
+                IntentAnswer(qIdx: _asInt(e['q_idx']), optionIdx: _asInt(e['option_idx'])))
+            .toList(),
+        createdAt: _asInt(m['created_at']),
+      );
+
+  /// 本地修改（意图卡“可点改”：mood 等展示层微调）
+  Intent copyWith({List<String>? mood, String? vocal}) => Intent(
+        id: id,
+        sourceKind: sourceKind,
+        status: status,
+        mood: mood ?? this.mood,
+        sceneDesc: sceneDesc,
+        genreHypotheses: genreHypotheses,
+        vocal: vocal ?? this.vocal,
+        durationHint: durationHint,
+        confidence: confidence,
+        questions: questions,
+        answers: answers,
+        createdAt: createdAt,
+      );
+}
+
+class Persona {
+  Persona(
+      {required this.id,
+      required this.name,
+      required this.isPublic,
+      required this.useCount,
+      required this.createdAt});
+
+  final String id;
+  final String name;
+  final bool isPublic;
+  final int useCount;
+  final int createdAt;
+
+  factory Persona.fromMap(Map m) => Persona(
+        id: '${m['id'] ?? ''}',
+        name: '${m['name'] ?? '无名音色'}',
+        isPublic: m['is_public'] == true,
+        useCount: _asInt(m['use_count']),
+        createdAt: _asInt(m['created_at']),
+      );
+}
+
+/// GET /v1/works/:id/seed-pack —— 分享时不展示 engine 型号名
+class SeedPack {
+  SeedPack({
+    required this.prompt,
+    required this.tags,
+    required this.bpm,
+    required this.sec,
+    required this.seed,
+    required this.engine,
+  });
+
+  final String prompt;
+  final List<String> tags;
+  final int bpm;
+  final int sec;
+  final int seed;
+  final String engine; // 仅存储，禁止出现在 UI
+
+  factory SeedPack.fromMap(Map m) => SeedPack(
+        prompt: '${m['prompt'] ?? ''}',
+        tags: _asStrList(m['tags']),
+        bpm: _asInt(m['bpm']),
+        sec: _asInt(m['sec']),
+        seed: _asInt(m['seed']),
+        engine: '${m['engine'] ?? ''}',
+      );
+
+  /// 面向用户的分享文案（不含引擎名）
+  String toShareText({String? title}) {
+    final buf = StringBuffer();
+    if (title != null && title.isNotEmpty) buf.writeln('《$title》');
+    if (prompt.isNotEmpty) buf.writeln('灵感：$prompt');
+    if (tags.isNotEmpty) buf.writeln('标签：${tags.join(' / ')}');
+    buf.writeln('BPM：$bpm    时长：${sec}s    Seed：$seed');
+    buf.write('—— 来自 MusicBox，AI 生成');
+    return buf.toString();
+  }
+}
+
+/// GET /v1/works/:id → {work, lineage_parents, children_count}
+class WorkDetail {
+  WorkDetail({
+    required this.work,
+    this.parents = const [],
+    required this.childrenCount,
+  });
+
+  final Work work;
+  final List<Work> parents;
+  final int childrenCount;
+
+  factory WorkDetail.fromMap(Map m) => WorkDetail(
+        work: Work.fromMap(m['work'] ?? {}),
+        parents: (m['lineage_parents'] as List? ?? const [])
+            .whereType<Map>()
+            .map(Work.fromMap)
+            .toList(),
+        childrenCount: _asInt(m['children_count']),
+      );
+}

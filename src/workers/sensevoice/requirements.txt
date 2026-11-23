@@ -1,0 +1,9 @@
+# MusicBox SenseVoice worker 依赖（CPU 推理即可；开发机不运行，仅交付）
+funasr>=1.1.0
+torch>=2.1.0
+torchaudio>=2.1.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+librosa>=0.10.0
+soundfile>=0.12.1
+numpy>=1.24.0
