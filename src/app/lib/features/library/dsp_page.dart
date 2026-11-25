@@ -145,7 +145,7 @@ class _DspPageState extends ConsumerState<DspPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('音频小手术（约 5 积分）')),
+      appBar: AppBar(title: const Text('音频小手术')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

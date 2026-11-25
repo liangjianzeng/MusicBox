@@ -607,7 +607,7 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                       child: Text(
                         _adjustHintShown
                             ? '这一版已收下作母本（在曲库），继续说改哪里'
-                            : '说一句改一点：会先收下这一版作母本（进曲库，不额外扣分）',
+                            : '说一句改一点：会先收下这一版作母本（进曲库）',
                         style: const TextStyle(
                             fontSize: 11, color: Colors.white24),
                       ),

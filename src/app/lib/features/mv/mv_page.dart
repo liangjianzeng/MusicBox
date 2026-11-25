@@ -222,8 +222,13 @@ class _MvCard extends StatelessWidget {
   const _MvCard(this.mv);
   final MvSummary mv;
 
+  bool get canResume => const {'drafting', 'casting', 'scripting', 'previewed'}
+      .contains(mv.status);
+
   void _open(BuildContext context) {
-    if (mv.status == 'ready') {
+    if (canResume) {
+      MvWizardPage.push(context, workId: mv.workId, projectId: mv.id);
+    } else if (mv.status == 'ready') {
       MvDetailPage.push(context, mvId: mv.id);
     } else {
       MvProgressPage.push(context, projectId: mv.id);
@@ -237,7 +242,7 @@ class _MvCard extends StatelessWidget {
     return Semantics(
       button: true,
       label: '$title，${mvProjectStatusLabel(mv.status)}',
-      hint: done ? '查看成片详情' : '查看制作进度',
+      hint: canResume ? '继续创作' : (done ? '查看成片详情' : '查看制作进度'),
       child: MvSurfaceCard(
         borderRadius: 16,
         child: InkWell(
@@ -280,10 +285,12 @@ class _MvCard extends StatelessWidget {
                     icon: Icon(
                       done
                           ? Icons.play_circle_outline
-                          : Icons.local_movies_outlined,
+                          : canResume
+                              ? Icons.edit_note_outlined
+                              : Icons.local_movies_outlined,
                       size: 18,
                     ),
-                    label: Text(done ? '看成片' : '看进度'),
+                    label: Text(canResume ? '继续创作' : (done ? '看成片' : '看进度')),
                   ),
                 ],
               ),

@@ -60,7 +60,7 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = mvFriendlyError(e);
+        _error = mvUserVisibleError(e);
       });
     } catch (_) {
       if (!mounted) return;
@@ -131,8 +131,6 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
           [
             mvKindLabel(project.kind),
             if (project.durationSec > 0) mvFormatDuration(project.durationSec),
-            '已用 ${project.creditsCost} ⚡',
-            if (project.creditsRefunded > 0) '已退 ${project.creditsRefunded} ⚡',
           ].join(' · '),
           style: TextStyle(fontSize: 11.5, color: context.mvTextMuted),
         ),
@@ -335,7 +333,7 @@ class _MvReportPageState extends ConsumerState<MvReportPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = mvFriendlyError(e);
+        _error = mvUserVisibleError(e);
       });
     } catch (_) {
       if (!mounted) return;

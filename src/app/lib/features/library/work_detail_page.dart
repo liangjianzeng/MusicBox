@@ -267,19 +267,19 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
           children: [
             ListTile(
                 leading: const Icon(Icons.expand_rounded),
-                title: const Text('延长（约 20 积分）'),
+                title: const Text('延长'),
                 onTap: () => Navigator.pop(ctx, 'extend')),
             ListTile(
                 leading: const Icon(Icons.graphic_eq_rounded),
-                title: const Text('用人格翻唱（约 20 积分）'),
+                title: const Text('用人格翻唱'),
                 onTap: () => Navigator.pop(ctx, 'cover')),
             ListTile(
                 leading: const Icon(Icons.science_outlined),
-                title: const Text('实验台 variation（约 10 积分）'),
+                title: const Text('实验台 variation'),
                 onTap: () => Navigator.pop(ctx, 'variation')),
             ListTile(
                 leading: const Icon(Icons.cut_rounded),
-                title: const Text('DSP：裁剪/淡化/变调/变速（约 5 积分）'),
+                title: const Text('DSP：裁剪/淡化/变调/变速'),
                 onTap: () => Navigator.pop(ctx, 'dsp')),
             ListTile(
                 leading: const Icon(Icons.download_rounded),
@@ -424,8 +424,6 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
               const SizedBox(height: 8),
               Text('人格名：${persona.name}',
                   style: const TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              const Text('预计积分：$kCreditExtendCover'),
               const SizedBox(height: 8),
               const Text('生成数量：1 首'),
             ],
@@ -737,7 +735,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                       ),
                       const AssistantSuggestionCard(
                         title: '帮我微调',
-                        prompt: '请基于当前作品上下文，给我一些微调建议；涉及修改或扣费时先给我确认票',
+                        prompt: '请基于当前作品上下文，给我一些微调建议；涉及修改时先给我确认票',
                         icon: Icons.tune_outlined,
                       ),
                       // 星级

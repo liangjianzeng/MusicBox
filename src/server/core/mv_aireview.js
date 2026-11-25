@@ -11,7 +11,16 @@ const validator = require('./mv_validator');
 const MV = config.mv;
 
 function scriptHash(script_json) {
-  const shots = ((script_json && Array.isArray(script_json.shots) ? script_json.shots : [])).map(({ id, ...shot }) => shot);
+  const shots = ((script_json && Array.isArray(script_json.shots) ? script_json.shots : [])).map((s) => ({
+    seq: s.seq,
+    kind: s.kind,
+    sec: s.sec,
+    lyric_from: s.lyric_from ?? null,
+    lyric_to: s.lyric_to ?? null,
+    desc: s.desc,
+    camera: s.camera,
+    cast_ids: Array.isArray(s.cast_ids) ? s.cast_ids : [],
+  }));
   return U.hash12(U.jstr(shots));
 }
 

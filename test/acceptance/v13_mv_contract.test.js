@@ -319,13 +319,16 @@ describe('V13 MV 契约与账本（mock）', () => {
     assert.strictEqual(ok.status, 200, 'V13-⑨ ver 匹配应 200 {project}，实际 ' + ok.status + ' ' + ok.text.slice(0, 200));
     assert.strictEqual(ok.json.project.title, '新片名', 'V13-⑨ PATCH title 应生效，实际 ' + ok.json.project.title);
     assert.strictEqual(ok.json.project.script_ver, 1, 'V13-⑨ 仅改 title 不 ver++（剧本编辑才 ver++），实际 ' + ok.json.project.script_ver);
-    const sc = await S.api('PATCH', '/v1/mv/projects/' + p.id, { token: g.token, json: { script_json: { shots: [{ seq: 1, kind: 'story', sec: 5, desc: '雨夜远景', camera: '远景', cast_ids: [] }] }, ver: 1 } });
+    const sc = await S.api('PATCH', '/v1/mv/projects/' + p.id, { token: g.token, json: { script_json: { shots: [{ seq: 1, kind: 'story', sec: 5, desc: '雨夜远景', camera: '远景', cast_ids: [] }, { seq: 2, kind: 'broll', sec: 5, desc: '空镜 seed 提示词', camera: '远景', cast_ids: [] }] }, ver: 1 } });
     assert.strictEqual(sc.status, 200, 'V13-⑨ script_json 更新应 200，实际 ' + sc.status + ' ' + sc.text.slice(0, 200));
     assert.strictEqual(sc.json.project.script_ver, 2, 'V13-⑨ script_json 变更应 ver++（契约 v2.1 CAS 语义），实际 ' + sc.json.project.script_ver);
     const got = await S.api('GET', '/v1/mv/projects/' + p.id, { token: g.token });
     assert.ok(['project', 'characters', 'shots', 'tickets'].every((k) => got.json[k] !== undefined),
       'V13-⑨ GET 聚合应含 {project,characters[],shots[],tickets[]}（契约 v2.1），实际 keys=' + Object.keys(got.json).join(','));
     assert.strictEqual(got.json.characters.length, 1, 'V13-⑨ 建项目应固化 1 个角色（N1 单主演 D3），实际 ' + got.json.characters.length);
+    assert.strictEqual(got.json.shots[1].kind, 'broll', '机器枚举不得被用户面文本净化改写');
+    assert.strictEqual(got.json.shots[1].desc, '空镜 复刻编号 提示词', '用户面文本仍须执行禁词净化');
+    assert.deepStrictEqual(got.json.shots[0].cast_ids, [], '数据库 JSON 数组必须还原为 cast_ids 数组');
     // cast/confirm：拍板固化 viewRefs（S5 定妆链末端；status 推进已显式延期，见契约 v2.1 语义说明）
     const chId = got.json.characters[0].id;
     const confirm = await S.api('POST', '/v1/mv/projects/' + p.id + '/cast/confirm', {
@@ -601,9 +604,10 @@ describe('V13 MV 契约与账本（mock）', () => {
     const detail0 = await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token });
     const chId = detail0.json.characters[0].id;
     const cc = await S.api('POST', '/v1/mv/projects/' + pid + '/cast/confirm', {
-      token: g.token, json: { cast_image_url: '2026-01/f_cast.png', frame_sel: [{ url: '2026-01/f_ref.png', sel: true }] },
+      token: g.token, json: { cast_image_url: '2026-01/f_cast.png', frame_sel: [{ url: '2026-01/f_ref.png', score: null, sel: true }] },
     });
     assert.strictEqual(cc.status, 200, 'V13-⑱ cast confirm 应 200');
+    assert.strictEqual(cc.json.character.viewrefs[0].score, null, 'V13-⑱ 缺失机检评分不得伪造成 0');
     assert.strictEqual(S.db.mvProject(pid).row.status, 'scripting', 'V13-⑱ 角色确认后应推进 scripting');
     const sid = S.seedMvShot(pid, { seq: 1, kind: 'singing', status: 'draft' });
     S.setMvShot(sid, { lyric_from: 0, lyric_to: 1, storyboard_url: '2026-01/f_board.png', desc: '雨夜演唱' });

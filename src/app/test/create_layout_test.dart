@@ -90,29 +90,67 @@ void _expectVisible(WidgetTester tester, Finder finder, Size viewport) {
 }
 
 void main() {
-  testWidgets('三档切换始终显示对应图标', (tester) async {
+  testWidgets('三档切换始终显示对应的彩色图标且墨效局部绘制', (tester) async {
     await _pump(
       tester,
       size: const Size(390, 844),
       child: const CreatePage(),
     );
 
+    const tierIcons = [
+      (Icons.auto_awesome_rounded, CreationPalette.amber),
+      (Icons.tune_rounded, CreationPalette.green),
+      (Icons.equalizer_rounded, CreationPalette.blue),
+    ];
+
     Finder tierIcon(IconData icon) => find.descendant(
           of: find.byType(CreationTierTabs),
           matching: find.byIcon(icon),
         );
 
-    expect(tierIcon(Icons.auto_awesome_rounded), findsOneWidget);
-    expect(tierIcon(Icons.tune_rounded), findsOneWidget);
-    expect(tierIcon(Icons.equalizer_rounded), findsOneWidget);
+    void expectTierIcons() {
+      for (final (icon, color) in tierIcons) {
+        expect(tierIcon(icon), findsOneWidget);
+        expect(tester.widget<Icon>(tierIcon(icon)).color, color);
+        final material = tester.widget<Material>(
+          find
+              .ancestor(of: tierIcon(icon), matching: find.byType(Material))
+              .first,
+        );
+        expect(material.type, MaterialType.transparency);
+      }
+    }
+
+    expectTierIcons();
+    expect(find.byType(ShaderMask), findsNothing);
 
     await tester.tap(find.text('深度'));
     await tester.pumpAndSettle();
 
-    expect(tierIcon(Icons.auto_awesome_rounded), findsOneWidget);
-    expect(tierIcon(Icons.tune_rounded), findsOneWidget);
-    expect(tierIcon(Icons.equalizer_rounded), findsOneWidget);
+    expectTierIcons();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('创作三档不呈现积分信息', (tester) async {
+    await _pump(
+      tester,
+      size: const Size(390, 844),
+      child: const CreatePage(),
+    );
+
+    void expectNoCredits() {
+      expect(find.textContaining('积分'), findsNothing);
+      expect(find.byIcon(Icons.bolt_rounded), findsNothing);
+      expect(find.text('生成 3 首'), findsOneWidget);
+    }
+
+    expectNoCredits();
+    await tester.tap(find.text('标准'));
+    await tester.pumpAndSettle();
+    expectNoCredits();
+    await tester.tap(find.text('深度'));
+    await tester.pumpAndSettle();
+    expectNoCredits();
   });
 
   testWidgets('简约档语音与生成动作位于屏幕下半部', (tester) async {

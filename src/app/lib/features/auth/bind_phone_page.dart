@@ -80,7 +80,7 @@ class _BindPhonePageState extends ConsumerState<BindPhonePage> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          const Text('绑定手机号后，换设备也能找回你的作品与积分',
+          const Text('绑定手机号后，换设备也能找回你的作品与设置',
               style: TextStyle(color: Colors.white70)),
           const SizedBox(height: 24),
           TextField(

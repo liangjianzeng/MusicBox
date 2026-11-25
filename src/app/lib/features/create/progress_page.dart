@@ -367,21 +367,6 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
               ],
               const SizedBox(height: 14),
               TaskBriefCard(brief: _brief),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Icon(Icons.savings_outlined,
-                      size: 14, color: Colors.white38),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      _error == null ? '积分已预扣，任务失败会自动全额返还' : '本次积分会全额返还（后台已入账）',
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 11.5),
-                    ),
-                  ),
-                ],
-              ),
               const SizedBox(height: 16),
               if (_error != null && widget.onRetry != null)
                 FilledButton.icon(
@@ -459,7 +444,7 @@ class _ProgressHead extends StatelessWidget {
                     const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 5),
-              Text(track.currentAction,
+              Text(userVisibleText(track.currentAction),
                   style: const TextStyle(
                       fontSize: 12.5, color: Colors.white54, height: 1.3)),
               if (track.retrying)
@@ -674,6 +659,8 @@ class _FailedHead extends StatelessWidget {
   Widget build(BuildContext context) {
     final code = '${error['code'] ?? ''}';
     final raw = '${error['message'] ?? ''}'.trim();
+    final friendly = userVisibleText(zhForCode(code, raw.isEmpty ? null : raw));
+    final visibleRaw = userVisibleText(raw);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -690,18 +677,15 @@ class _FailedHead extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(zhForCode(code, raw.isEmpty ? null : raw),
+                Text(friendly,
                     style: const TextStyle(
                         fontSize: 15.5, fontWeight: FontWeight.w700)),
-                if (raw.isNotEmpty && raw != zhForCode(code, raw)) ...[
+                if (visibleRaw.isNotEmpty && visibleRaw != friendly) ...[
                   const SizedBox(height: 4),
-                  Text(raw,
+                  Text(visibleRaw,
                       style: const TextStyle(
                           fontSize: 12, color: Colors.white54, height: 1.3)),
                 ],
-                const SizedBox(height: 6),
-                const Text('失败任务的积分已自动返还',
-                    style: TextStyle(fontSize: 11.5, color: Colors.white38)),
                 if (blocked) ...[
                   const SizedBox(height: 6),
                   const Text(

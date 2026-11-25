@@ -108,7 +108,7 @@ class _MvRevealPageState extends ConsumerState<MvRevealPage>
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = mvFriendlyError(e); // MV_NOT_READY 等按域内诚实文案呈现
+        _error = mvUserVisibleError(e); // MV_NOT_READY 等按域内诚实文案呈现
       });
     } catch (_) {
       if (!mounted) return;
@@ -271,7 +271,6 @@ class _MvRevealPageState extends ConsumerState<MvRevealPage>
           [
             mvKindLabel(p.kind),
             if (p.durationSec > 0) mvFormatDuration(p.durationSec),
-            '已用 ${p.creditsCost} ⚡',
           ].join(' · '),
           style: TextStyle(fontSize: 11.5, color: context.mvTextMuted),
         ),

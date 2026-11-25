@@ -172,9 +172,9 @@ class _StepCastState extends ConsumerState<StepCast> {
         ),
         SizedBox(height: 12),
         if ((state.uploadError ?? '').isNotEmpty)
-          _ErrorLine(text: state.uploadError!),
+          _ErrorLine(text: mvUserVisibleText(state.uploadError!)),
         if ((state.submitError ?? '').isNotEmpty)
-          _ErrorLine(text: state.submitError!),
+          _ErrorLine(text: mvUserVisibleText(state.submitError!)),
         SizedBox(height: 8),
         // 确认主演（建项目 + 派定妆照任务；失败如实呈现）
         SizedBox(

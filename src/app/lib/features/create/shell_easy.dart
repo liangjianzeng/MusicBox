@@ -169,7 +169,7 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                         const Row(
                           children: [
                             Icon(Icons.auto_awesome_rounded,
-                                size: 14, color: CreationPalette.violetBright),
+                                size: 14, color: CreationPalette.amber),
                             SizedBox(width: 7),
                             Text(
                               'AI MUSIC STUDIO',
@@ -185,27 +185,16 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                         ),
                         const SizedBox(height: 16),
                       ],
-                      ShaderMask(
-                        blendMode: BlendMode.srcIn,
-                        shaderCallback: (bounds) => const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            CreationPalette.text,
-                            CreationPalette.violetBright,
-                          ],
-                        ).createShader(bounds),
-                        child: Text(
-                          shortScreen ? '让灵感成歌' : '让灵感，\n即刻成歌',
-                          textAlign:
-                              shortScreen ? TextAlign.center : TextAlign.left,
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: shortScreen ? 26 : 34,
-                            height: 1.12,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -1,
-                          ),
+                      Text(
+                        shortScreen ? '让灵感成歌' : '让灵感，\n即刻成歌',
+                        textAlign:
+                            shortScreen ? TextAlign.center : TextAlign.left,
+                        style: TextStyle(
+                          color: CreationPalette.text,
+                          fontSize: shortScreen ? 26 : 34,
+                          height: 1.12,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -1,
                         ),
                       ),
                       SizedBox(height: shortScreen ? 8 : 12),
@@ -294,24 +283,13 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                 SizedBox(height: shortScreen ? 9 : 12),
               ],
               PrimaryButton(
-                text: '生成 3 首 · 45 积分',
+                text: '生成 3 首',
                 big: true,
                 gradient: true,
                 icon: Icons.auto_awesome_rounded,
                 loading: _busy,
                 onPressed: _busy ? null : _onText,
               ),
-              if (!keyboardOpen && !shortScreen)
-                const Padding(
-                  padding: EdgeInsets.only(top: 7),
-                  child: Text(
-                    '失败自动返还积分',
-                    style: TextStyle(
-                      color: CreationPalette.faint,
-                      fontSize: 10,
-                    ),
-                  ),
-                ),
             ],
           ),
         ),

@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/state.dart';
+import '../../../core/ws_client.dart';
 import '../mv_models.dart';
 import '../mv_state.dart';
 import '../widgets/mv_common.dart';
@@ -22,13 +26,58 @@ class StepScript extends ConsumerStatefulWidget {
 
 class _StepScriptState extends ConsumerState<StepScript> {
   bool _busy = false;
+  Timer? _poll;
+  StreamSubscription<WsEvent>? _wsSub;
+  String? _watchedProjectId;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _watchProject(ref.read(mvWizardProvider(widget.workId)).project?.id);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    _wsSub?.cancel();
+    super.dispose();
+  }
+
+  void _watchProject(String? projectId) {
+    if (_watchedProjectId == projectId) return;
+    _poll?.cancel();
+    _wsSub?.cancel();
+    _watchedProjectId = projectId;
+    if (projectId == null) return;
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!mounted) return;
+      ref
+          .read(mvProjectDetailProvider(projectId).notifier)
+          .refresh(quiet: true);
+    });
+    _wsSub = ref
+        .read(wsClientProvider)
+        .events
+        .where((e) => e is MvProgressEvent && e.projectId == projectId)
+        .listen((_) {
+      if (!mounted) return;
+      ref
+          .read(mvProjectDetailProvider(projectId).notifier)
+          .refresh(quiet: true);
+    });
+  }
 
   MvProjectDetailNotifier _n(WidgetRef ref, String projectId) =>
       ref.read(mvProjectDetailProvider(projectId).notifier);
 
   void _toast(String text) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(mvUserVisibleText(text))));
   }
 
   Future<void> _guard(Future<void> Function() f) async {
@@ -43,12 +92,9 @@ class _StepScriptState extends ConsumerState<StepScript> {
 
   Future<void> _compileStoryboard(String projectId) async {
     await _guard(() async {
-      final (ok, err, charged) =
-          await _n(ref, projectId).dispatchJob('storyboard');
+      final (ok, err, _) = await _n(ref, projectId).dispatchJob('storyboard');
       if (ok) {
-        _toast(charged > 0
-            ? '分镜任务已提交（扣 $charged ⚡），关键帧逐镜产出'
-            : '分镜任务已提交（幂等命中，未重复扣分）');
+        _toast('分镜任务已提交，关键帧逐镜产出');
       } else {
         _toast(err ?? '分镜提交失败，请重试');
       }
@@ -271,6 +317,9 @@ class _StepScriptState extends ConsumerState<StepScript> {
   @override
   Widget build(BuildContext context) {
     final wizard = ref.watch(mvWizardProvider(widget.workId));
+    ref.listen(mvWizardProvider(widget.workId), (_, next) {
+      _watchProject(next.project?.id);
+    });
     final project = wizard.project;
     if (project == null) {
       return Center(
@@ -287,7 +336,9 @@ class _StepScriptState extends ConsumerState<StepScript> {
     }
     if (detail == null) {
       return MvErrorView(
-        text: detailState.error ?? '剧本数据暂不可用',
+        text: mvUserVisibleText(detailState.error).trim().isEmpty
+            ? '剧本数据暂不可用'
+            : mvUserVisibleText(detailState.error),
         onRetry: () => _n(ref, project.id).refresh(),
       );
     }
@@ -337,8 +388,8 @@ class _StepScriptState extends ConsumerState<StepScript> {
                       size: 34, color: context.mvTextMuted),
                   SizedBox(height: 8),
                   Text(
-                      '还没有分镜。先由编剧按这首歌编译剧本（免费），'
-                      '再逐镜产出关键帧（5 ⚡/镜）。',
+                      '还没有分镜。先由编剧按这首歌编译剧本，'
+                      '再逐镜产出关键帧。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 12.5,
@@ -390,7 +441,7 @@ class _StepScriptState extends ConsumerState<StepScript> {
               border: Border.all(color: context.mvBorder),
             ),
             child: Text(
-              '下一步：先看免费样片 → 报价卡 →「开机开拍」。剧本没改好之前不必急着看片。',
+              '下一步：先看样片 → 确认拍摄计划 →「开机开拍」。剧本没改好之前不必急着看片。',
               style: TextStyle(
                   fontSize: 11.5, color: context.mvTextMuted, height: 1.5),
             ),

@@ -296,7 +296,7 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
                 seq: 0,
                 role: 'system',
                 content: result.reply?.isNotEmpty == true
-                    ? result.reply!
+                    ? userVisibleText(result.reply)
                     : '已批准，任务开始执行。'),
           ],
           clearError: true);
@@ -332,7 +332,7 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
                 id: 'ticket_${id}_${DateTime.now().microsecondsSinceEpoch}',
                 seq: 0,
                 role: 'system',
-                content: '已拒绝这张确认票，没有执行或扣费。'),
+                content: '已拒绝这张确认票，没有执行。'),
           ],
           clearError: true);
     } on ApiException catch (e) {
@@ -446,8 +446,8 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
         'FORBIDDEN' => '这个操作不在助手能力范围内',
         'TICKET_UNUSABLE' => '确认票已过期或处理过，未重复执行',
         'STALE' => '内容刚被修改，请刷新后再确认',
-        'SESSION_BROKEN' => '本次助手预算已触发保护，请稍后再试',
-        _ => e.zh,
+        'SESSION_BROKEN' => '本次助手暂时不可用，请稍后再试',
+        _ => userVisibleText(e.zh),
       };
 }
 

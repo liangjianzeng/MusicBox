@@ -295,7 +295,7 @@ function castConfirm(ctx) {
   const frameSel = Array.isArray(b.frame_sel) ? b.frame_sel : [];
   const viewrefs = frameSel.slice(0, 32).map((f) => ({
     url: String((f && f.url) || '').slice(0, 500),
-    score: f && Number.isFinite(Number(f.score)) ? Number(f.score) : null,
+    score: f && f.score != null && Number.isFinite(Number(f.score)) ? Number(f.score) : null,
     sel: f ? !!f.sel : true,
   })).filter((f) => f.url);
   store.tx(() => {
@@ -332,6 +332,15 @@ async function patchProjectAsync(ctx) {
     if (b.script_json !== null && typeof b.script_json !== 'object') throw new U.ApiError('BAD_REQUEST', 'script_json 需为对象或 null');
     rules.moderateFields([U.jstr(b.script_json).slice(0, 4000)]);
     clean = b.script_json == null ? null : lex.sanitizeDeep(b.script_json);
+    if (clean && Array.isArray(clean.shots) && Array.isArray(b.script_json.shots)) {
+      clean.shots.forEach((shot, i) => {
+        const raw = b.script_json.shots[i];
+        if (!shot || typeof shot !== 'object' || !raw || typeof raw !== 'object') return;
+        for (const key of ['id', 'kind', 'cast_ids']) {
+          if (Object.prototype.hasOwnProperty.call(raw, key)) shot[key] = raw[key];
+        }
+      });
+    }
     if (clean) {
       delete clean.ai_review; delete clean.timings;
       const ch = mainCharacter(p.id);

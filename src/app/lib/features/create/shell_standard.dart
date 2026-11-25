@@ -316,7 +316,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
               ],
               if (st.intentId == null)
                 PrimaryButton(
-                  text: '生成 3 首 · 45 积分',
+                  text: '生成 3 首',
                   big: true,
                   gradient: true,
                   icon: Icons.auto_awesome_rounded,

@@ -8,6 +8,9 @@ abstract final class CreationPalette {
   static const violet = Color(0xFFA78BFA);
   static const violetBright = Color(0xFFC4B5FD);
   static const cyan = Color(0xFF67E8F9);
+  static const amber = Color(0xFFFFC857);
+  static const green = Color(0xFF4ADE80);
+  static const blue = Color(0xFF38BDF8);
   static const text = Color(0xFFF5F3FF);
   static const muted = Color(0xFFA7A5B8);
   static const faint = Color(0xFF6F6D80);
@@ -26,29 +29,31 @@ class CreationBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox.expand(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: CreationPalette.background,
-          gradient: ambient
-              ? const RadialGradient(
-                  center: Alignment(0.92, -0.7),
-                  radius: 1.15,
-                  colors: [Color(0x332D2358), CreationPalette.background],
+    return RepaintBoundary(
+      child: SizedBox.expand(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: CreationPalette.background,
+            gradient: ambient
+                ? const RadialGradient(
+                    center: Alignment(0.92, -0.7),
+                    radius: 1.15,
+                    colors: [Color(0x332D2358), CreationPalette.background],
+                  )
+                : null,
+          ),
+          child: ambient
+              ? const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: Alignment(-0.85, 0.35),
+                      radius: 0.9,
+                      colors: [Color(0x10326A73), Colors.transparent],
+                    ),
+                  ),
                 )
               : null,
         ),
-        child: ambient
-            ? const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment(-0.85, 0.35),
-                    radius: 0.9,
-                    colors: [Color(0x10326A73), Colors.transparent],
-                  ),
-                ),
-              )
-            : null,
       ),
     );
   }
@@ -70,98 +75,105 @@ class CreationTierTabs extends StatelessWidget {
     Icons.tune_rounded,
     Icons.equalizer_rounded,
   ];
+  static const iconColors = [
+    CreationPalette.amber,
+    CreationPalette.green,
+    CreationPalette.blue,
+  ];
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final width = constraints.maxWidth / labels.length;
-      return SizedBox(
-        height: 44,
-        child: Stack(
-          children: [
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                height: 1,
-                color: CreationPalette.border,
-              ),
-            ),
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-              left: width * selected,
-              bottom: 0,
-              width: width,
-              child: Container(
-                height: 2,
-                decoration: BoxDecoration(
-                  gradient: CreationPalette.gradient,
-                  borderRadius: BorderRadius.circular(2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: CreationPalette.violet.withValues(alpha: .45),
-                      blurRadius: 10,
-                    ),
-                  ],
+      return RepaintBoundary(
+        child: SizedBox(
+          height: 44,
+          child: Stack(
+            children: [
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  height: 1,
+                  color: CreationPalette.border,
                 ),
               ),
-            ),
-            Row(
-              children: List.generate(labels.length, (index) {
-                final active = index == selected;
-                return Expanded(
-                  child: Semantics(
-                    button: true,
-                    selected: active,
-                    label: labels[index],
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => onChanged(index),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Container(
-                            width: 22,
-                            height: 22,
-                            decoration: BoxDecoration(
-                              gradient: CreationPalette.gradient,
-                              borderRadius: BorderRadius.circular(7),
-                            ),
-                            child: Icon(
-                              icons[index],
-                              size: 15,
-                              color: active
-                                  ? Colors.white
-                                  : CreationPalette.violetBright,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: AnimatedDefaultTextStyle(
-                              duration: const Duration(milliseconds: 160),
-                              style: TextStyle(
-                                color: active
-                                    ? CreationPalette.text
-                                    : CreationPalette.faint,
-                                fontSize: 14,
-                                height: 1,
-                                fontWeight:
-                                    active ? FontWeight.w800 : FontWeight.w600,
-                                letterSpacing: active ? .2 : 0,
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                left: width * selected,
+                bottom: 0,
+                width: width,
+                child: Container(
+                  height: 2,
+                  decoration: BoxDecoration(
+                    color: CreationPalette.cyan,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                children: List.generate(labels.length, (index) {
+                  final active = index == selected;
+                  return Expanded(
+                    child: Semantics(
+                      button: true,
+                      selected: active,
+                      label: labels[index],
+                      child: Material(
+                        type: MaterialType.transparency,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => onChanged(index),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color:
+                                      iconColors[index].withValues(alpha: .14),
+                                  border: Border.all(
+                                    color: iconColors[index]
+                                        .withValues(alpha: .28),
+                                  ),
+                                  borderRadius: BorderRadius.circular(7),
+                                ),
+                                child: Icon(
+                                  icons[index],
+                                  size: 15,
+                                  color: iconColors[index],
+                                ),
                               ),
-                              child: Text(labels[index]),
-                            ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  labels[index],
+                                  style: TextStyle(
+                                    color: active
+                                        ? CreationPalette.text
+                                        : CreationPalette.faint,
+                                    fontSize: 14,
+                                    height: 1,
+                                    fontWeight: active
+                                        ? FontWeight.w800
+                                        : FontWeight.w600,
+                                    letterSpacing: active ? .2 : 0,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                );
-              }),
-            ),
-          ],
+                  );
+                }),
+              ),
+            ],
+          ),
         ),
       );
     });
@@ -175,25 +187,27 @@ class CreationDock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: CreationPalette.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
-        border: const Border(top: BorderSide(color: CreationPalette.border)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: .45),
-            blurRadius: 26,
-            offset: const Offset(0, -10),
+    return RepaintBoundary(
+      child: Container(
+        decoration: BoxDecoration(
+          color: CreationPalette.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+          border: const Border(top: BorderSide(color: CreationPalette.border)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .45),
+              blurRadius: 26,
+              offset: const Offset(0, -10),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          top: false,
+          minimum: const EdgeInsets.only(bottom: 8),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: child,
           ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.only(bottom: 8),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-          child: child,
         ),
       ),
     );
@@ -288,7 +302,7 @@ class CreationInputActions extends StatelessWidget {
                       ),
                       child: const Icon(
                         Icons.photo_camera_rounded,
-                        color: CreationPalette.violetBright,
+                        color: CreationPalette.cyan,
                         size: 24,
                       ),
                     ),

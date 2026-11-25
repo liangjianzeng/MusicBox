@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -19,15 +21,18 @@ import 'widgets/mv_theme.dart';
 /// 确认门（S7 流程）：② 主演确认 → ③ 帧格拍板 → ④ 已有分镜 →
 /// ⑤ 先看样片再开机（status≥previewed，服务端 boot 硬门 + 本页门禁双保险）。
 class MvWizardPage extends ConsumerStatefulWidget {
-  const MvWizardPage({super.key, this.workId, this.initialStep = 0});
+  const MvWizardPage(
+      {super.key, this.workId, this.projectId, this.initialStep = 0});
 
   final String? workId;
+  final String? projectId;
   final int initialStep;
 
   static void push(BuildContext context,
-      {String? workId, int initialStep = 0}) {
+      {String? workId, String? projectId, int initialStep = 0}) {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => MvWizardPage(workId: workId, initialStep: initialStep),
+      builder: (_) => MvWizardPage(
+          workId: workId, projectId: projectId, initialStep: initialStep),
     ));
   }
 
@@ -43,8 +48,12 @@ class _MvWizardPageState extends ConsumerState<MvWizardPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final n = ref.read(mvWizardProvider(widget.workId).notifier);
-      // 从曲库候选进入：落在步①并预选该曲；MV tab 进入步①不预选
-      n.goTo(widget.initialStep);
+      if (widget.projectId != null) {
+        unawaited(n.resumeProject(widget.projectId!));
+      } else {
+        // 从曲库候选进入：落在步①并预选该曲；MV tab 进入步①不预选
+        n.goTo(widget.initialStep);
+      }
     });
   }
 
@@ -52,6 +61,34 @@ class _MvWizardPageState extends ConsumerState<MvWizardPage> {
   Widget build(BuildContext context) {
     final state = ref.watch(mvWizardProvider(widget.workId));
     final n = ref.read(mvWizardProvider(widget.workId).notifier);
+    if (widget.projectId != null &&
+        (state.resuming || state.project?.id != widget.projectId)) {
+      final error = state.resumeError;
+      return Scaffold(
+        appBar: AppBar(title: Text(error == null ? '继续创作' : '暂时无法恢复')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: error == null
+                ? const CircularProgressIndicator()
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.cloud_off_outlined, size: 32),
+                      const SizedBox(height: 12),
+                      Text(mvUserVisibleText(error), textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(
+                        onPressed: () =>
+                            unawaited(n.resumeProject(widget.projectId!)),
+                        child: const Text('重试'),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+      );
+    }
     final step = state.step;
 
     // 服务端实况（门禁数据源）
@@ -79,12 +116,12 @@ class _MvWizardPageState extends ConsumerState<MvWizardPage> {
         if (detail == null) {
           nextBlocked = '剧本数据加载中…';
         } else if (detail.shots.isEmpty) {
-          nextBlocked = '先点「生成分镜」：编剧免费编译剧本，再逐镜出关键帧';
+          nextBlocked = '先点「生成分镜」：编剧编译剧本，再逐镜出关键帧';
         }
         break;
       case 4:
         if (detail == null || !detail.project.canBootGate) {
-          nextBlocked = '先看免费样片并按报价卡拍板「开机开拍」（计费门）';
+          nextBlocked = '先看样片并确认「开机开拍」';
         } else if (detail.project.statusRank < 4) {
           nextBlocked = '尚未开机：开机后进入异步制作';
         }
@@ -102,7 +139,10 @@ class _MvWizardPageState extends ConsumerState<MvWizardPage> {
       message: '主演资料仍在提交中。离开不会取消已创建的项目或后台任务，'
           '但可能看不到本次回执；草稿会保留在本机。确定离开吗？',
       child: Scaffold(
-        appBar: AppBar(title: const Text('新 MV')),
+        appBar: AppBar(
+          title:
+              Text(project?.title.isNotEmpty == true ? project!.title : '新 MV'),
+        ),
         floatingActionButton: (assistantOn && project != null)
             ? FloatingActionButton.small(
                 heroTag: 'mv_wizard_assistant',
@@ -279,7 +319,7 @@ class _FinalStep extends ConsumerWidget {
             const SizedBox(height: 8),
             Text(
               p == null
-                  ? '定妆拍板 → 剧本 → 报价开机，每一步都需你在卡片上拍板。'
+                  ? '定妆拍板 → 剧本 → 开机，每一步都需你在卡片上拍板。'
                   : '拍摄 / 对口型 / 合成为分钟级异步工程，可离开 App，'
                       '完成后由通知拉回验收（一期通知栈复用）。',
               textAlign: TextAlign.center,

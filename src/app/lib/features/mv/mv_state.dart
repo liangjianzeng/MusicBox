@@ -34,6 +34,8 @@ class MvWizardState {
     this.uploadError,
     this.submitting = false,
     this.submitError,
+    this.resuming = false,
+    this.resumeError,
     this.project, // 提交成功后的项目（步③依赖）
     this.jobNote, // cast_image 派发结果如实记录（失败也不装成功）
     this.lookConfirmed = false, // 步③帧格拍板已固化（门禁依据）
@@ -52,6 +54,8 @@ class MvWizardState {
   final String? uploadError;
   final bool submitting;
   final String? submitError;
+  final bool resuming;
+  final String? resumeError;
   final MvProject? project;
   final String? jobNote;
   final bool lookConfirmed;
@@ -85,6 +89,9 @@ class MvWizardState {
     bool? submitting,
     String? submitError,
     bool clearSubmitError = false,
+    bool? resuming,
+    String? resumeError,
+    bool clearResumeError = false,
     MvProject? project,
     String? jobNote,
     bool? lookConfirmed,
@@ -105,10 +112,26 @@ class MvWizardState {
         submitting: submitting ?? this.submitting,
         submitError:
             clearSubmitError ? null : (submitError ?? this.submitError),
+        resuming: resuming ?? this.resuming,
+        resumeError:
+            clearResumeError ? null : (resumeError ?? this.resumeError),
         project: project ?? this.project,
         jobNote: jobNote ?? this.jobNote,
         lookConfirmed: lookConfirmed ?? this.lookConfirmed,
       );
+}
+
+int mvWizardResumeStep(
+  MvProject project, {
+  required bool castConfirmed,
+  required bool hasShots,
+}) {
+  if (!castConfirmed) return 2;
+  if (!hasShots) return 3;
+  return (project.previewUrl ?? '').isNotEmpty ||
+          (project.estVer ?? '').isNotEmpty
+      ? 4
+      : 3;
 }
 
 class MvWizardNotifier extends StateNotifier<MvWizardState> {
@@ -157,9 +180,51 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
   void back() => state = state.copyWith(step: (state.step - 1).clamp(0, 5));
   void goTo(int s) => state = state.copyWith(step: s.clamp(0, 5));
 
+  Future<bool> resumeProject(String projectId) async {
+    if (state.resuming) return false;
+    state = state.copyWith(resuming: true, clearResumeError: true);
+    try {
+      final detail = MvProjectDetail.fromMap(await _api.project(projectId));
+      final project = detail.project;
+      if (const {'ready', 'shooting', 'composing', 'failed', 'canceled'}
+          .contains(project.status)) {
+        throw ApiException(
+          code: 'WRONG_STATE',
+          message: '该项目已进入制作或结束状态，请返回「我的 MV」查看进度',
+        );
+      }
+      final character =
+          detail.characters.isEmpty ? null : detail.characters.first;
+      state = MvWizardState(
+        step: mvWizardResumeStep(
+          project,
+          castConfirmed: character?.confirmed ?? false,
+          hasShots: detail.shots.isNotEmpty,
+        ),
+        workId: project.workId.isEmpty ? null : project.workId,
+        brief: project.brief,
+        gender: character?.gender,
+        channel: character?.source,
+        project: project,
+        lookConfirmed: character?.confirmed ?? false,
+      );
+      return true;
+    } on ApiException catch (e) {
+      state = state.copyWith(resuming: false, resumeError: e.zh);
+      return false;
+    } catch (_) {
+      state = state.copyWith(resuming: false, resumeError: '项目恢复失败，请重试');
+      return false;
+    }
+  }
+
   /// 步②「确认主演，去定妆」：校验 →（真人通道）上传人像 → 建项目 → 派发定妆照任务。
   /// 任一步失败：如实呈现错误并停在原地，绝不伪造 project。
   Future<bool> submitCast() async {
+    if (state.project != null) {
+      state = state.copyWith(step: 2, clearSubmitError: true);
+      return true;
+    }
     if (state.workId == null) {
       state = state.copyWith(submitError: '先选一首已完成的歌');
       return false;
@@ -260,16 +325,12 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
     final p = state.project;
     if (p == null || castImageUrl.isEmpty) return '请先挑选定妆照';
     try {
-      final r = await _api
+      await _api
           .createJob(p.id, 'cast_video', {'cast_image_url': castImageUrl});
-      final charged = r['credits_charged'];
-      final n = charged is num ? charged.toInt() : 0;
-      state = state.copyWith(
-          jobNote:
-              n > 0 ? '定妆视频任务已提交（扣 $n ⚡），约需 5 分钟' : '定妆视频任务已提交（幂等命中，未重复扣分）');
+      state = state.copyWith(jobNote: '定妆视频任务已提交，约需 5 分钟');
       return null;
     } on ApiException catch (e) {
-      return mvFriendlyError(e);
+      return mvUserVisibleError(e);
     }
   }
 }
@@ -313,7 +374,12 @@ class MvBootOutcome {
 
 const _mvEditConflict = '剧本已被其他人修改，且与本次编辑冲突；请刷新后重试';
 
-typedef _MvShotContent = ({String kind, double sec, String? desc, String? camera});
+typedef _MvShotContent = ({
+  String kind,
+  double sec,
+  String? desc,
+  String? camera
+});
 
 _MvShotContent _mvShotContent(MvShot s) =>
     (kind: s.kind, sec: s.sec, desc: s.desc, camera: s.camera);
@@ -359,9 +425,7 @@ _MvShotContent _mvShotContent(MvShot s) =>
     final sc = _mvShotContent(server);
     if ((bc.kind != ec.kind && sc.kind != bc.kind && ec.kind != sc.kind) ||
         (bc.sec != ec.sec && sc.sec != bc.sec && ec.sec != sc.sec) ||
-        (bc.desc != ec.desc &&
-            sc.desc != bc.desc &&
-            ec.desc != sc.desc) ||
+        (bc.desc != ec.desc && sc.desc != bc.desc && ec.desc != sc.desc) ||
         (bc.camera != ec.camera &&
             sc.camera != bc.camera &&
             ec.camera != sc.camera)) {
@@ -434,7 +498,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     } on ApiException catch (e) {
       if (!mounted || seq != _requestSeq) return;
       if (!quiet || state.detail == null) {
-        state = state.copyWith(loading: false, error: mvFriendlyError(e));
+        state = state.copyWith(loading: false, error: mvUserVisibleError(e));
       }
     } catch (_) {
       if (!mounted || seq != _requestSeq) return;
@@ -504,8 +568,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     }
     try {
       final detail = MvProjectDetail.fromMap(await _api.project(projectId));
-      final pending = detail.tickets.where(
-          (t) => t.id == ticket.id && t.status == 'pending');
+      final pending = detail.tickets
+          .where((t) => t.id == ticket.id && t.status == 'pending');
       if (pending.isEmpty) {
         return (
           ticket: null,
@@ -521,7 +585,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       }
       return (ticket: hydrated, error: null);
     } on ApiException catch (e) {
-      return (ticket: null, error: mvFriendlyError(e));
+      return (ticket: null, error: mvUserVisibleError(e));
     } catch (_) {
       return (ticket: null, error: '确认票加载失败，请刷新后重试');
     }
@@ -537,7 +601,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       final charged = r['credits_charged'];
       return (true, null, charged is num ? charged.toInt() : 0);
     } on ApiException catch (e) {
-      return (false, mvFriendlyError(e), 0);
+      return (false, mvUserVisibleError(e), 0);
     }
   }
 
@@ -548,7 +612,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       final charged = r['credits_charged'];
       return (true, null, charged is num ? charged.toInt() : 0);
     } on ApiException catch (e) {
-      return (false, mvFriendlyError(e), 0);
+      return (false, mvUserVisibleError(e), 0);
     }
   }
 
@@ -564,7 +628,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       await call(ver);
       return (err: null, usedVer: ver);
     } on ApiException catch (e) {
-      if (e.code != 'STALE') return (err: mvFriendlyError(e), usedVer: null);
+      if (e.code != 'STALE') return (err: mvUserVisibleError(e), usedVer: null);
       try {
         final fresh = await _fetchForCas();
         if (fresh == null) return (err: '项目状态已变化，请重试', usedVer: null);
@@ -575,7 +639,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
         await call(nextVer);
         return (err: null, usedVer: nextVer);
       } on ApiException catch (e2) {
-        return (err: mvFriendlyError(e2), usedVer: null);
+        return (err: mvUserVisibleError(e2), usedVer: null);
       } catch (_) {
         return (err: '项目状态已变化，请刷新后重试', usedVer: null);
       }
@@ -619,8 +683,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     Map? patchResponse;
     final (:err, :usedVer) = await _casPatch(
       (ver) async {
-        patchResponse =
-            await _api.patchProject(projectId, ver: ver, scriptJson: scriptJson);
+        patchResponse = await _api.patchProject(projectId,
+            ver: ver, scriptJson: scriptJson);
       },
       rebuildOnStale: (fresh) async {
         // 即使 rebase 冲突，回滚也应落在刚拉取的新鲜剧本，而不是旧快照。
@@ -682,7 +746,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
   /// 开机开拍（boot{est_ver}）：错误码原样分类返回，UI 负责诚实对话
   Future<MvBootOutcome> boot(String estVer) async {
     if (estVer.isEmpty) {
-      return MvBootOutcome('NOT_READY', message: '报价尚未生成，请先出样片');
+      return MvBootOutcome('NOT_READY', message: '样片或开机信息尚未就绪，请先出样片');
     }
     try {
       final r = await _api.bootProject(projectId, estVer);
@@ -714,7 +778,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       await refresh(quiet: true);
       return (true, null, charged is num ? charged.toInt() : 0);
     } on ApiException catch (e) {
-      return (false, mvFriendlyError(e), 0);
+      return (false, mvUserVisibleError(e), 0);
     }
   }
 
@@ -730,7 +794,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       return (MvSuggest.fromMap(s), null, false);
     } on ApiException catch (e) {
       if (e.code == 'NOT_READY') return (null, e.zh, true);
-      return (null, mvFriendlyError(e), false);
+      return (null, mvUserVisibleError(e), false);
     }
   }
 
@@ -749,7 +813,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       await refresh(quiet: true);
       return (r, null);
     } on ApiException catch (e) {
-      return (null, mvFriendlyError(e));
+      return (null, mvUserVisibleError(e));
     }
   }
 
@@ -779,7 +843,7 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
       return null;
     } on ApiException catch (e) {
       if (e.code == 'NOT_FOUND') return '这张票已失效（过期或已处理），未执行任何操作';
-      return mvFriendlyError(e);
+      return mvUserVisibleError(e);
     } catch (_) {
       return '确认票处理失败，请刷新后重试';
     }
@@ -923,8 +987,8 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
         state = state.copyWith(rulesMode: true);
         return;
       }
-      state = state.copyWith(error: mvFriendlyError(e));
-      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
+      state = state.copyWith(error: mvUserVisibleError(e));
+      _push(MvChatMsg(role: 'sys', text: mvUserVisibleError(e)));
     }
   }
 
@@ -955,7 +1019,7 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
           role: 'sys',
           text: e.code == 'NOT_READY'
               ? 'AI 编剧暂不可用（后台未就绪），已退回手动编辑——不装忙。'
-              : mvFriendlyError(e)));
+              : mvUserVisibleError(e)));
     }
   }
 
@@ -996,7 +1060,7 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
           text: '画面基调建议（${mode == 'llm' ? 'AI 监制' : '智能推荐'}）：\n$lines'));
     } on ApiException catch (e) {
       state = state.copyWith(sending: false);
-      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
+      _push(MvChatMsg(role: 'sys', text: mvUserVisibleError(e)));
     }
   }
 
@@ -1028,21 +1092,21 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       if (ticket == null) {
         _push(MvChatMsg(
             role: 'ai',
-            text: mvHuman((r['clarify'] ?? r['reply'] ?? '').toString().trim()
-                .isEmpty
-                ? '这次没有生成确认票，未执行重拍；请刷新后重试'
-                : (r['clarify'] ?? r['reply']).toString())));
+            text: mvHuman(
+                (r['clarify'] ?? r['reply'] ?? '').toString().trim().isEmpty
+                    ? '这次没有生成确认票，未执行重拍；请刷新后重试'
+                    : (r['clarify'] ?? r['reply']).toString())));
         return;
       }
       _push(MvChatMsg(
         role: 'ai',
         text: '运动改写确认票已发出，批准后剧组才会执行。'
-            '若服务端幂等命中，本次返回 0 ⚡，不会重复扣分。',
+            '若服务端幂等命中，本次不会重复执行。',
         ticket: MvTicket.fromMap(ticket),
       ));
     } on ApiException catch (e) {
       state = state.copyWith(sending: false);
-      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
+      _push(MvChatMsg(role: 'sys', text: mvUserVisibleError(e)));
     }
   }
 
@@ -1066,10 +1130,10 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
           final r = await _api.applySuggest(projectId, suggestId, ver);
           err = (r['project'] as Map?) == null ? '采纳未生效，请重试' : null;
         } on ApiException catch (e2) {
-          err = mvFriendlyError(e2);
+          err = mvUserVisibleError(e2);
         }
       } else {
-        err = mvFriendlyError(e);
+        err = mvUserVisibleError(e);
       }
     }
     await n.refresh(quiet: true);

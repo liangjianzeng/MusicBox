@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/state.dart';
 import 'creation_state.dart';
 import 'creation_ui.dart';
 import 'shell_easy.dart';
@@ -18,7 +17,6 @@ class CreatePage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final creation = ref.watch(creationProvider);
     final tier = creation.tier;
-    final credits = ref.watch(sessionProvider).credits;
     final isKeyboardOpen =
         keyboardOpen ?? MediaQuery.viewInsetsOf(context).bottom > 0;
     final shortScreen = MediaQuery.sizeOf(context).height < 640;
@@ -38,12 +36,19 @@ class CreatePage extends ConsumerWidget {
                         width: 32,
                         height: 32,
                         decoration: BoxDecoration(
-                          gradient: CreationPalette.gradient,
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              CreationPalette.cyan,
+                              CreationPalette.blue,
+                            ],
+                          ),
                           borderRadius: BorderRadius.circular(10),
                           boxShadow: [
                             BoxShadow(
                               color:
-                                  CreationPalette.violet.withValues(alpha: .24),
+                                  CreationPalette.cyan.withValues(alpha: .18),
                               blurRadius: 14,
                             ),
                           ],
@@ -67,38 +72,6 @@ class CreatePage extends ConsumerWidget {
                             fontWeight: FontWeight.w800,
                             letterSpacing: -.4,
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF2A2312),
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(
-                            color: const Color(0x33E8C77A),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.bolt_rounded,
-                                size: 14, color: Color(0xFFE8C77A)),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                '${credits?.balance ?? '--'} 积分',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Color(0xFFE8C77A),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
                       ),
                     ],

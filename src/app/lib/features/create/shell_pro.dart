@@ -434,20 +434,12 @@ class _ShellProState extends ConsumerState<ShellPro> {
             mainAxisSize: MainAxisSize.min,
             children: [
               PrimaryButton(
-                text: '生成 ${st.count} 首 · ${kCreditGenerateEach * st.count} 积分',
+                text: '生成 ${st.count} 首',
                 big: true,
                 gradient: true,
                 icon: Icons.auto_awesome_rounded,
                 loading: _busy,
                 onPressed: _busy ? null : _generate,
-              ),
-              const SizedBox(height: 7),
-              const Text(
-                '失败自动返还积分',
-                style: TextStyle(
-                  color: CreationPalette.faint,
-                  fontSize: 10,
-                ),
               ),
             ],
           ),

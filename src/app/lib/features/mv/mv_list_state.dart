@@ -60,7 +60,7 @@ class MvProjectsNotifier extends StateNotifier<MvListState> {
         cursor: next,
       );
     } on ApiException catch (e) {
-      state = state.copyWith(loading: false, error: mvFriendlyError(e));
+      state = state.copyWith(loading: false, error: mvUserVisibleError(e));
     } catch (_) {
       state = state.copyWith(loading: false, error: '加载失败，请下拉重试');
     }
@@ -109,7 +109,7 @@ class MvCandidatesNotifier extends StateNotifier<MvCandidatesState> {
       final done = items.where((w) => (w.audioUrl ?? '').isNotEmpty).toList();
       state = MvCandidatesState(items: done);
     } on ApiException catch (e) {
-      state = state.copyWith(loading: false, error: mvFriendlyError(e));
+      state = state.copyWith(loading: false, error: mvUserVisibleError(e));
     } catch (_) {
       state = state.copyWith(loading: false, error: '曲库加载失败，请重试');
     }
@@ -126,4 +126,13 @@ String mvFriendlyError(ApiException e) {
   if (e.code == 'MV_NOT_READY') return e.zh;
   if (e.code == 'NETWORK') return '网络不可达，请检查网络或服务器地址';
   return e.zh;
+}
+
+String mvUserVisibleText(String? raw) => userVisibleText(mvHuman(raw));
+
+String mvUserVisibleError(ApiException e) {
+  if (e.code == 'BUDGET_EXCEEDED' || e.code == 'CREDITS_NOT_ENOUGH') {
+    return '本次操作未完成，请稍后重试';
+  }
+  return mvUserVisibleText(mvFriendlyError(e));
 }

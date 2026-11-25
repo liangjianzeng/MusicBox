@@ -55,7 +55,7 @@ String _human(String s) {
     'prompt': '描述词',
   };
   pairs.forEach((k, v) => t = t.replaceAll(RegExp(k, caseSensitive: false), v));
-  return t;
+  return userVisibleText(t);
 }
 
 // —— 票面模型（确认面板数据源；服务端已在票响应带 ver/hash）——
@@ -222,12 +222,9 @@ class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
     }
     _setTicketStatus(t.id, MusicTicketStatus.processing);
     try {
-      final r = await _api.musicConfirmTicket(t.id, ver: t.ver, hash: t.hash);
-      final charged = r['credits_charged'];
-      final n = charged is num ? charged.toInt() : 0;
+      await _api.musicConfirmTicket(t.id, ver: t.ver, hash: t.hash);
       _setTicketStatus(t.id, MusicTicketStatus.success);
-      _push(MusicChatMsg(
-          role: 'sys', text: n > 0 ? '已批准，开始执行（扣 $n ⚡）。' : '已批准，开始执行。'));
+      _push(MusicChatMsg(role: 'sys', text: '已批准，开始执行。'));
     } on ApiException catch (e) {
       final expired = e.code == 'TICKET_UNUSABLE' || e.code == 'NOT_FOUND';
       _setTicketStatus(
@@ -298,7 +295,8 @@ class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
       'RATE_LIMITED': '操作太频繁，稍等片刻再试。',
       'BAD_REQUEST': '我还没法这样办，换个说法？',
       'FORBIDDEN': '这个操作不在助手职责范围内。',
-      'SESSION_BROKEN': '本次会话因预算护栏已暂停，请关闭后重开。',
+      'SESSION_BROKEN': '本次会话暂时不可用，请关闭后重开。',
+      'CREDITS_NOT_ENOUGH': '当前无法执行此操作，请稍后重试。',
     };
     return map[e.code] ?? _human(e.message);
   }
@@ -457,7 +455,7 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                       Expanded(
                         child: Text(
                             '当前为规则助手模式 —— AI 对话未启用；'
-                            '可用下方快捷指令，花钱的动作一律先给你确认票。',
+                            '可用下方快捷指令，需要执行的动作一律先给你确认票。',
                             style: TextStyle(
                                 fontSize: 11,
                                 color: Colors.amberAccent,
@@ -473,7 +471,7 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                         child: Text(
                           isWork
                               ? '要我帮你把这首改改？说「再欢快一点」「重出一批」「续长」「用某人格翻自」——\n'
-                                  '花钱的动作一律先给你确认票，拍板权在你。'
+                                  '需要执行的动作一律先给你确认票，拍板权在你。'
                               : '要我帮你调这张灵感卡？说「改成纯音乐」「出 2 首」「BPM 110」。\n'
                                   '点改完可直接照这版出曲。',
                           textAlign: TextAlign.center,
@@ -680,8 +678,7 @@ class _Bubble extends StatelessWidget {
                       Text(
                           ticket.status == MusicTicketStatus.processing
                               ? '处理中，请勿重复操作…'
-                              : '约 ${ticket.estCredits} ⚡ · '
-                                  '${ticket.estMinutes} 分钟 · 60 秒内有效',
+                              : '${ticket.estMinutes} 分钟 · 60 秒内有效',
                           style: const TextStyle(
                               fontSize: 11, color: Colors.white54)),
                       const SizedBox(height: 6),

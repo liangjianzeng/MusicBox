@@ -61,7 +61,7 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
         .where((e) => e is MvProgressEvent && e.projectId == widget.projectId)
         .listen((e) {
       if (e is MvProgressEvent) {
-        final note = mvHuman(e.note ?? '').trim();
+        final note = mvUserVisibleText(e.note ?? '').trim();
         if (note.isNotEmpty) {
           setState(() {
             _lastNote = note;
@@ -84,10 +84,11 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
 
   void _toast(String t) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(mvUserVisibleText(t))));
   }
 
-  // ---------- 取消项目（未拍镜全额退，账本核算如实呈现） ----------
+  // ---------- 取消项目 ----------
 
   Future<void> _cancelProject(MvProjectDetailNotifier n) async {
     final go = await showDialog<bool>(
@@ -95,8 +96,7 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
       builder: (ctx) => AlertDialog(
         title: Text('取消制作'),
         content: Text(
-          '取消后制作停止；尚未开拍的镜头预留积分会全额退回（已开拍的不退，'
-          '账本如实核算）。确定取消吗？',
+          '取消后制作停止。确定取消吗？',
           style: TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
@@ -113,11 +113,8 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
     if (!mounted) return;
     setState(() => _busy = true);
     try {
-      final (refunded, err) = await n.cancel();
-      _toast(err ??
-          (refunded != null && refunded > 0
-              ? '已取消，退回 $refunded ⚡（未拍镜全额退）'
-              : '已取消（无待退积分）'));
+      final (_, err) = await n.cancel();
+      _toast(err ?? '已取消，制作已停止');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -132,22 +129,18 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
       backgroundColor: context.mvColors.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) =>
-          _DiagnoseSheet(detail: detail, shot: shot, preselect: preselect),
+      builder: (_) => _DiagnoseSheet(shot: shot, preselect: preselect),
     );
     if (pick == null || !mounted) return;
     switch (pick.kind) {
       case _DiagKind.paid:
-        final quote = mvShotActionQuote(detail, pick.type);
-        final costText = quote == null ? '以确认卡为准' : '$quote ⚡';
         final go = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
             title: Text(pick.type == 'reshoot' ? '重拍这一镜' : '重新对口型'),
             content: Text(
               '${pick.reason.isEmpty ? '（未填原因）' : '「${pick.reason}」'}\n'
-              '将由剧组重新执行，预计扣 $costText（先扣后派单，失败自动全退）。\n'
-              '系统若自动补拍（≤2 次）一律不扣分，并会在通告板明示。',
+              '将由剧组重新执行。系统若自动补拍（≤2 次）会在通告板明示。',
               style: TextStyle(fontSize: 13, height: 1.5),
             ),
             actions: [
@@ -156,7 +149,7 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
                   child: Text('先不动')),
               FilledButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  child: Text(quote == null ? '确认提交' : '确认扣 $quote ⚡')),
+                  child: Text('确认提交')),
             ],
           ),
         );
@@ -164,18 +157,15 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
         final n = ref.read(mvProjectDetailProvider(widget.projectId).notifier);
         setState(() => _busy = true);
         try {
-          final (ok, err, charged) =
-              await n.shotJob(shot.id, pick.type, pick.reason);
+          final (ok, err, _) = await n.shotJob(shot.id, pick.type, pick.reason);
           _toast(ok
-              ? (charged > 0
-                  ? '${pick.type == 'reshoot' ? '重拍' : '口型重校'}已提交（扣 $charged ⚡）'
-                  : '已提交（幂等命中，未重复扣分）')
+              ? '${pick.type == 'reshoot' ? '重拍' : '口型重校'}已提交'
               : (err ?? '提交失败，请重试'));
         } finally {
           if (mounted) setState(() => _busy = false);
         }
       case _DiagKind.free:
-        _toast('节奏/时长是剧本层修改：回「剧本」步长按该镜调整时长，文本编辑免费。');
+        _toast('节奏/时长是剧本层修改：回「剧本」步长按该镜调整时长，文本编辑不影响已拍画面。');
       case _DiagKind.expensive:
         if (!mounted) return;
         _cancelProject(
@@ -221,7 +211,7 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
     return MvLeaveGuard(
       busy: _busy,
       message: '取消、返工或确认票仍在提交中。离开不会取消后台任务，'
-          '但可能看不到本次扣分与执行回执。确定离开吗？',
+          '但可能看不到本次执行回执。确定离开吗？',
       child: Scaffold(
         appBar: AppBar(
           title: Text(
@@ -259,7 +249,9 @@ class _MvProgressPageState extends ConsumerState<MvProgressPage> {
             ? Center(child: CircularProgressIndicator())
             : st.detail == null
                 ? MvErrorView(
-                    text: st.error ?? '暂无数据',
+                    text: mvUserVisibleText(st.error).trim().isEmpty
+                        ? '暂无数据'
+                        : mvUserVisibleText(st.error),
                     onRetry: () => ref
                         .read(
                             mvProjectDetailProvider(widget.projectId).notifier)
@@ -341,8 +333,7 @@ class _Board extends ConsumerWidget {
                       [
                         mvKindLabel(p.kind),
                         if (shots.isNotEmpty) '成片 $doneCount/${shots.length} 镜',
-                        '已用 ${p.creditsCost} ⚡',
-                        if (p.paused) '预算护栏暂停（需人工恢复）',
+                        if (p.paused) '已暂停',
                         if (p.queueMode == 'night') '夜间档',
                       ].join(' · '),
                       style:
@@ -374,8 +365,7 @@ class _Board extends ConsumerWidget {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '不扣分的自动返工：质量门未过时系统会自动补拍（≤2 次，恒免费），'
-                    '不重复计费，无需你操作。',
+                    '自动返工：质量门未过时系统会自动补拍（≤2 次），无需你操作。',
                     style: TextStyle(
                         fontSize: 12, color: context.mvInfo, height: 1.45),
                   ),
@@ -395,15 +385,14 @@ class _Board extends ConsumerWidget {
         if (p.paused) ...[
           SizedBox(height: 8),
           const MvNotice(
-              icon: Icons.pause_circle_outline,
-              text: '预算护栏已触发（超预算 120%）。可在「开机」页人工调高预算后恢复。'),
+              icon: Icons.pause_circle_outline, text: '制作已暂停，请稍后重试。'),
         ],
         if (p.status == 'failed') ...[
           SizedBox(height: 8),
           const MvNotice(
             icon: Icons.restart_alt_outlined,
             text: '本次制作未成功，但项目没有结束。可从具体镜头的「重拍」或'
-                '「运动改写」恢复，也可按原报价重新开机；确认前不会扣分。',
+                '「运动改写」恢复，也可以重新开机。',
           ),
         ],
         // 待确认票（昂贵动作拍板权在人）
@@ -543,7 +532,7 @@ class _Board extends ConsumerWidget {
               onPressed: onCancel,
               icon: Icon(Icons.cancel_presentation_outlined,
                   size: 16, color: context.mvError),
-              label: Text('取消制作（未拍镜全额退）',
+              label: Text('取消制作',
                   style: TextStyle(fontSize: 12, color: context.mvError)),
             ),
           ),
@@ -591,7 +580,7 @@ class _MiniActionChip extends StatelessWidget {
   }
 }
 
-/// 确认票卡（动作 + 报价 + 批准/拒绝；TTL/一票一次由服务端硬门）
+/// 确认票卡（动作 + 预计时长 + 批准/拒绝；TTL/一票一次由服务端硬门）
 class _TicketCard extends StatelessWidget {
   const _TicketCard({required this.ticket, required this.onResolve});
   final MvTicket ticket;
@@ -627,7 +616,7 @@ class _TicketCard extends StatelessWidget {
             ],
           ),
           SizedBox(height: 4),
-          Text('约 ${ticket.estCredits} ⚡ · ${ticket.estMinutes} 分钟 · 60 秒内有效',
+          Text('${ticket.estMinutes} 分钟 · 60 秒内有效',
               style: TextStyle(fontSize: 11.5, color: context.mvTextSecondary)),
           if (pending) ...[
             SizedBox(height: 8),
@@ -658,11 +647,6 @@ class _TicketCard extends StatelessWidget {
 
 enum _DiagKind { paid, free, expensive }
 
-String _mvQuoteText(MvProjectDetail detail, String action) {
-  final quote = mvShotActionQuote(detail, action);
-  return quote == null ? '以确认卡为准' : '$quote ⚡';
-}
-
 class _DiagPick {
   const _DiagPick(this.kind, {this.type = 'reshoot', this.reason = ''});
   final _DiagKind kind;
@@ -678,7 +662,7 @@ class _DiagItem {
 }
 
 const _diagItems = [
-  _DiagItem('不像本人', '系统会换高分角度帧重拍；自动补拍 ≤2 次不扣分',
+  _DiagItem('不像本人', '系统会更换角度帧重拍；自动补拍 ≤2 次',
       _DiagPick(_DiagKind.paid, type: 'reshoot', reason: '不像本人')),
   _DiagItem('不像在唱', '按已制曲唱段重新校对口型',
       _DiagPick(_DiagKind.paid, type: 'resync', reason: '不像在唱')),
@@ -686,14 +670,12 @@ const _diagItems = [
       _DiagPick(_DiagKind.paid, type: 'reshoot', reason: '动作不对')),
   _DiagItem('景别不对', '先在镜卡上改景别，再按新景别重拍',
       _DiagPick(_DiagKind.paid, type: 'reshoot', reason: '景别不对')),
-  _DiagItem('节奏太慢', '回剧本步改本镜时长（文本编辑免费，不动已拍画面）', _DiagPick(_DiagKind.free)),
-  _DiagItem('太贵了', '取消剩余未拍镜头（未拍全额退）或减镜', _DiagPick(_DiagKind.expensive)),
+  _DiagItem('节奏太慢', '回剧本步改本镜时长（不影响已拍画面）', _DiagPick(_DiagKind.free)),
+  _DiagItem('减少镜头', '取消剩余未拍镜头或减镜', _DiagPick(_DiagKind.expensive)),
 ];
 
 class _DiagnoseSheet extends StatelessWidget {
-  const _DiagnoseSheet(
-      {required this.detail, required this.shot, this.preselect});
-  final MvProjectDetail detail;
+  const _DiagnoseSheet({required this.shot, this.preselect});
   final MvShot shot;
   final String? preselect;
 
@@ -719,7 +701,7 @@ class _DiagnoseSheet extends StatelessWidget {
             Text(info,
                 style: TextStyle(fontSize: 11.5, color: context.mvTextMuted)),
             SizedBox(height: 4),
-            Text('你觉得哪里不对？（同镜同因自动补拍 ≤2 次且免费；再不过会转人工通道）',
+            Text('你觉得哪里不对？（同镜同因自动补拍 ≤2 次；再不过会转人工通道）',
                 style: TextStyle(
                     fontSize: 11.5,
                     color: context.mvTextSecondary,
@@ -733,7 +715,7 @@ class _DiagnoseSheet extends StatelessWidget {
                         ? Icons.build_outlined
                         : d.pick.kind == _DiagKind.free
                             ? Icons.edit_note_outlined
-                            : Icons.savings_outlined,
+                            : Icons.cancel_outlined,
                     size: 18,
                     color: context.mvTextMuted,
                   ),
@@ -747,11 +729,6 @@ class _DiagnoseSheet extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 11, color: context.mvTextMuted, height: 1.35),
                   ),
-                  trailing: d.pick.kind == _DiagKind.paid
-                      ? Text(_mvQuoteText(detail, d.pick.type),
-                          style: TextStyle(
-                              fontSize: 11, color: context.mvTextMuted))
-                      : null,
                   onTap: () => Navigator.pop(context, d.pick),
                 )),
             if (preselect != null)

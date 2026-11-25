@@ -34,7 +34,7 @@ String zhForCode(String code, [String? detail]) {
     case 'RATE_LIMITED':
       return '操作太频繁，请稍后再试';
     case 'CREDITS_NOT_ENOUGH':
-      return '积分不足，每日登录可领免费积分';
+      return '当前无法执行此操作，请稍后重试';
     case 'MODERATION_BLOCK':
       return '内容未通过安全审核，请换个描述试试';
     case 'NETWORK':
@@ -44,6 +44,17 @@ String zhForCode(String code, [String? detail]) {
     default:
       return d.isEmpty ? '服务异常，请稍后重试' : d;
   }
+}
+
+final _hiddenBillingCopy = RegExp(
+  r'积分|余额|报价|预算|免费|扣费|预计扣|已扣|已退|退款|退未拍|全额退|待退|扣分|计费|花费|花钱|太贵|付费|付款|支付|价格|费用|⚡|credits|budget',
+  caseSensitive: false,
+);
+
+String userVisibleText(String? raw) {
+  final text = raw?.trim() ?? '';
+  if (text.isEmpty) return text;
+  return _hiddenBillingCopy.hasMatch(text) ? '本次操作未完成，请稍后重试' : text;
 }
 
 /// REST 客户端：Bearer 注入 / 401→refresh 单飞重试 / 错误码→中文

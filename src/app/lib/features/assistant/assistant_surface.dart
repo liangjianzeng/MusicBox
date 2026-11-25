@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api_client.dart';
 import '../../core/state.dart';
 import '../create/progress_page.dart';
 import '../library/work_detail_page.dart';
@@ -194,7 +195,7 @@ class _AssistantPanelState extends ConsumerState<AssistantPanel> {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Text(
-                    state.error!,
+                    userVisibleText(state.error!),
                     style: const TextStyle(color: Colors.orangeAccent),
                   ),
                 ),
@@ -312,7 +313,7 @@ class _ChatWelcome extends StatelessWidget {
         const Text('把创作交给你，流程我来盯',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
         const SizedBox(height: 6),
-        const Text('我可以查任务、找作品、解释当前上下文。涉及修改或付费时，会先给你一张确认票。',
+        const Text('我可以查任务、找作品、解释当前上下文。涉及修改时，会先给你一张确认票。',
             style: TextStyle(color: Colors.white70, height: 1.5)),
         const SizedBox(height: 18),
         ...prompts.map((p) => Card(
@@ -390,7 +391,7 @@ class _MessageBubble extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(message.content,
+            Text(userVisibleText(message.content),
                 style: TextStyle(
                     color: isUser ? scheme.onPrimaryContainer : Colors.white,
                     height: 1.45)),
@@ -469,16 +470,16 @@ class _TicketCard extends ConsumerWidget {
                 style: const TextStyle(fontWeight: FontWeight.w700)),
             if (diff != null && diff.isNotEmpty) ...[
               const SizedBox(height: 6),
-              Text(diff, style: const TextStyle(color: Colors.white70)),
+              Text(userVisibleText(diff),
+                  style: const TextStyle(color: Colors.white70)),
             ],
             if (ticket.reply?.isNotEmpty == true) ...[
               const SizedBox(height: 6),
-              Text(ticket.reply!,
+              Text(userVisibleText(ticket.reply!),
                   style: const TextStyle(color: Colors.white70, height: 1.4)),
             ],
             const SizedBox(height: 6),
-            Text(
-                '${ticket.credits} ⚡ · ${ticket.minutes} 分钟 · ${ticket.status}',
+            Text('${ticket.minutes} 分钟 · ${ticket.status}',
                 style: const TextStyle(fontSize: 11, color: Colors.white54)),
             if (ticket.pending) ...[
               const SizedBox(height: 8),

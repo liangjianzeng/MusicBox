@@ -61,17 +61,23 @@ class _StepLookState extends ConsumerState<StepLook> {
     if (projectId == null) return;
     _poll = Timer.periodic(
       const Duration(seconds: 3),
-      (_) => ref
-          .read(mvProjectDetailProvider(projectId).notifier)
-          .refresh(quiet: true),
+      (_) {
+        if (!mounted) return;
+        ref
+            .read(mvProjectDetailProvider(projectId).notifier)
+            .refresh(quiet: true);
+      },
     );
     _wsSub = ref
         .read(wsClientProvider)
         .events
         .where((e) => e is MvProgressEvent && e.projectId == projectId)
-        .listen((_) => ref
-            .read(mvProjectDetailProvider(projectId).notifier)
-            .refresh(quiet: true));
+        .listen((_) {
+      if (!mounted) return;
+      ref
+          .read(mvProjectDetailProvider(projectId).notifier)
+          .refresh(quiet: true);
+    });
   }
 
   @override
@@ -125,6 +131,21 @@ class _StepLookState extends ConsumerState<StepLook> {
             .toSet() ??
         defaultSelected;
     final confirmed = character?.confirmed == true || wizard.lookConfirmed;
+    final visibleError = mvUserVisibleText(detailState.error);
+    final lookMessage = visibleError.trim().isNotEmpty
+        ? visibleError
+        : (confirmed
+            ? '定妆已拍板固化，身份参考以服务端回执为准。'
+            : frameReady
+                ? '定妆视频与角度帧已就绪，勾选后拍板固化。'
+                : castVideo.isNotEmpty
+                    ? '定妆视频已回传，角度帧机检结果生成中。'
+                    : castImages.isNotEmpty
+                        ? '定妆照已回传，点选一张后拍摄定妆视频。'
+                        : wizard.jobNote ?? '定妆照任务已提交，等待剧组出图（约 15 秒/张 ×3）。');
+    final lookBusy = detailState.error == null &&
+        !confirmed &&
+        (castImages.isEmpty || (castVideo.isNotEmpty && !frameReady));
 
     return MvLeaveGuard(
       busy: _busy,
@@ -134,10 +155,7 @@ class _StepLookState extends ConsumerState<StepLook> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         children: [
           // 诚实横幅
-          _WaitBanner(
-              text: detailState.error ??
-                  wizard.jobNote ??
-                  '定妆照任务已提交，等待剧组出图（约 15 秒/张 ×3）。'),
+          _WaitBanner(text: lookMessage, busy: lookBusy),
           SizedBox(height: 12),
           const _Label('定妆照候选 · 3 张（点选一张做主演定妆）'),
           SizedBox(height: 8),
@@ -319,31 +337,35 @@ class _Label extends StatelessWidget {
 }
 
 class _WaitBanner extends StatelessWidget {
-  const _WaitBanner({required this.text});
+  const _WaitBanner({required this.text, required this.busy});
   final String text;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
+    final color = busy ? context.mvWarning : context.mvSuccess;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: context.mvWarning.withValues(alpha: .07),
+        color: color.withValues(alpha: .07),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: context.mvWarning.withValues(alpha: .3)),
+        border: Border.all(color: color.withValues(alpha: .3)),
       ),
       child: Row(
         children: [
-          SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: context.mvWarning)),
+          if (busy)
+            SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: context.mvWarning))
+          else
+            Icon(Icons.check_circle_outline, size: 16, color: color),
           SizedBox(width: 10),
           Expanded(
               child: Text(mvHuman(text),
-                  style: TextStyle(
-                      fontSize: 12, color: context.mvWarning, height: 1.4))),
+                  style: TextStyle(fontSize: 12, color: color, height: 1.4))),
         ],
       ),
     );

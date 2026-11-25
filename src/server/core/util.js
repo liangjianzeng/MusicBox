@@ -47,7 +47,14 @@ function maskPhone(p) { p = String(p || ''); return p.length === 11 ? p.slice(0,
 function toArr(v) {
   if (v === null || v === undefined || v === '') return [];
   if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
-  return String(v).split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
+  const text = String(v).trim();
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed.map(x => String(x).trim()).filter(Boolean);
+    } catch (e) { /* 非 JSON 数组时继续按分隔字符串解析 */ }
+  }
+  return text.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
 }
 function unionArr(a, b, cap) {
   const out = [];

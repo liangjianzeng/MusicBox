@@ -42,4 +42,25 @@ describe('MV hardening unit regressions', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('review hash ignores generated IDs and timing windows but tracks script content', () => {
+    const aireview = require('../../src/server/core/mv_aireview.js');
+    const script = { shots: [{ id: 'mvs_a', seq: 1, kind: 'singing', sec: 8, lyric_from: 0, lyric_to: 1, desc: '窗边演唱', camera: '中景', cast_ids: ['mvc_a'] }], timings: [{ start: 0, end: 4 }] };
+    const before = aireview.scriptHash(script);
+    const derived = JSON.parse(JSON.stringify(script));
+    derived.shots[0].id = 'mvs_generated';
+    derived.shots[0].window = { start: 0, end: 4 };
+    derived.shots[0].storyboard_url = '2026-11/f_board.png';
+    derived.timings[0].start = 0.2;
+    assert.equal(aireview.scriptHash(derived), before, '派生身份与对齐结果不得让机审过期');
+    derived.shots[0].desc = '改成另一个画面';
+    assert.notEqual(aireview.scriptHash(derived), before, '用户面剧本变更必须让机审过期');
+  });
+
+  it('database JSON arrays are decoded instead of returned as one string', () => {
+    const U = require('../../src/server/core/util.js');
+    assert.deepEqual(U.toArr('[]'), []);
+    assert.deepEqual(U.toArr('["mvc_a","mvc_b"]'), ['mvc_a', 'mvc_b']);
+    assert.deepEqual(U.toArr('mvc_a,mvc_b'), ['mvc_a', 'mvc_b']);
+  });
 });

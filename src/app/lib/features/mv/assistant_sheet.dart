@@ -5,7 +5,6 @@ import '../../core/speech/asr_engine.dart';
 import '../../core/speech/speech_service.dart';
 import '../../core/speech/speech_settings.dart';
 import '../player/player_provider.dart';
-import 'mv_models.dart';
 import 'mv_state.dart';
 import 'widgets/mv_theme.dart';
 
@@ -206,7 +205,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
           .messages
           .where((m) => m.role != 'user')
           .toList();
-      if (replies.isNotEmpty) await _speak(mvHuman(replies.last.text));
+      if (replies.isNotEmpty)
+        await _speak(mvUserVisibleText(replies.last.text));
     }
   }
 
@@ -319,8 +319,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                     ? Padding(
                         padding: EdgeInsets.symmetric(vertical: 26),
                         child: Text(
-                          '有什么要剧组办的，说一声。\n查进度、问报价、让编剧改改都行 —— '
-                          '花钱的动作一律先给你确认票，拍板权在你。',
+                          '有什么要剧组办的，说一声。\n查进度、让编剧改改都行 —— '
+                          '需要执行的操作一律先给你确认票，拍板权在你。',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                               fontSize: 12,
@@ -535,7 +535,7 @@ class _Bubble extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Center(
-          child: Text(mvHuman(msg.text),
+          child: Text(mvUserVisibleText(msg.text),
               textAlign: TextAlign.center,
               style: TextStyle(
                   fontSize: 11, color: context.mvTextMuted, height: 1.4)),
@@ -560,7 +560,7 @@ class _Bubble extends StatelessWidget {
           crossAxisAlignment:
               me ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            Text(mvHuman(msg.text),
+            Text(mvUserVisibleText(msg.text),
                 style: TextStyle(
                     fontSize: 13, color: context.mvTextPrimary, height: 1.45)),
             if (onSpeak != null)
@@ -568,7 +568,7 @@ class _Bubble extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 1),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: () => onSpeak!(mvHuman(msg.text)),
+                  onTap: () => onSpeak!(mvUserVisibleText(msg.text)),
                   child: Tooltip(
                     message: '念给我听',
                     child: Padding(
@@ -609,13 +609,11 @@ class _Bubble extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('确认票 · ${mvHuman(msg.ticket!.action)}',
+                      Text('确认票 · ${mvUserVisibleText(msg.ticket!.action)}',
                           style: TextStyle(
                               fontSize: 12, fontWeight: FontWeight.w700)),
                       SizedBox(height: 2),
-                      Text(
-                          '约 ${msg.ticket!.estCredits} ⚡ · '
-                          '${msg.ticket!.estMinutes} 分钟 · 60 秒内有效',
+                      Text('${msg.ticket!.estMinutes} 分钟 · 60 秒内有效',
                           style: TextStyle(
                               fontSize: 11, color: context.mvTextSecondary)),
                       SizedBox(height: 6),

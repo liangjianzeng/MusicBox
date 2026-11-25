@@ -123,7 +123,9 @@ class _FakeMvApi extends Fake implements MvApiClient {
       throw ApiException(code: 'STALE', message: '版本过期', status: 409);
     }
     final payload = scriptJson?['shots'] as List? ?? const [];
-    final byId = {for (final s in MvProjectDetail.fromMap(detail).shots) s.id: s};
+    final byId = {
+      for (final s in MvProjectDetail.fromMap(detail).shots) s.id: s
+    };
     detail = {
       ...detail,
       'project': {
@@ -211,6 +213,17 @@ Future<ProviderContainer> _container(_FakeMvApi api) async {
 }
 
 void main() {
+  test('MV 外来文案保留正常信息且屏蔽费用运营话术', () {
+    expect(mvUserVisibleText('镜头已进入拍摄队列'), '镜头已进入拍摄队列');
+    expect(userVisibleText('本次需要支付 10 元'), '本次操作未完成，请稍后重试');
+    expect(mvUserVisibleText('本次消耗 40 积分，余额不足'), '本次操作未完成，请稍后重试');
+    expect(
+      mvUserVisibleError(
+          ApiException(code: 'BUDGET_EXCEEDED', message: '超出预算')),
+      '本次操作未完成，请稍后重试',
+    );
+  });
+
   test('镜卡序列化在调序和删镜后仍保留稳定 id', () {
     final a = _shot('shot-a', 1);
     final b = _shot('shot-b', 2);
@@ -329,7 +342,8 @@ void main() {
     api.failProject = true;
 
     expect(await notifier.editScript([a.copyWith(desc: '第一次修改')]), isNull);
-    expect(container.read(mvProjectDetailProvider('p1')).detail!.shots.single.desc,
+    expect(
+        container.read(mvProjectDetailProvider('p1')).detail!.shots.single.desc,
         '第一次修改');
     api.failProject = false;
     expect(await notifier.editScript([a.copyWith(desc: '第二次修改')]), isNull);
@@ -355,12 +369,14 @@ void main() {
     expect(api.shotJobCalls, 0);
     expect(api.assistantText, contains('动作不对'));
     expect(api.assistantChips.map((c) => c['type']), contains('shot'));
-    expect(api.assistantChips.firstWhere((c) => c['type'] == 'shot')['id'], 's1');
+    expect(
+        api.assistantChips.firstWhere((c) => c['type'] == 'shot')['id'], 's1');
     final msg = notifier.state.messages.last;
     expect(msg.ticket!.id, 'ticket-1');
     expect(msg.text, contains('批准后'));
     expect(msg.text, contains('幂等命中'));
-    expect(msg.text, contains('0 ⚡'));
+    expect(msg.text, isNot(contains('⚡')));
+    expect(msg.text, isNot(contains('积分')));
   });
 
   test('批准前从 detail 水合 ver/hash，拒绝不伪造凭据', () async {
@@ -410,13 +426,66 @@ void main() {
     expect(api.confirmCalls, 0);
     expect(notifier.state.messages.last.text, contains('未执行任何操作'));
     expect(
-      notifier.state.messages.firstWhere((m) => m.ticket?.id == 'missing-ticket')
+      notifier.state.messages
+          .firstWhere((m) => m.ticket?.id == 'missing-ticket')
           .ticketHandled,
       isFalse,
     );
 
     await notifier.denyTicket(MvChatMsg(role: 'ai', text: '空票'));
     expect(notifier.state.messages.last.text, contains('未执行任何操作'));
+  });
+
+  test('从服务端恢复未完成 MV 并落到正确步骤，不重复建项目', () async {
+    final api = _FakeMvApi({
+      ..._detail(shots: [_shot('s1', 1)]),
+      'project': {
+        ...(_detail()['project'] as Map),
+        'status': 'previewed',
+        'preview_url': 'http://localhost/f/preview.mp4',
+        'brief': '雨夜',
+      },
+      'characters': const [
+        {
+          'id': 'c1',
+          'project_id': 'p1',
+          'gender': 'f',
+          'source': 'ai',
+          'confirmed_at': '2026-11-25T00:00:00Z',
+        },
+      ],
+    });
+    final container = ProviderContainer(overrides: [
+      mvApiClientProvider.overrideWithValue(api),
+    ]);
+    addTearDown(container.dispose);
+    final n = container.read(mvWizardProvider('w1').notifier);
+
+    expect(await n.resumeProject('p1'), isTrue);
+    expect(n.state.project?.id, 'p1');
+    expect(n.state.workId, 'w1');
+    expect(n.state.brief, '雨夜');
+    expect(n.state.lookConfirmed, isTrue);
+    expect(n.state.step, 4);
+    final callsAfterResume = api.projectCalls;
+    expect(callsAfterResume, greaterThan(0));
+    expect(await n.submitCast(), isTrue);
+    expect(n.state.step, 2);
+    expect(api.projectCalls, callsAfterResume);
+  });
+
+  test('恢复失败保留明确错误且不会卡在加载态', () async {
+    final api = _FakeMvApi(_detail())..failProject = true;
+    final container = ProviderContainer(overrides: [
+      mvApiClientProvider.overrideWithValue(api),
+    ]);
+    addTearDown(container.dispose);
+    final n = container.read(mvWizardProvider('w1').notifier);
+
+    expect(await n.resumeProject('p1'), isFalse);
+    expect(n.state.resuming, isFalse);
+    expect(n.state.resumeError, isNotEmpty);
+    expect(n.state.project, isNull);
   });
 
   testWidgets('离开确认只弹一次，临时 canPop 后真实 pop', (tester) async {
@@ -460,7 +529,8 @@ void main() {
       status: 'failed',
       shots: [_shot('s1', 1, status: 'stale')],
     ));
-    final ws = WsClient(wsUrl: 'ws://127.0.0.1:1/ws', tokenProvider: () => null);
+    final ws =
+        WsClient(wsUrl: 'ws://127.0.0.1:1/ws', tokenProvider: () => null);
     addTearDown(ws.dispose);
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -498,8 +568,8 @@ void main() {
       ),
     ));
 
-    final gesture =
-        await tester.startGesture(tester.getCenter(find.byIcon(Icons.mic_rounded)));
+    final gesture = await tester
+        .startGesture(tester.getCenter(find.byIcon(Icons.mic_rounded)));
     await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
     expect(speech.createCalls, 1);
     await gesture.up();

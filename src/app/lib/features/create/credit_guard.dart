@@ -10,7 +10,7 @@ const kCreditExtendCover = 20; // extend / cover
 const kCreditDsp = 5; // dsp
 const kDailyQuota = 50; // 每日免费积分
 
-/// generate 前余额不足弹说明卡。返回 true=可继续。
+/// 执行前检查账户状态；费用信息暂不在界面呈现。
 Future<bool> ensureCredits(BuildContext context, WidgetRef ref, int cost,
     {String action = '生成'}) async {
   final session = ref.read(sessionProvider);
@@ -21,13 +21,8 @@ Future<bool> ensureCredits(BuildContext context, WidgetRef ref, int cost,
     context: context,
     builder: (ctx) => AlertDialog(
       icon: const Icon(Icons.co2_outlined),
-      title: const Text('积分不足'),
-      content: Text(
-        '本次「$action」约需 $cost 积分，当前余额 $bal 积分。\n\n'
-        '· 每日登录自动发放 $kDailyQuota 免费积分（当日有效，不结转）\n'
-        '· 生成失败会自动全额返还\n'
-        '· 稍后回来看看，第二天的免费积分就会刷新',
-      ),
+      title: const Text('暂时无法开始'),
+      content: Text('当前无法执行「$action」，请稍后重试。'),
       actions: [
         FilledButton(
           onPressed: () => Navigator.pop(ctx),
