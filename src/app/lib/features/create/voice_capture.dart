@@ -30,10 +30,14 @@ class HoldToTalkButton extends ConsumerStatefulWidget {
     this.maxSeconds = 60,
     this.compact = false,
     this.enabled = true,
+    this.onPartial,
   });
 
   /// 松开后回传本次采集结果（WAV + 端侧识别文本 + 换档说明）
   final ValueChanged<VoiceCaptureResult> onResult;
+
+  /// 实时/最终转写回填宿主灵感框；空串不覆盖宿主已有内容。
+  final ValueChanged<String>? onPartial;
   final int maxSeconds;
   final bool compact;
   final bool enabled;
@@ -124,7 +128,11 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
         } else {
           _session = s;
           s.partialText.listen((t) {
-            if (_isCurrent(token)) setState(() => _live = t);
+            if (!_isCurrent(token)) return;
+            final text = t.trim();
+            if (text.isEmpty) return;
+            setState(() => _live = text);
+            widget.onPartial?.call(text);
           });
           await s.start();
           if (!_isCurrent(token)) {
@@ -234,6 +242,8 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
           engine: _resolved?.engine);
     }
     if (!_isCurrent(token)) return;
+    final finalText = out.local?.text.trim() ?? '';
+    if (finalText.isNotEmpty) widget.onPartial?.call(finalText);
     setState(() => _phase = _CapturePhase.idle);
     if (_elapsed < 1 && !(out.local?.hasText ?? false)) {
       _toast('说得太短啦，按住多说几个字');

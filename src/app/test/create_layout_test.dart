@@ -40,7 +40,6 @@ Future<void> _pump(
       builder: (context, widget) => MediaQuery(
         data: MediaQuery.of(context).copyWith(
           textScaler: TextScaler.linear(scale),
-          viewInsets: EdgeInsets.only(bottom: keyboard),
         ),
         child: widget!,
       ),
@@ -204,19 +203,72 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('键盘打开后隐藏拍摄与长按动作，保留输入和生成', (tester) async {
+  testWidgets('键盘打开后三档主灵感输入框均完整位于键盘上方', (tester) async {
     const viewport = Size(390, 844);
+    const keyboardHeight = 300.0;
     await _pump(
       tester,
       size: viewport,
-      keyboard: 300,
+      keyboard: keyboardHeight,
       child: const CreatePage(keyboardOpen: true),
     );
 
+    for (final tier in ['简约', '标准', '深度']) {
+      if (tier != '简约') {
+        await tester.tap(find.text(tier));
+        await tester.pumpAndSettle();
+      }
+      final input = find.byType(TextField).first;
+      expect(input, findsOneWidget);
+      final rect = tester.getRect(input);
+      expect(
+        rect.bottom,
+        lessThanOrEqualTo(viewport.height - keyboardHeight + 0.5),
+        reason: '$tier 主灵感输入框不能伸入键盘区域',
+      );
+      expect(rect.top, greaterThanOrEqualTo(0));
+      await tester.enterText(input, '能看到输入内容');
+      await tester.pump();
+      expect(tester.widget<TextField>(input).controller!.text, '能看到输入内容');
+      expect(tester.takeException(), isNull);
+    }
+
     expect(find.byType(HoldToTalkButton), findsNothing);
     expect(find.text('拍一张'), findsNothing);
-    _expectVisible(tester, find.byType(TextField), viewport);
-    _expectVisible(tester, _primaryButton(), viewport);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击主灵感框后键盘动态弹出不会遮挡输入', (tester) async {
+    const viewport = Size(390, 844);
+    const keyboardHeight = 320.0;
+    await _pump(tester, size: viewport, child: const CreatePage());
+
+    for (final tier in ['简约', '标准', '深度']) {
+      if (tier != '简约') {
+        await tester.tap(find.text(tier));
+        await tester.pumpAndSettle();
+      }
+      final input = find.byType(TextField).first;
+      await tester.tap(input);
+      tester.view.viewInsets =
+          const FakeViewPadding(bottom: keyboardHeight);
+      tester.binding.handleMetricsChanged();
+      await tester.pumpAndSettle();
+
+      final rect = tester.getRect(input);
+      expect(
+        rect.bottom,
+        lessThanOrEqualTo(viewport.height - keyboardHeight + 0.5),
+        reason: '$tier 输入框必须随键盘动态上移',
+      );
+      await tester.enterText(input, '动态键盘可见');
+      await tester.pump();
+      expect(tester.widget<TextField>(input).controller!.text, '动态键盘可见');
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 0);
+      tester.binding.handleMetricsChanged();
+      await tester.pumpAndSettle();
+    }
     expect(tester.takeException(), isNull);
   });
 
