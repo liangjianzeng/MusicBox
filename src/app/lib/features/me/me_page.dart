@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/consent.dart';
 import '../auth/bind_phone_page.dart';
+import 'speech_settings_page.dart';
 
 /// 我的：积分余额+每日额度 / 流水 / 服务器地址 / 清缓存 / 关于+隐私条款
 class MePage extends ConsumerWidget {
@@ -159,6 +160,25 @@ class MePage extends ConsumerWidget {
                   onTap: () => _editServer(context, ref),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.memory_outlined),
+                  title: const Text('创作模型'),
+                  subtitle: Text(_musicModelLabel(ref),
+                      style: const TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _chooseMusicModel(context, ref),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.mic_external_on_outlined),
+                  title: const Text('语音能力'),
+                  subtitle: const Text('本机识别 / 朗读、模型下载与自检',
+                      style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const SpeechSettingsPage()),
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(Icons.cleaning_services_outlined),
                   title: const Text('清除缓存'),
                   subtitle: const Text('清理作品离线缓存（不影响云端作品）',
@@ -257,6 +277,58 @@ class MePage extends ConsumerWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('服务器地址已更新')));
+      // 服务器变更后刷新远程配置（可选模型/默认走向随之更新）
+      ref.read(remoteConfigProvider.notifier).refresh();
     }
+  }
+
+  String _musicModelLabel(WidgetRef ref) {
+    final sel = ref.watch(musicModelProvider);
+    final rc = ref.watch(remoteConfigProvider);
+    if (rc == null) return '跟随后台默认';
+    if (rc.musicLocked) return '后台指定（已锁定）';
+    if (sel == null || sel.isEmpty) return '跟随后台默认';
+    final hit = rc.musicModelOptions
+        .where((o) => '${o['id']}' == sel)
+        .toList();
+    return hit.isNotEmpty ? '${hit.first['label']}' : '跟随后台默认';
+  }
+
+  Future<void> _chooseMusicModel(BuildContext context, WidgetRef ref) async {
+    final rc = ref.read(remoteConfigProvider);
+    if (rc == null) {
+      await ref.read(remoteConfigProvider.notifier).refresh();
+    }
+    if (!context.mounted) return;
+    final cur = ref.read(remoteConfigProvider);
+    if (cur != null && cur.musicLocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('模型已由后台统一指定，暂不可自选')));
+      return;
+    }
+    final options = (cur?.musicModelOptions ?? const []).toList();
+    final sel = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('创作模型'),
+        children: [
+          RadioListTile<String>(
+            title: const Text('跟随后台默认'),
+            value: '',
+            groupValue: ref.read(musicModelProvider) ?? '',
+            onChanged: (v) => Navigator.pop(ctx, v),
+          ),
+          ...options.map((o) => RadioListTile<String>(
+                title: Text('${o['label']}'),
+                value: '${o['id']}',
+                groupValue: ref.read(musicModelProvider) ?? '',
+                onChanged: (v) => Navigator.pop(ctx, v),
+              )),
+        ],
+      ),
+    );
+    if (sel == null) return;
+    await ref.read(prefsProvider).setMusicModelId(sel.isEmpty ? null : sel);
+    ref.read(musicModelProvider.notifier).state = sel.isEmpty ? null : sel;
   }
 }

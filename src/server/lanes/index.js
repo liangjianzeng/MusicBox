@@ -13,12 +13,35 @@ const LANES = {
     ladder(payload) { return { ...payload }; },
   },
   intent: {
-    types: ['intent_voice', 'intent_image'],
+    // intent_text：端侧转写 / 确认页改字 → 只过理解不过 ASR，同 lane 复用（2026-11-24）
+    types: ['intent_voice', 'intent_image', 'intent_text'],
     timeoutMs: 90000,
     ladder(payload) { return { ...payload }; },
   },
   ffmpeg: {
-    types: ['transcode', 'dsp'],
+    types: ['transcode', 'dsp', 'mv_preview', 'mv_compose'],
+    timeoutMs: 120000,
+    timeouts: { mv_preview: 600000, mv_compose: 600000 }, // 架构 §3.2：mv 视频合成档 600s
+    ladder(payload) { return { ...payload }; },
+  },
+  // —— MV 二期 lanes（架构 §3.2；executor 侧 ROUTE/KNOWN_LANES 镜像登记归施工方 B）——
+  imgspark: {
+    types: ['mv_cast_image', 'mv_storyboard'], // 生图：定妆照/分镜关键帧
+    timeoutMs: 900000,                          // 900s
+    ladder(payload) { return { ...payload }; }, // steps 8→4 恒定 turbo，重试保真；同参 OOM 不重试（铁律）
+  },
+  vidspark: {
+    types: ['mv_cast_video', 'mv_shot'],        // i2v：定妆视频/拍摄
+    timeoutMs: 3600000,                         // 3600s
+    ladder(payload) { return { ...payload }; }, // 帧网格≤362/steps 恒 4/不降分辨率档——计费诚信（DEV-LADDER-PAY），不降交付维度
+  },
+  lipsync: {
+    types: ['mv_lipsync'],
+    timeoutMs: 1800000,                         // 1800s；仍败走 B-roll 降级非 fail 全片（executor 语义）
+    ladder(payload) { return { ...payload }; },
+  },
+  align: {
+    types: ['mv_align'],                        // 歌词↔时间轴对齐（纯 CPU sidecar）
     timeoutMs: 120000,
     ladder(payload) { return { ...payload }; },
   },
@@ -32,7 +55,13 @@ for (const [laneName, lane] of Object.entries(LANES)) {
 function laneOf(type) { return typeIndex.get(type) || 'ffmpeg'; }
 function lane(name) { return LANES[name]; }
 function allLanes() { return Object.keys(LANES); }
-function timeoutOf(type) { const l = LANES[laneOf(type)]; return l ? l.timeoutMs : 120000; }
+// 单 job 期望时限：per-type 覆盖优先（mv_preview/mv_compose 600s），否则 lane 级 timeoutMs
+function timeoutOf(type) {
+  const l = LANES[laneOf(type)];
+  if (!l) return 120000;
+  if (l.timeouts && l.timeouts[type] != null) return l.timeouts[type];
+  return l.timeoutMs;
+}
 
 // 重试用降档后的 payload
 function ladderNext(type, payload, attempts) {

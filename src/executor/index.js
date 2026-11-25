@@ -1,6 +1,7 @@
 // MusicBox 执行器 daemon —— 注册 lanes → long-poll 领单 → 分发执行 → 进度/回传/心跳 → 优雅退出（2026-11-23）
 // 启动：node src/executor/index.js --api http://127.0.0.1:7900 --token <executorToken> --lanes music,intent,ffmpeg
-// 常用环境：EXECUTOR_MOCK=1（music/intent 走 mock）；MB_MUSIC_URL/MB_ASR_URL/MB_LLM_VLM_URL/MB_VAR_DIR/MB_FFMPEG
+// 常用环境：EXECUTOR_MOCK=1（music/intent/mv_* 走 mock 真产物）；MB_MUSIC_URL/MB_ASR_URL/MB_LLM_VLM_URL/MB_VAR_DIR/MB_FFMPEG
+// MV（二期）lane：imgspark/vidspark/lipsync/align（+ffmpeg 复用）；MB_COMFY_URL/MB_LIPSYNC_URL/MB_FACEGATE_URL/MB_MV_ASR_URL
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -32,10 +33,12 @@ function parseArgs(argv) {
 function loadConfig() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log('用法: node src/executor/index.js --api <API地址> --token <执行器令牌> --lanes music,intent,ffmpeg\n' +
+    console.log('用法: node src/executor/index.js --api <API地址> --token <执行器令牌> --lanes music,intent,ffmpeg,imgspark,vidspark,lipsync,align\n' +
       '环境: EXECUTOR_MOCK=1 | MB_API_URL MB_EXECUTOR_TOKEN MB_LANES MB_VAR_DIR\n' +
       '      MB_MUSIC_URL(默认 http://127.0.0.1:8190) MB_ASR_URL(默认 http://127.0.0.1:8191)\n' +
-      '      MB_LLM_VLM_URL(默认 http://127.0.0.1:8193/v1) MB_LLM_VLM_MODEL MB_FFMPEG MB_FFPROBE');
+      '      MB_LLM_VLM_URL(默认 http://127.0.0.1:8193/v1) MB_LLM_VLM_MODEL MB_FFMPEG MB_FFPROBE\n' +
+      '      MV(二期): MB_COMFY_URL(默认 http://127.0.0.1:8188，只观测不干预) MB_LIPSYNC_URL(默认 :8390)\n' +
+      '               MB_FACEGATE_URL(默认 :8395) MB_MV_ASR_URL(默认 :8391)');
     process.exit(0);
   }
   const lanes = String(args.lanes || process.env.MB_LANES || 'music,intent,ffmpeg')
@@ -49,6 +52,12 @@ function loadConfig() {
     execTmp: path.join(varDir, 'exec'),
     musicUrl: process.env.MB_MUSIC_URL || 'http://127.0.0.1:8190',
     asrUrl: process.env.MB_ASR_URL || 'http://127.0.0.1:8191',
+    // MV（二期）：ComfyUI 共宿主只读观测+提交（架构 §1.2）；83xx 为 MusicBox 自有 worker 段
+    comfyUrl: process.env.MB_COMFY_URL || 'http://127.0.0.1:8188',
+    lipsyncUrl: process.env.MB_LIPSYNC_URL || 'http://127.0.0.1:8390',
+    facegateUrl: process.env.MB_FACEGATE_URL || 'http://127.0.0.1:8395',
+    mvAsrUrl: process.env.MB_MV_ASR_URL || 'http://127.0.0.1:8391',
+    mvFontFile: process.env.MB_MV_FONT || '', // compose 叠层 drawtext 字体（可选，Spark Linux 默认 fontconfig 即可）
     llmVlmUrl: process.env.MB_LLM_VLM_URL || 'http://127.0.0.1:8193/v1',
     llmVlmModel: process.env.MB_LLM_VLM_MODEL || 'qwen38-fp4',
     ffmpegBin: process.env.MB_FFMPEG || 'ffmpeg',
@@ -59,15 +68,37 @@ function loadConfig() {
 }
 
 const cfg = loadConfig();
+let serverNodes = null;
+let nodeRefresh = null;
 function log(msg) { console.log(new Date().toISOString().slice(11, 19) + ' [执行器] ' + msg); }
 
-// type → lane 归属（music 家族复用音乐通道；intent/ffmpeg 一一对应）
+// 应用服务端下发的节点配置（后台可配，覆盖环境变量默认；env 仍作兜底）
+function applyServerNodes(nodes) {
+  if (!nodes || typeof nodes !== 'object') return;
+  const map = {
+    music: ['musicUrl'], asr: ['asrUrl'], llm: ['llmVlmUrl', 'llmVlmModel'],
+    comfy: ['comfyUrl'], lipsync: ['lipsyncUrl'], facegate: ['facegateUrl'], mv_asr: ['mvAsrUrl'],
+  };
+  for (const kind of Object.keys(map)) {
+    const n = nodes[kind]; if (!n) continue;
+    const keys = map[kind];
+    if (n.endpoint && keys[0]) cfg[keys[0]] = n.endpoint;
+    if (n.engine && keys[1]) cfg[keys[1]] = n.engine;
+  }
+}
+
+// type → lane 归属（music 家族复用音乐通道；intent/ffmpeg 一一对应；mv_* 为二期 MV 五 lane，架构 §3.2）
 const ROUTE = {
   music: 'music', adjust: 'music', extend: 'music', cover: 'music', variation: 'music',
-  intent_voice: 'intent', intent_image: 'intent',
+  intent_voice: 'intent', intent_image: 'intent', intent_text: 'intent',
   transcode: 'ffmpeg', dsp: 'ffmpeg',
+  mv_cast_image: 'imgspark', mv_storyboard: 'imgspark',
+  mv_cast_video: 'vidspark', mv_shot: 'vidspark',
+  mv_lipsync: 'lipsync',
+  mv_align: 'align',
+  mv_preview: 'ffmpeg', mv_compose: 'ffmpeg',
 };
-const KNOWN_LANES = ['music', 'intent', 'ffmpeg'];
+const KNOWN_LANES = ['music', 'intent', 'ffmpeg', 'imgspark', 'vidspark', 'lipsync', 'align'];
 cfg.lanes = cfg.lanes.filter((l) => KNOWN_LANES.indexOf(l) !== -1);
 
 // ---------- API 客户端（全部带 X-Executor-Token） ----------
@@ -93,13 +124,22 @@ function pickRunner(type) {
   const intent = require('./lanes/intent.js');
   const ffmpeg = require('./lanes/ffmpeg.js');
   const mock = require('./lanes/mock.js');
+  const mv = require('./lanes/mv.js');
   switch (type) {
     case 'music': case 'adjust': case 'extend': case 'cover': case 'variation':
       return cfg.mock ? mock.runMusic : music.runMusic;
     case 'intent_voice': return cfg.mock ? mock.runVoice : intent.runVoice;
     case 'intent_image': return cfg.mock ? mock.runImage : intent.runImage;
+    // 文本线不需要 ASR/LLM 也能诚实兜底，故 mock 模式同样走真实现
+    case 'intent_text': return intent.runText;
     case 'transcode': return ffmpeg.runTranscode;
     case 'dsp': return ffmpeg.runDsp;
+    // MV 家族（二期）：五 lane 全部汇聚到 lanes/mv.js 的分支表（mock 真产物桩 / 真 mode lib/comfy.js）
+    case 'mv_cast_image': case 'mv_storyboard':
+    case 'mv_cast_video': case 'mv_shot':
+    case 'mv_lipsync': case 'mv_align':
+    case 'mv_preview': case 'mv_compose':
+      return mv.runMvJob;
     default: return null;
   }
 }
@@ -199,7 +239,8 @@ async function registerWithRetry() {
     try {
       const r = await apiPost('/executor/register', { lanes: cfg.lanes, version: VERSION }, 15000);
       if (r && Number(r.poll_interval_ms) > 0) cfg.pollIntervalMs = Number(r.poll_interval_ms);
-      log('已接入调度：执行器 ' + ((r && r.executor_id) || '?') + ' 通道=' + cfg.lanes.join(',') + (cfg.mock ? '（mock）' : ''));
+      if (r && r.nodes) { serverNodes = r.nodes; applyServerNodes(r.nodes); }
+      log('已接入调度：执行器 ' + ((r && r.executor_id) || '?') + ' 通道=' + cfg.lanes.join(',') + (cfg.mock ? '（mock）' : '') + (serverNodes ? ' 节点=' + Object.keys(serverNodes).join(',') : ''));
       return;
     } catch (e) {
       attempt++;
@@ -216,6 +257,14 @@ async function main() {
   log('启动：API=' + cfg.api + ' 通道=' + cfg.lanes.join(',') + ' 数据目录=' + cfg.varDir + (cfg.mock ? ' [MOCK]' : ''));
   if (!cfg.token) log('警告：未提供执行器令牌，调度端可能拒绝');
   await registerWithRetry();
+  // 周期刷新节点配置（后台可配即时生效；每 30s 复用 register 顺带刷新 last_seen）
+  nodeRefresh = setInterval(async () => {
+    if (stopping) return;
+    try {
+      const r = await apiPost('/executor/register', { lanes: cfg.lanes, version: VERSION }, 10000);
+      if (r && r.nodes) { serverNodes = r.nodes; applyServerNodes(r.nodes); }
+    } catch (e) { /* 网络异常：保持当前节点 */ }
+  }, 30000);
   let netStreak = 0;
   const pollAbort = { current: null };
   pollAbortRef = pollAbort;
@@ -245,6 +294,7 @@ process.on('SIGINT', () => {
   if (stopping) { log('再次收到中断，强制退出'); process.exit(1); }
   stopping = true;
   log('收到退出信号，等待当前任务收尾后退出（再按一次强制退出）');
+  if (nodeRefresh) clearInterval(nodeRefresh);
   if (pollAbortRef && pollAbortRef.current) { try { pollAbortRef.current(); } catch (e) { /* ignore */ } } // 立刻断开挂起的 long-poll
 });
 process.on('SIGTERM', () => { stopping = true; });

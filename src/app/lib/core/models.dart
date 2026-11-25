@@ -13,6 +13,21 @@ List<String> _asStrList(dynamic v) {
   return const [];
 }
 
+/// 服务端 created_at 是 ISO 字符串，本地缓存里存的是秒级 int：两种都吃。
+/// 以前用 _asInt 硬转 ISO → 恒为 0，曲库与「曲库 · 暂存」的时间显示全塌成 1970。
+int _asEpochSec(dynamic v) {
+  if (v == null) return 0;
+  int norm(int n) => n > 100000000000 ? n ~/ 1000 : n; // 13 位当毫秒处理
+  if (v is int) return norm(v);
+  if (v is num) return norm(v.toInt());
+  final s = '$v'.trim();
+  if (s.isEmpty) return 0;
+  final n = int.tryParse(s);
+  if (n != null) return norm(n);
+  final dt = DateTime.tryParse(s); // 2026-11-24T10:12:33.000Z
+  return dt == null ? 0 : dt.millisecondsSinceEpoch ~/ 1000;
+}
+
 class AppUser {
   AppUser(
       {required this.id,
@@ -163,7 +178,7 @@ class Work {
       visibility: '${m['visibility'] ?? 'private'}',
       audioUrl: m['audio_url']?.toString(),
       waveformUrl: m['waveform_url']?.toString(),
-      createdAt: _asInt(m['created_at']),
+      createdAt: _asEpochSec(m['created_at']),
     );
   }
 
@@ -299,6 +314,8 @@ class Intent {
     required this.confidence,
     this.questions = const [],
     this.answers = const [],
+    this.sourceText,
+    this.degraded = false,
     required this.createdAt,
   });
 
@@ -313,6 +330,14 @@ class Intent {
   final double confidence;
   final List<IntentQuestion> questions;
   final List<IntentAnswer> answers;
+
+  /// 用户到底说了什么（语音=逐字转写，文本=原话，图片=画面理解）。
+  /// 服务端没给就是 null —— 前端不许拿场景描述之类的顶替。
+  final String? sourceText;
+
+  /// 这次理解是不是本地词典兜底出来的（识别/理解服务没起来）。
+  /// true 时 UI 必须明说，不能装作听懂了。
+  final bool degraded;
   final int createdAt;
 
   bool get ready => status == 'ready';
@@ -340,22 +365,34 @@ class Intent {
             .map((e) =>
                 IntentAnswer(qIdx: _asInt(e['q_idx']), optionIdx: _asInt(e['option_idx'])))
             .toList(),
-        createdAt: _asInt(m['created_at']),
+        sourceText: m['source_text'] == null ? null : '${m['source_text']}',
+        degraded: _asInt(m['degraded']) == 1,
+        createdAt: _asEpochSec(m['created_at']),
       );
 
-  /// 本地修改（意图卡“可点改”：mood 等展示层微调）
-  Intent copyWith({List<String>? mood, String? vocal}) => Intent(
+  /// 本地乐观修改（服务端 PATCH 回包前的展示层状态；真正的持久化走
+  /// PATCH /v1/intent/:id，见 ApiClient.intentPatch / 契约 v2.19）
+  Intent copyWith({
+    List<String>? mood,
+    String? vocal,
+    List<String>? genreHypotheses,
+    String? sceneDesc,
+    String? durationHint,
+  }) =>
+      Intent(
         id: id,
         sourceKind: sourceKind,
         status: status,
         mood: mood ?? this.mood,
-        sceneDesc: sceneDesc,
-        genreHypotheses: genreHypotheses,
+        sceneDesc: sceneDesc ?? this.sceneDesc,
+        genreHypotheses: genreHypotheses ?? this.genreHypotheses,
         vocal: vocal ?? this.vocal,
-        durationHint: durationHint,
+        durationHint: durationHint ?? this.durationHint,
         confidence: confidence,
         questions: questions,
         answers: answers,
+        sourceText: sourceText,
+        degraded: degraded,
         createdAt: createdAt,
       );
 }
@@ -379,7 +416,7 @@ class Persona {
         name: '${m['name'] ?? '无名音色'}',
         isPublic: m['is_public'] == true,
         useCount: _asInt(m['use_count']),
-        createdAt: _asInt(m['created_at']),
+        createdAt: _asEpochSec(m['created_at']),
       );
 }
 

@@ -29,6 +29,18 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // 端侧语音：sherpa 的平台 AAR 自带 4 个 ABI 的 .so（合计 ≈104MB），
+        // 本项目只发 arm64 真机，其余三个纯浪费安装体积。
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            // .so 存压缩会让 Flutter 的 ClassLoader 取不到库（端侧语音实测踩过的坑）
+            useLegacyPackaging = true
+        }
     }
 
     signingConfigs {

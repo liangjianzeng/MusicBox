@@ -81,6 +81,187 @@ CREATE TABLE executors(
     version: 2, // work 形状含 rating（PATCH /v1/works/:id 评分 1-5）
     sql: `ALTER TABLE works ADD COLUMN rating INT DEFAULT 0;`,
   },
+  {
+    // v3 · MV 二期表（架构 design §5 DDL，2026-11-24）：projects/characters/shots/takes/tickets/chat
+    // IF NOT EXISTS 保证重跑幂等；不改动 v1 表与数据
+    version: 3,
+    sql: `
+CREATE TABLE IF NOT EXISTS mv_projects(
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, work_id TEXT,
+  title TEXT, kind TEXT,                                        -- vocal|instrumental（lyrics 判定）
+  status TEXT,                                                  -- drafting|casting|scripting|previewed|shooting|composing|ready|failed|canceled
+  brief TEXT, cast_json TEXT, script_json TEXT, script_ver INT DEFAULT 1, suggest_json TEXT,
+  est_json TEXT, est_ver TEXT,
+  budget_credits INT DEFAULT 1200, paused INT DEFAULT 0,
+  preview_url TEXT, video_url TEXT, cover_url TEXT, duration_sec REAL,
+  credits_cost INT DEFAULT 0, credits_refunded INT DEFAULT 0,
+  ai_label INT DEFAULT 1, license_model TEXT, license_usage TEXT,
+  queue_mode TEXT DEFAULT 'normal',                             -- normal|night
+  created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS mv_characters(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, gender TEXT, name TEXT,
+  source TEXT,                                                  -- upload|ai|reuse
+  portrait_upload TEXT,                                         -- uploads.kind='mv_portrait' 72h TTL
+  cast_image_url TEXT, cast_video_url TEXT,
+  viewrefs_json TEXT,                                           -- 拍板固化帧库 [{url,score,sel}]
+  confirmed_at TEXT);
+CREATE TABLE IF NOT EXISTS mv_shots(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, seq INT, kind TEXT, sec REAL,
+  lyric_from INT, lyric_to INT,
+  desc TEXT, camera TEXT, cast_ids TEXT,
+  storyboard_url TEXT, first_frame_url TEXT,
+  status TEXT,                                                  -- draft|boardReady|clipReady|synced|locked|stale
+  best_take_id TEXT, rerolls INT DEFAULT 0,
+  reason_history TEXT, flags_json TEXT);
+CREATE TABLE IF NOT EXISTS mv_takes(
+  id TEXT PRIMARY KEY, shot_id TEXT NOT NULL, job_id TEXT,
+  engine_tier TEXT DEFAULT 'quality', video_url TEXT,
+  lipsynced INT DEFAULT 0, sync_score REAL, face_score REAL,
+  origin TEXT DEFAULT 'auto',                                    -- auto|system_auto|user_reshoot
+  ai_label INT DEFAULT 1, created_at TEXT);
+CREATE TABLE IF NOT EXISTS mv_tickets(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, user_id TEXT, action TEXT, args_json TEXT,
+  est_credits INT, est_minutes INT, hash TEXT, ver TEXT,
+  status TEXT DEFAULT 'pending',                                 -- pending|consumed|expired|denied
+  ttl_expire_at TEXT, created_at TEXT, consumed_at TEXT);
+CREATE TABLE IF NOT EXISTS mv_chat_sessions(
+  id TEXT PRIMARY KEY, project_id TEXT, user_id TEXT,
+  status TEXT DEFAULT 'open',                                   -- open|broken（预算熔断）
+  ctx_json TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS mv_chat_messages(
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT, content TEXT,
+  meta_json TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_mv_shots_project ON mv_shots(project_id, seq);
+CREATE INDEX IF NOT EXISTS idx_mv_takes_shot ON mv_takes(shot_id);
+CREATE INDEX IF NOT EXISTS idx_mv_tickets_status ON mv_tickets(status, ttl_expire_at);
+CREATE INDEX IF NOT EXISTS idx_mv_projects_user ON mv_projects(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mv_characters_project ON mv_characters(project_id);
+`,
+  },
+  {
+    // v4 · MV wave-2（契约 v2.8/v2.3）：定妆候选与抽帧落角色（cast/confirm 前的候选面，机检写入）
+    version: 4,
+    sql: `
+ALTER TABLE mv_characters ADD COLUMN cast_images_json TEXT;
+ALTER TABLE mv_characters ADD COLUMN frames_json TEXT;
+`,
+  },
+  {
+    // v5 · 模型节点后台管理（2026-11-24）：节点可后台配置，不再写死 config.js
+    // model_nodes：音乐/图像/视频/MV/LLM/ASR 等生成端点；model_defaults：各类型默认走向+locked
+    version: 5,
+    sql: `
+CREATE TABLE IF NOT EXISTS model_nodes(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,              -- music|asr|llm|comfy|lipsync|facegate|mv_asr
+  engine TEXT NOT NULL,            -- ace-step-1.5 / qwen38-fp4 / sensevoice / comfy ...
+  endpoint TEXT NOT NULL,
+  priority INT DEFAULT 100,        -- 越小越优先
+  weight REAL DEFAULT 1,           -- 同优先级内负载均衡权重
+  enabled INT DEFAULT 1,
+  status TEXT DEFAULT 'unknown',   -- healthy|unhealthy|unknown（心跳/探测刷新）
+  last_seen TEXT, updated_at TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_model_nodes_kind ON model_nodes(kind, enabled);
+CREATE TABLE IF NOT EXISTS model_defaults(
+  kind TEXT PRIMARY KEY,          -- music|asr|llm|comfy|lipsync|facegate|mv_asr
+  node_id TEXT NOT NULL,          -- 默认指向 model_nodes.node_id
+  locked INT DEFAULT 0,           -- 1=锁定，APK 不可自行覆盖
+  updated_at TEXT, created_at TEXT);
+`,
+  },
+  {
+    // v6 · 运营后台管理员（2026-11-24）：独立于用户体系
+    version: 6,
+    sql: `
+CREATE TABLE IF NOT EXISTS admins(
+  id TEXT PRIMARY KEY, username TEXT UNIQUE,
+  password_hash TEXT, status TEXT DEFAULT 'active',
+  last_seen TEXT, created_at TEXT);
+`,
+  },
+  {
+    // v7 · 管理员登录令牌（2026-11-24）：登录时写入随机 token，请求按 token 校验
+    version: 7,
+    sql: `ALTER TABLE admins ADD COLUMN token TEXT;`,
+  },
+  {
+    // v8 · 运营配置中心（2026-11-24）：定价/版本策略/公告热生效 + 功能开关灰度 + 运营事件可回滚
+    version: 8,
+    sql: `
+CREATE TABLE IF NOT EXISTS app_config(
+  version INTEGER PRIMARY KEY,
+  blob TEXT NOT NULL,                    -- 整份运营配置快照（定价/版本策略/公告/审核开关）
+  changed_by TEXT, reason TEXT,
+  created_at TEXT);
+CREATE TABLE IF NOT EXISTS feature_flags(
+  key TEXT PRIMARY KEY,
+  enabled INT DEFAULT 0,
+  grayscale REAL DEFAULT 0,              -- 0..1 放量比例（enabled=1 时生效）
+  updated_at TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_feature_flags_key ON feature_flags(key);
+CREATE TABLE IF NOT EXISTS ops_events(
+  id TEXT PRIMARY KEY, kind TEXT, actor TEXT,
+  target TEXT, before TEXT, after TEXT,
+  created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_ops_events_kind ON ops_events(kind, created_at);
+`,
+  },
+  {
+    // v9 · 模型节点真实元数据（2026-11-24）：可读名称/说明/来源 + 探测时间与原因，后台一眼看出是不是真节点
+    version: 9,
+    sql: `
+ALTER TABLE model_nodes ADD COLUMN label TEXT;          -- 运营可读名称，如「口型重绘 · EchoMimicV3-Flash」
+ALTER TABLE model_nodes ADD COLUMN note TEXT;           -- 归属与用途说明（宿主/进程/端口纪律）
+ALTER TABLE model_nodes ADD COLUMN source TEXT DEFAULT 'manual'; -- seed=按部署默认播种 / manual=后台新增
+ALTER TABLE model_nodes ADD COLUMN last_probe_at TEXT;  -- 最后一次探测时间
+ALTER TABLE model_nodes ADD COLUMN last_probe_msg TEXT; -- 最后一次探测结果原因（HTTP 200 / ECONNREFUSED / timeout）
+`,
+  },
+  {
+    // v10 · 跨模块助手门面（契约 v3.1 / 架构 l2，2026-11-24）：scope 化通用会话/消息/确认票，
+    //      供音乐助手等新 scope 使用；MV 沿用既有 mv_chat_*/mv_tickets，本迁移不触碰 MV 表（V13/V16 零回归）。
+    version: 10,
+    sql: `
+CREATE TABLE IF NOT EXISTS chat_sessions(
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,                    -- 'music'（mv 未来可收敛；当前 mv 仍用 mv_chat_sessions）
+  subject_type TEXT NOT NULL,             -- 'work' | 'intent'
+  subject_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'open',    -- open | broken（熔断）
+  ctx_json TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_scope ON chat_sessions(scope,subject_id,user_id);
+CREATE TABLE IF NOT EXISTS chat_messages(
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL,                     -- result（只记已执行结果摘要，不记原始指令全文）
+  content TEXT, meta_json TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_sess ON chat_messages(session_id);
+CREATE TABLE IF NOT EXISTS chat_tickets(
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  action TEXT NOT NULL, args_json TEXT NOT NULL,
+  est_credits INT DEFAULT 0, est_minutes INT DEFAULT 0,
+  hash TEXT NOT NULL, ver TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | confirmed | executed | expired | denied
+  ttl_expire_at TEXT, created_at TEXT NOT NULL, consumed_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_chat_tickets_scope ON chat_tickets(scope,subject_type,subject_id,status,ttl_expire_at);
+`,
+  },
+  {
+    // v11 · 意图卡诚实化（2026-11-24）：转写逐字与「是否兜底」必须可回溯。
+    //      此前 ASR 挂了也照样报「意图卡已生成」（result.fallback=true 但库里无痕），
+    //      用户看到的是「不理解，然后什么都没了」。现在：
+    //      · source_text：语音=转写逐字；文本=用户原文；图片=图片理解摘要；
+    //      · degraded：1=识别没起来、走本地词典兜底（前端必须显式告诉用户）。
+    version: 11,
+    sql: `
+ALTER TABLE intent_cards ADD COLUMN source_text TEXT;
+ALTER TABLE intent_cards ADD COLUMN degraded INT DEFAULT 0;
+`,
+  },
 ];
 
 function init() {
@@ -222,6 +403,10 @@ function intentOf(r) {
     confidence: r.confidence == null ? 0 : r.confidence,
     questions: U.jparse(r.questions, []) || [],
     answers: U.jparse(r.answers, []) || [],
+    // 诚实化（v11）：用户到底说了什么 / 这次理解是不是词典兜底出来的。
+    // 语音=转写逐字，文本=用户原文，图片=画面理解摘要；拿不到就 null，前端不许编。
+    source_text: r.source_text == null ? null : String(r.source_text),
+    degraded: r.degraded ? 1 : 0,
     created_at: r.created_at,
   };
 }

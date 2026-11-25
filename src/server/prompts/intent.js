@@ -2,6 +2,7 @@
 'use strict';
 const config = require('../config');
 const U = require('../core/util');
+const M = require('../core/modelnodes');
 const dict = require('./dictionary');
 
 const SYSTEM_PROMPT = [
@@ -17,8 +18,10 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 // —— OpenAI 兼容单端点调用（DGX 托管多模态，文本+图像同一 /chat/completions）——
+// 端点/模型名走运行时节点解析（后台可配，不写死）；空表或节点失效时回退 config 默认值。
 async function chatCompletion(messages, timeoutMs) {
-  const url = String(config.llmVlmUrl).replace(/\/$/, '') + '/chat/completions';
+  const node = M.resolveNode('llm') || { endpoint: config.llmVlmUrl, engine: config.llmVlmModel };
+  const url = String(node.endpoint).replace(/\/$/, '') + '/chat/completions';
   const tmo = timeoutMs || config.llmTimeoutMs;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), tmo);
@@ -27,7 +30,7 @@ async function chatCompletion(messages, timeoutMs) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // 思考模型（qwen38-fp4）：答案可能整体落在 reasoning，content 为 null；max_tokens 须给推理留量
-      body: JSON.stringify({ model: config.llmVlmModel, messages, temperature: 0.3, max_tokens: 3000, stream: false }),
+      body: JSON.stringify({ model: node.engine || config.llmVlmModel, messages, temperature: 0.3, max_tokens: 3000, stream: false }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw new U.ApiError('INTERNAL', '后台理解服务不可用(' + res.status + ')');
@@ -121,7 +124,7 @@ function fallbackCompile({ kind, input, payload }) {
 
 // 编译入口：LLM 优先，失败→词典兜底（永不抛错中断流程）
 async function compileIntent({ kind, input, payload }) {
-  const userParts = [`来源：${kind === 'voice' ? '语音转写' : '图像场景'}`];
+  const userParts = [`来源：${kind === 'voice' ? '语音转写' : (kind === 'text' ? '用户原话' : '图像场景')}`];
   if (input && input.text) userParts.push('转写文本：' + input.text);
   if (input && input.emotion) userParts.push('情绪标签：' + input.emotion);
   if (input && Array.isArray(input.events) && input.events.length) userParts.push('音频事件：' + input.events.join(','));

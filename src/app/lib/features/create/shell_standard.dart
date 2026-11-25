@@ -9,6 +9,8 @@ import 'credit_guard.dart';
 import 'creation_state.dart';
 import 'intent_flow_page.dart';
 import 'progress_page.dart';
+import 'shelf_store.dart';
+import 'transcript_confirm_page.dart';
 import 'voice_capture.dart';
 
 /// 标准级：意图卡 + 全部澄清题（选项 chips，推荐高亮，可跳过）
@@ -35,17 +37,25 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
-  Future<void> _onVoice(String path) async {
-    setState(() => _busy = true);
-    try {
-      final id = await ref.read(apiClientProvider).intentVoice(path);
-      ref.read(creationProvider.notifier).setIntent(id);
-    } on ApiException catch (e) {
-      _toast(e.zh);
-    } catch (_) {
-      _toast('上传失败，请重试');
-    } finally {
-      if (mounted) setState(() => _busy = false);
+  Future<void> _onVoice(VoiceCaptureResult cap) async {
+    if (!cap.hasAnything) {
+      _toast(cap.local?.error ?? '没听清，再说一遍');
+      return;
+    }
+    if (!mounted) return;
+    final exit = await Navigator.of(context).push<ConfirmExit>(
+      MaterialPageRoute(
+          builder: (_) => TranscriptConfirmPage(
+              capture: cap, easy: false, autoOpenFlow: false)),
+    );
+    if (!mounted) return;
+    if (exit?.kind == kConfirmIntent && exit!.text.isNotEmpty) {
+      ref.read(creationProvider.notifier).setIntent(exit.text);
+    } else if (exit?.kind == kConfirmTyped && exit!.text.isNotEmpty) {
+      _prompt.text = exit.text;
+      _toast('已填进「一句话」，可以直接改');
+    } else if (exit?.kind == kConfirmRedo) {
+      _toast('好，再按住说一次');
     }
   }
 
@@ -72,7 +82,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
         if (st.genre != null) st.genre!,
         if (st.instrumental) '纯音乐',
       ];
-      final r = await ref.read(apiClientProvider).generate({
+      final body = <String, dynamic>{
         'mode': 'simple',
         'prompt': _prompt.text.trim(),
         'mood': st.mood.join(','),
@@ -80,9 +90,31 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
         'sec': st.sec,
         'count': 3,
         if (st.personaId != null) 'persona_id': st.personaId,
-      });
+      };
+      final model = ref.read(musicModelProvider);
+      final r = await ref.read(apiClientProvider).generate(body, model: model);
       if (!mounted) return;
-      ProgressPage.push(context, '${r['job_id']}');
+      ProgressPage.push(
+        context,
+        '${r['job_id']}',
+        brief: TaskBrief.fromCreation(
+          st,
+          prompt: _prompt.text.trim(),
+          tags: tags,
+          count: 3,
+          personaName: st.personaId == null ? null : '已选人格',
+        ).copyLike(sourceLabel: '轻参数直接生成'),
+        plannedCount: 3,
+        onRetry: () async {
+          try {
+            final rr =
+                await ref.read(apiClientProvider).generate(body, model: model);
+            return '${rr['job_id']}';
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     } catch (_) {
@@ -131,7 +163,8 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
           IntentFlowPanel(
             intentId: st.intentId!,
             easy: false,
-            onGenerated: (jobId) => ProgressPage.push(context, jobId),
+            onGenerated: (jobId, brief, retry) => ProgressPage.push(context, jobId,
+                brief: brief, plannedCount: 3, onRetry: retry),
           ),
           const Divider(height: 32),
         ],

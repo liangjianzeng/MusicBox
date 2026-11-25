@@ -1,6 +1,7 @@
 // 模型解析冒烟测试（不依赖网络）
 import 'package:flutter_test/flutter_test.dart';
 import 'package:musicbox/core/models.dart';
+import 'package:musicbox/features/create/shelf_store.dart';
 
 void main() {
   test('Work 解析与缓存序列化', () {
@@ -68,5 +69,70 @@ void main() {
     final text = sp.toShareText(title: 't');
     expect(text.contains('internal-x'), isFalse);
     expect(text.contains('Seed：7'), isTrue);
+  });
+
+  test('时间戳解析：服务端 ISO 字符串不再塌成 0（曲库/暂存架时间显示）', () {
+    final iso = Work.fromMap({
+      'id': 'w1', 'title': 't', 'status': 'draft',
+      'created_at': '2026-11-24T10:12:33.000Z',
+    });
+    expect(iso.createdAt,
+        DateTime.parse('2026-11-24T10:12:33.000Z').millisecondsSinceEpoch ~/ 1000);
+    expect(iso.createdAt > 1700000000, isTrue); // 曾恒为 0 → 1970
+    expect(
+        Work.fromMap({
+          'id': 'w2', 'title': 't', 'status': 'draft', 'created_at': 1700000000
+        }).createdAt,
+        1700000000); // 本地缓存的秒级 int 原样
+    expect(
+        Work.fromMap({
+          'id': 'w3', 'title': 't', 'status': 'draft', 'created_at': 1700000000123
+        }).createdAt,
+        1700000000); // 13 位当毫秒归一
+    expect(
+        Work.fromMap({
+          'id': 'w4', 'title': 't', 'status': 'draft', 'created_at': '1700000000'
+        }).createdAt,
+        1700000000);
+    expect(
+        Work.fromMap({
+          'id': 'w5', 'title': 't', 'status': 'draft', 'created_at': 'n/a'
+        }).createdAt,
+        0); // 认不出就 0，不编一个时间
+  });
+
+  test('暂存架：要素与候选/收下状态可完整回灌（重开续听不丢）', () {
+    const base = TaskBrief(
+        action: '生成', tierLabel: '简约', sourceLabel: '一句话', count: 3);
+    final brief = base.copyLike(
+        prompt: '雨夜霓虹下的独自行走', mood: const ['治愈'], tags: const ['爵士'], bpm: 92, sec: 60);
+    final s = ShelfSession(
+      jobId: 'j1',
+      title: '雨夜霓虹下的独自行走',
+      brief: brief,
+      candidates: [
+        Candidate.fromMap({
+          'id': 'c1',
+          'seq': 1,
+          'title': '候选一',
+          'audio_url': 'http://x/a.mp3',
+          'duration_sec': 45.2,
+          'format': 'mp3',
+          'waveform_url': 'http://x/a.json',
+        })
+      ],
+      adopted: const {'c1': 'w1'},
+      createdAt: 1700000000,
+      updatedAt: 1700000060,
+    );
+    final back = ShelfSession.fromRow(s.toRow());
+    expect(back.jobId, 'j1');
+    expect(back.brief.prompt, '雨夜霓虹下的独自行走');
+    expect(back.brief.tierLabel, '简约');
+    expect(back.brief.toRows().any((r) => r.value.contains('治愈')), isTrue);
+    expect(back.adopted['c1'], 'w1'); // 「已收下」只有本地知道，必须能回来
+    expect(back.candidates.single.audioUrl, 'http://x/a.mp3');
+    expect(back.candidates.single.durationSec, closeTo(45.2, 0.01));
+    expect(back.createdAt, 1700000000);
   });
 }

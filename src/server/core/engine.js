@@ -1,14 +1,60 @@
 // 任务引擎：enqueue 幂等/lanes long-poll 租约/progress/complete 链式转码/fail 回队退款/心跳/清扫（2026-11-23）
 'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
 const config = require('../config');
 const store = require('./store');
 const bus = require('./bus');
 const U = require('./util');
+const AC = require('./appconfig');
 const lanes = require('../lanes');
 
 const ACTIVE = ['queued', 'leased', 'running'];
 const IDEM_RECENT_MS = 10 * 60000; // 幂等复用活跃窗口
+const POLL_SCAN_LIMIT = 200;       // N1-5：夜间过滤需要越过挂起的 night 队头看后续 normal，扫描窗口放宽（20 会队头饿死）
+const TAKES_TTL_MS = 72 * 3600000; // takes/无主产物 72h TTL（架构 §8/§11，N1-5）
+
+// —— 夜间档（N1-5，架构 §8）：server 派发侧单点过滤 ——
+// queue_mode='night' 项目的 mv_* jobs 在窗口（config.mv.queueNightMode.window，本机钟）外不出队；
+// 窗口内 night 优先于 normal（poll 侧稳定排序）。测试钩子：MB_MV_FORCE_NIGHT=1 / MB_MV_FORCE_DAY=1。
+function nightWindowOpen() {
+  if (process.env.MB_MV_FORCE_NIGHT === '1') return true;
+  if (process.env.MB_MV_FORCE_DAY === '1') return false;
+  const nm = (config.mv && config.mv.queueNightMode) || {};
+  if (nm.enabled === false) return true; // 开关关闭 = 不门控（night 随时可派）
+  const w = Array.isArray(nm.window) ? nm.window : [0, 8];
+  const a = Number(w[0]) || 0, b = Number(w[1]) || 0;
+  const h = new Date().getHours();
+  return h >= a && h < b;
+}
+
+// 领单候选扫描：类型过滤 + 夜间档门控 + night 优先出队。
+// 防 starvation：night 挂起用 continue（非 break），后续 normal 照常出队；扫描 LIMIT 放宽防 night 队头遮蔽。
+function queuedDispatchable(types) {
+  const rows = store.all("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT " + POLL_SCAN_LIMIT)
+    .filter((j) => !types || types.has(j.type));
+  const open = nightWindowOpen();
+  const qmCache = new Map();
+  const isNightJob = (j) => {
+    if (!String(j.type).startsWith('mv_')) return false;
+    const pl = U.jparse(j.payload, {}) || {};
+    const pid = pl.project_id;
+    if (!pid) return false;
+    if (!qmCache.has(pid)) {
+      const p = store.get('SELECT queue_mode FROM mv_projects WHERE id=?', pid);
+      qmCache.set(pid, !!(p && String(p.queue_mode) === 'night'));
+    }
+    return qmCache.get(pid);
+  };
+  const out = [];
+  for (const j of rows) {
+    const n = isNightJob(j);
+    if (n && !open) continue; // 窗口外：night 挂起等待，绝不阻塞其后的 normal 出队
+    out.push({ j, n });
+  }
+  out.sort((a, b) => (a.n === b.n ? 0 : (a.n ? -1 : 1))); // 稳定排序：窗口内 night 优先于 normal
+  return out.map((x) => x.j);
+}
 
 // long-poll 唤醒器：enqueue/状态变化时通知挂起的 poll
 const waiters = new Set();
@@ -46,7 +92,9 @@ function enqueue({ type, payload, userId, idemKey, creditsCost, parentJobId }) {
 function getJob(id) { return store.get('SELECT * FROM jobs WHERE id=?', id); }
 
 // —— lanes long-poll：领单并续租 10min ——
-async function poll(lanesWanted, executorId) {
+// isAlive()（可选）：长挂期间执行器连接已断（进程被杀/断网）时放弃派发——
+// 否则被唤醒的"幽灵 poll"会把 job 租给死执行器，白等一个 10min 租约（N2-5 演练实测驱动）。
+async function poll(lanesWanted, executorId, isAlive) {
   store.init();
   const wanted = new Set(lanes.allLanes().flatMap(l => lanes.LANES[l].types).filter(Boolean));
   const want = U.toArr(lanesWanted);
@@ -62,10 +110,8 @@ async function poll(lanesWanted, executorId) {
   if (types && types.size === 0) return null;
   const deadline = Date.now() + config.engine.pollHoldMs;
   for (;;) {
-    const rows = types
-      ? store.all("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT 20")
-          .filter(j => types.has(j.type))
-      : store.all("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT 20");
+    if (isAlive && !isAlive()) return null; // 幽灵 poll：连接已断，不再领单
+    const rows = queuedDispatchable(types); // N1-5：含夜间档过滤 + night 优先
     for (const j of rows) {
       const r = store.run("UPDATE jobs SET status='leased', executor_id=?, lease_expire_at=?, updated_at=? WHERE id=? AND status='queued'",
         executorId || null, U.isoAfterMs(config.engine.leaseMs), U.nowIso(), j.id);
@@ -110,6 +156,8 @@ function finishDone(job, result) {
   store.run("UPDATE jobs SET status='done', progress=100, result=?, lease_expire_at=NULL, updated_at=? WHERE id=?",
     U.jstr(result || {}), U.nowIso(), job.id);
   store.log('job.done', { job_id: job.id, type: job.type });
+  // lane 指标（N1-5，架构 §11 最小集）：per-type 完成耗时直方（created→done 总时长）
+  try { require('./metrics').recordDone(job.type, Date.now() - (Date.parse(job.created_at) || Date.now())); } catch (e) { /* 观测不阻断 */ }
   if (job.user_id) bus.jobDone(job.user_id, job.id, result);
 }
 
@@ -148,10 +196,367 @@ async function complete(jobId, executorId, result, files) {
 
   if (job.type === 'music') return completeMusic(job, result, savedMap);
   if (job.type === 'transcode') return completeTranscode(job, result, savedMap);
-  if (job.type === 'intent_voice' || job.type === 'intent_image') return completeIntent(job, result);
+  if (job.type === 'intent_voice' || job.type === 'intent_image' || job.type === 'intent_text') return completeIntent(job, result);
   if (job.type === 'dsp') return completeDsp(job, result, savedMap);
+  if (String(job.type).startsWith('mv_')) return completeMv(job, result, savedMap);
   finishDone(job, result);
   return { ok: true };
+}
+
+// mv_* 通用完成：契约 §4 的 files→*_url 回填 + done 广播（未知 mv_* 兜底，V13 不崩）
+function completeMvGeneric(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  store.log('job.mv.complete', { job_id: job.id, type: job.type });
+  return { ok: true };
+}
+
+// —— MV 二期完成分流（契约 v2.8 / 架构 §3.1：parent-child 链，仿 finalizeMusicParent）——
+function completeMv(job, result, savedMap) {
+  switch (job.type) {
+    case 'mv_cast_image': return completeMvCastImage(job, result, savedMap);
+    case 'mv_cast_video': return completeMvCastVideo(job, result, savedMap);
+    case 'mv_storyboard': return completeMvStoryboard(job, result, savedMap);
+    case 'mv_shot': return completeMvClip(job, result, savedMap);
+    case 'mv_lipsync': return completeMvLipsync(job, result, savedMap);
+    case 'mv_align': return completeMvAlign(job, result, savedMap);
+    case 'mv_preview': return completeMvPreview(job, result, savedMap);
+    case 'mv_compose': return completeMvCompose(job, result, savedMap);
+    default: return completeMvGeneric(job, result, savedMap);
+  }
+}
+
+// WSS mv.progress（契约 v2.8.5）：shot/project 状态变更即广播（note 过禁词净化）
+function broadcastMvProgress(projectId, note) {
+  try {
+    const p = store.get('SELECT * FROM mv_projects WHERE id=?', projectId);
+    if (!p) return;
+    const shots = store.all('SELECT id,status FROM mv_shots WHERE project_id=? ORDER BY seq ASC', projectId);
+    const lex = require('../rules/mv_lexicon');
+    const done = shots.filter((s) => ['clipReady', 'synced', 'locked'].includes(s.status)).length;
+    const progress = shots.length ? Math.round((done / shots.length) * 100) : (p.status === 'ready' ? 100 : 0);
+    bus.mvProgress(p.user_id, {
+      project_id: p.id, status: p.status || '', progress,
+      note: lex.sanitize(String(note || '')), shots: shots.map((s) => ({ id: s.id, status: s.status })),
+    });
+  } catch (e) { /* 广播失败不阻断业务 */ }
+}
+
+function mvProjectOf(job, payload) {
+  const pid = payload.project_id || null;
+  return pid ? store.get('SELECT * FROM mv_projects WHERE id=?', pid) : null;
+}
+function sanitizeSid(v) { return String(v || 'shot_x').replace(/[^\w.-]/g, '_'); }
+// 镜时间窗（累计 sec；有 timings 时按歌词行索引取对齐窗 ±0.2s，契约 v2.3 mv_lipsync win）
+function shotWindow(projectId, shot) {
+  let cum = 0;
+  for (const s of store.all('SELECT seq,sec FROM mv_shots WHERE project_id=? ORDER BY seq ASC', projectId)) {
+    if (s.id === shot.id) break;
+    cum += Number(s.sec) || 0;
+  }
+  const p = store.get('SELECT script_json FROM mv_projects WHERE id=?', projectId);
+  const sj = p ? U.jparse(p.script_json, null) : null;
+  const timings = sj && Array.isArray(sj.timings) ? sj.timings : null;
+  if (timings && Number.isInteger(shot.lyric_from) && timings[shot.lyric_from]) {
+    const t = timings[shot.lyric_from];
+    const tEnd = timings[(shot.lyric_to || shot.lyric_from + 1) - 1] || t;
+    return {
+      start_sec: Math.max(0, Math.round((Number(t.start) - 0.2) * 100) / 100),
+      dur_sec: Math.max(0.5, Math.round(((Number(tEnd.end) - Number(t.start)) + 0.4) * 100) / 100),
+      shot_id: shot.id,
+    };
+  }
+  return { start_sec: Math.round(cum * 100) / 100, dur_sec: Math.max(0.5, Math.round((Number(shot.sec) || 5) * 100) / 100), shot_id: shot.id };
+}
+
+// mv_cast_image：3 候选 url 挂角色（机检写入；拍板仍走 cast/confirm）
+function completeMvCastImage(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  if (payload.character_id && store.get('SELECT id FROM mv_characters WHERE id=?', payload.character_id)) {
+    const urls = [1, 2, 3].map((i) => result['cast_image_' + i + '_url']).filter(Boolean);
+    store.run('UPDATE mv_characters SET cast_images_json=? WHERE id=?', U.jstr(urls), payload.character_id);
+  }
+  store.log('job.mv.cast_image', { job_id: job.id, character_id: payload.character_id || null });
+  if (payload.project_id) broadcastMvProgress(payload.project_id, '定妆照已出，请挑选');
+  return { ok: true };
+}
+
+// mv_cast_video：定妆视频 + 抽帧评分落角色
+function completeMvCastVideo(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  if (payload.character_id && store.get('SELECT id FROM mv_characters WHERE id=?', payload.character_id)) {
+    const rels = {};
+    // cast_video_url 回填：result 已是绝对 url，落库存 rel（characterShape 统一 publicUrl）
+    const cv = String(result.cast_video_url || '').split('/f/')[1] || null;
+    const frames = Array.isArray(result.frames) ? result.frames : [];
+    rels.frames = frames.map((f, i) => ({ url: result['frame_' + (f.idx || i + 1) + '_url'] || f.url || null, score: f.score == null ? null : f.score, pass: !!f.pass }));
+    store.run('UPDATE mv_characters SET cast_video_url=?, frames_json=? WHERE id=?', cv, U.jstr(rels.frames), payload.character_id);
+  }
+  store.log('job.mv.cast_video', { job_id: job.id, character_id: payload.character_id || null });
+  if (payload.project_id) broadcastMvProgress(payload.project_id, '定妆视频已出，请在帧格中挑角度并拍板');
+  return { ok: true };
+}
+
+// mv_storyboard：逐镜关键帧落 storyboard_url；draft→boardReady
+function completeMvStoryboard(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  let updated = 0;
+  for (const s of (Array.isArray(payload.shots) ? payload.shots : [])) {
+    const sid = sanitizeSid(s.id);
+    const url = result['board_' + sid + '_url'];
+    if (!url) continue;
+    const rel = String(url).split('/f/')[1] || null;
+    const r = store.run("UPDATE mv_shots SET storyboard_url=?, status='boardReady' WHERE id=? AND status IN ('draft','boardReady')", rel, s.id);
+    updated += r.changes || 0;
+  }
+  store.log('job.mv.storyboard', { job_id: job.id, shots_updated: updated });
+  if (payload.project_id) broadcastMvProgress(payload.project_id, '分镜图已出 ' + updated + ' 镜');
+  return { ok: true };
+}
+
+// mv_shot 完成：take 落库→clipReady；歌唱曲演唱镜 → 派生 mv_lipsync 子任务（父租约延长看护，仿 music→transcode）
+function completeMvClip(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  const payload = U.jparse(job.payload, {}) || {};
+  const shot = payload.shot_id ? store.get('SELECT * FROM mv_shots WHERE id=?', payload.shot_id) : null;
+  const project = mvProjectOf(job, payload) || (shot ? store.get('SELECT * FROM mv_projects WHERE id=?', shot.project_id) : null);
+  const videoRel = (result['clip_' + sanitizeSid(payload.shot_id) + '_url'] || '').split('/f/')[1]
+    || (savedMap.size ? savedMap.values().next().value.rel : null);
+  let takeId = null;
+  if (shot && videoRel) {
+    takeId = U.uid('mvt_');
+    store.run(
+      'INSERT INTO mv_takes(id,shot_id,job_id,engine_tier,video_url,lipsynced,origin,ai_label,created_at) VALUES(?,?,?,?,?,0,?,?,?)',
+      takeId, shot.id, job.id, payload.tier || 'quality', videoRel,
+      payload.initiated_by === 'system' ? 'system_auto' : (payload.origin || 'auto'), 1, U.nowIso());
+    store.run("UPDATE mv_shots SET status='clipReady', best_take_id=? WHERE id=?", takeId, shot.id);
+  }
+  store.log('job.mv.clip', { job_id: job.id, shot_id: shot ? shot.id : null, take_id: takeId });
+  // 歌唱曲演唱镜 → 对口型子任务（先扣后派单；余额不足→保持 clipReady 交付，不失败）
+  if (shot && project && shot.kind === 'singing' && project.kind === 'vocal' && takeId && !payload.skip_lipsync) {
+    const work = project.work_id ? store.get('SELECT audio_master FROM works WHERE id=?', project.work_id) : null;
+    const credits = require('../api/credits');
+    const cost = (AC.credits().mv || {}).lipsync || 0;
+    let charged = false;
+    try {
+      if (cost > 0) { credits.charge(job.user_id, cost, 'mv_lipsync', 'mv_project', project.id); charged = true; }
+      store.run('UPDATE mv_projects SET credits_cost=credits_cost+? WHERE id=?', charged ? cost : 0, project.id);
+      const win = shotWindow(project.id, shot);
+      enqueue({
+        type: 'mv_lipsync',
+        payload: { project_id: project.id, shot_id: shot.id, take_id: takeId, video: videoRel, audio_master: (work && work.audio_master) || null, win, reroll: 0 },
+        userId: job.user_id,
+        idemKey: 'mvl_' + U.hash12(job.user_id + '|' + project.id + '|' + shot.id + '|' + takeId),
+        creditsCost: charged ? cost : 0,
+        parentJobId: job.id,
+      });
+      // 父任务转入"等待对口型"：延长租约，由清扫器看护（同 music→transcode 语义）
+      store.run('UPDATE jobs SET status=?, progress=?, lease_expire_at=? WHERE id=?', 'running', 90, U.isoAfterMs(2 * config.engine.leaseMs), job.id);
+      if (job.user_id) bus.jobProgress(job.user_id, job.id, 90, '对口型中');
+      if (project) broadcastMvProgress(project.id, '镜头演唱画面完成，进入口型校准');
+      return { ok: true, take_id: takeId, lipsync: true };
+    } catch (e) {
+      if (charged) { try { credits.refund(job.user_id, cost, 'mv_project', project.id); store.run('UPDATE mv_projects SET credits_cost=MAX(0,credits_cost-?) WHERE id=?', cost, project.id); } catch (e2) {} }
+      store.log('job.mv.lipsync_skip', { job_id: job.id, shot_id: shot.id, reason: String((e && e.code) || e && e.message).slice(0, 80) });
+      // 余额不足/派单异常 → 不阻塞成片（clip 已交付），走普通收口
+    }
+  }
+  finishDone(job, result);
+  if (project) { broadcastMvProgress(project.id, '镜头画面完成'); maybeAutoCompose(project.id); }
+  return { ok: true, take_id: takeId };
+}
+
+// mv_lipsync 完成：synced take + sync_score；质量门（契约 v2.8.4 / 架构 S8）：
+// sync_score<阈值 → 系统免费补样（creditsCost=0，≤2 次）；仍不过 → shot.locked + flags.degraded=broll_subtitle（compose 尊重）
+function completeMvLipsync(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  const payload = U.jparse(job.payload, {}) || {};
+  const shot = payload.shot_id ? store.get('SELECT * FROM mv_shots WHERE id=?', payload.shot_id) : null;
+  const project = mvProjectOf(job, payload);
+  const syncedRel = (result['synced_' + sanitizeSid(payload.shot_id) + '_url'] || '').split('/f/')[1]
+    || (savedMap.size ? savedMap.values().next().value.rel : null);
+  const score = Number.isFinite(Number(result.sync_score)) ? Number(result.sync_score) : null;
+  const threshold = config.mv.syncThreshold;
+  const isReroll = payload.reroll > 0 || payload.origin === 'system_auto';
+  let takeId = null;
+  if (shot && syncedRel) {
+    takeId = U.uid('mvt_');
+    store.run(
+      // v2.15.2 勘误（D 路 V15 探针发现）：原 10 列 11 值必 500；lipsynced/ai_label 用字面量，8 ? 对 8 参
+      'INSERT INTO mv_takes(id,shot_id,job_id,engine_tier,video_url,lipsynced,sync_score,origin,ai_label,created_at) VALUES(?,?,?,?,?,1,?,?,1,?)',
+      takeId, shot.id, job.id, 'quality', syncedRel, score,
+      isReroll ? 'system_auto' : (payload.origin || 'auto'), U.nowIso());
+  }
+  const passed = score != null && score >= threshold;
+  if (shot) {
+    if (passed) {
+      store.run("UPDATE mv_shots SET status='synced', best_take_id=? WHERE id=?", takeId, shot.id);
+    } else {
+      const tries = store.get("SELECT COUNT(*) AS n FROM mv_takes WHERE shot_id=? AND lipsynced=1", shot.id);
+      const rerollsUsed = Math.max(0, ((tries && tries.n) || 1) - 1);
+      if (rerollsUsed < 2) {
+        // 系统免费补样（明示：initiated_by=system / origin=system_auto / 不扣分）
+        const parent = job.parent_job_id || job.id;
+        const win = shotWindow(project ? project.id : shot.project_id, shot);
+        enqueue({
+          type: 'mv_lipsync',
+          payload: { project_id: project ? project.id : shot.project_id, shot_id: shot.id, take_id: payload.take_id, video: syncedRel, audio_master: payload.audio_master, win, reroll: rerollsUsed + 1, origin: 'system_auto' },
+          userId: job.user_id,
+          idemKey: 'mvlr_' + U.hash12(job.user_id + '|' + shot.id + '|' + (rerollsUsed + 1) + '|' + (result.sync_score == null ? 'n' : String(result.sync_score))),
+          creditsCost: 0,
+          parentJobId: parent,
+        });
+        store.run('UPDATE mv_shots SET rerolls=rerolls+1 WHERE id=?', shot.id);
+        store.log('job.mv.lipsync_reroll', { job_id: job.id, shot_id: shot.id, score, rerolls_used: rerollsUsed + 1, initiated_by: 'system' });
+        if (project) broadcastMvProgress(project.id, '口型未达标，系统免费补样中（不扣分）');
+      } else {
+        // 两次补样仍不过 → B-roll+字幕降级（明示），locked 收口（compose 尊重 flags.degraded）
+        const flags = U.jparse(shot.flags_json, {}) || {};
+        flags.degraded = 'broll_subtitle';
+        store.run("UPDATE mv_shots SET status='locked', flags_json=? WHERE id=?", U.jstr(flags), shot.id);
+        store.log('job.mv.lipsync_degraded', { job_id: job.id, shot_id: shot.id, score });
+        if (project) broadcastMvProgress(project.id, '口型两次未达标，该镜已转空镜+字幕（明示）');
+      }
+    }
+  }
+  finishDone(job, result);
+  store.log('job.mv.lipsync', { job_id: job.id, shot_id: shot ? shot.id : null, score });
+  if (job.parent_job_id) finalizeMvClipParent(job.parent_job_id);
+  else if (project) { broadcastMvProgress(project.id, '口型校准完成'); maybeAutoCompose(project.id); }
+  return { ok: true, take_id: takeId };
+}
+
+// 父 mv_shot 收口（仿 finalizeMusicParent）：全部 lipsync 子任务终态才 done+广播
+function finalizeMvClipParent(parentId) {
+  const parent = getJob(parentId);
+  if (!parent || parent.type !== 'mv_shot' || !ACTIVE.includes(parent.status)) return true;
+  const pending = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", parent.id);
+  if (pending.length) return false;
+  const payload = U.jparse(parent.payload, {}) || {};
+  const prev = U.jparse(parent.result, {}) || {};
+  finishDone(parent, { ...prev, lipsync_final: true });
+  const project = mvProjectOf(parent, payload);
+  if (project) { broadcastMvProgress(project.id, '镜头全部工序完成'); maybeAutoCompose(project.id); }
+  store.log('job.mv.clip_parent_done', { job_id: parent.id });
+  return true;
+}
+
+// mv_align：timings 落 script_json + 演唱镜唱段窗分配（timings 三分用之一，ADR-MV-11）
+function completeMvAlign(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  const timings = Array.isArray(result.timings) ? result.timings : null;
+  if (payload.project_id && timings) {
+    const p = store.get('SELECT * FROM mv_projects WHERE id=?', payload.project_id);
+    if (p) {
+      const sj = U.jparse(p.script_json, null) || {};
+      sj.timings = timings;
+      if (Array.isArray(sj.shots)) {
+        for (const s of sj.shots) {
+          if (s.kind === 'singing' && Number.isInteger(s.lyric_from) && timings[s.lyric_from]) {
+            s.window = { start: timings[s.lyric_from].start, end: (timings[(s.lyric_to || s.lyric_from + 1) - 1] || timings[s.lyric_from]).end };
+          }
+        }
+      }
+      store.run('UPDATE mv_projects SET script_json=?, updated_at=? WHERE id=?', U.jstr(sj), U.nowIso(), p.id);
+      broadcastMvProgress(p.id, '歌词对齐完成（' + timings.length + ' 句）');
+    }
+  }
+  store.log('job.mv.align', { job_id: job.id, lines: timings ? timings.length : 0 });
+  return { ok: true };
+}
+
+// mv_preview：样片落 project.preview_url + 报价快照（est_json/est_ver，S7「先看片再掏分」）
+function completeMvPreview(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  const p = mvProjectOf(job, payload);
+  if (p) {
+    const rel = (result.preview_url || '').split('/f/')[1] || null;
+    const shots = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', p.id);
+    const budget = require('../rules/mv_budget');
+    const est = budget.estimate(p, shots);
+    const ORDER = ['drafting', 'casting', 'scripting', 'previewed', 'shooting', 'composing', 'ready'];
+    const idx = ORDER.indexOf(p.status);
+    const newStatus = (idx >= 0 && idx <= ORDER.indexOf('previewed')) ? 'previewed' : p.status;
+    store.run('UPDATE mv_projects SET preview_url=?, est_json=?, est_ver=?, status=?, updated_at=? WHERE id=?',
+      rel, U.jstr(est), budget.estVer(est), newStatus, U.nowIso(), p.id);
+    store.log('job.mv.preview', { job_id: job.id, project_id: p.id, est_credits: est.credits });
+    broadcastMvProgress(p.id, '样片已出，请查看报价卡后决定开机');
+  }
+  return { ok: true };
+}
+
+// mv_compose：成片+封面落 project→ready + WSS mv.progress + done 广播（首映礼数据源）
+function completeMvCompose(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  result.ai_label = 1; // 成片 ai_label 恒 1（契约 §0/v2.4）
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  const p = mvProjectOf(job, payload);
+  if (p) {
+    const videoRel = (result.mv_video_url || '').split('/f/')[1] || null;
+    const coverRel = (result.cover_url || '').split('/f/')[1] || null;
+    store.run("UPDATE mv_projects SET video_url=?, cover_url=?, status='ready', updated_at=? WHERE id=?", videoRel, coverRel, U.nowIso(), p.id);
+    store.log('job.mv.compose', { job_id: job.id, project_id: p.id, degraded_shots: (result.degraded_shots || []).length });
+    broadcastMvProgress(p.id, '成片完成');
+  }
+  return { ok: true };
+}
+
+// 项目自动合成（架构 §3.1）：全部镜 clipReady/synced/locked → 先扣后派单 mv_compose（idem 含镜状态哈希）；
+// 余额不足 → 不自动合成（项目保持 shooting，用户可手动 compose），绝不失败全片
+function maybeAutoCompose(projectId) {
+  try {
+    const p = store.get('SELECT * FROM mv_projects WHERE id=?', projectId);
+    if (!p || p.status !== 'shooting') return false;
+    const shots = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', projectId);
+    if (!shots.length || !shots.every((s) => ['clipReady', 'synced', 'locked'].includes(s.status))) return false;
+    const budget = require('../rules/mv_budget');
+    const lex = require('../rules/mv_lexicon');
+    const statusHash = U.hash12(shots.map((s) => s.id + ':' + s.status).join('|'));
+    const idemKey = 'mvac_' + U.hash12(p.user_id + '|' + p.id + '|' + statusHash);
+    const cost = (AC.credits().mv || {}).compose || 0;
+    if (!budget.checkBudget(p, cost).ok) { store.log('mv.autocompose.budget', { project_id: p.id }); return false; }
+    const credits = require('../api/credits');
+    try { credits.charge(p.user_id, cost, 'mv_compose', 'mv_project', p.id); }
+    catch (e) { store.log('mv.autocompose.skip', { project_id: p.id, reason: String((e && e.code) || e) }); return false; }
+    // takes 清单（best_take 按 seq 拼接；compose 剥原生声画，防串音）
+    let cum = 0;
+    const takes = [];
+    for (const s of shots) {
+      const take = s.best_take_id ? store.get('SELECT * FROM mv_takes WHERE id=?', s.best_take_id) : null;
+      if (take && take.video_url) takes.push({ video: take.video_url, start_sec: Math.round(cum * 100) / 100, strip_audio: true });
+      cum += Number(s.sec) || 0;
+    }
+    const work = p.work_id ? store.get('SELECT audio_master,title FROM works WHERE id=?', p.work_id) : null;
+    store.run("UPDATE mv_projects SET credits_cost=credits_cost+?, status='composing', updated_at=? WHERE id=?", cost, U.nowIso(), p.id);
+    try {
+      enqueue({
+        type: 'mv_compose',
+        payload: { project_id: p.id, takes, audio_master: (work && work.audio_master) || null, title: lex.sanitize(p.title || (work && work.title) || 'MV') },
+        userId: p.user_id, idemKey, creditsCost: cost,
+      });
+    } catch (e) {
+      credits.refund(p.user_id, cost, 'mv_project', p.id);
+      store.run('UPDATE mv_projects SET credits_cost=MAX(0,credits_cost-?), status=?, updated_at=? WHERE id=?', cost, 'shooting', U.nowIso(), p.id);
+      throw e;
+    }
+    store.log('mv.autocompose', { project_id: p.id, cost, takes: takes.length });
+    broadcastMvProgress(p.id, '全部镜头就绪，自动合成成片中');
+    return true;
+  } catch (e) {
+    store.log('mv.autocompose.error', { project_id: projectId, err: String(e && e.message).slice(0, 120) });
+    return false;
+  }
 }
 
 function defaultTitle(payload, seq) {
@@ -242,7 +647,8 @@ function finalizeMusicParent(parentId) {
 async function completeIntent(job, result) {
   const promptsIntent = require('../prompts/intent');
   const payload = U.jparse(job.payload, {}) || {};
-  const kind = job.type === 'intent_voice' ? 'voice' : 'image';
+  const kind = job.type === 'intent_voice' ? 'voice'
+    : (job.type === 'intent_text' ? 'text' : 'image');
   // 图像：从暂存文件即时转 base64 data URL（qwen38-fp4 单端点多模态）
   let imageDataUrl = payload.image_data_url || null;
   if (kind === 'image' && !imageDataUrl && payload.upload_path) {
@@ -275,23 +681,35 @@ async function completeIntent(job, result) {
   card = promptsIntent.enforce(card); // 服务端强制澄清纪律
   const status = (card.confidence >= 0.75 || !(card.questions || []).length) ? 'ready' : 'clarifying';
   const questions = status === 'ready' ? [] : card.questions;
+  // 诚实化（v11）：逐字来源与「是否兜底」必须落库可回溯。历史上 ASR 挂了也照报
+  // 「意图卡已生成」，用户看到的是「只说不理解，然后什么都没了」。
+  const asrText = typeof result.text === 'string' ? result.text.trim() : '';
+  const sourceText = kind === 'text'
+    ? String(payload.text || '').trim()
+    : (asrText || String(payload.transcript || '').trim());
+  const degraded = result.fallback === true || (kind !== 'image' && !sourceText);
+  const note = degraded
+    ? (kind === 'voice' ? '没听清：识别服务没起来，已用本地词典兜底' : '理解服务没走通，已用本地词典兜底')
+    : '意图卡已生成';
   // 复用预建草稿卡（api/intent 已 INSERT），否则新建
   let id = payload.intent_id && store.get('SELECT id FROM intent_cards WHERE id=?', payload.intent_id) ? payload.intent_id : null;
   if (id) {
     store.run(
       `UPDATE intent_cards SET mood=?,scene_desc=?,genre_hypotheses=?,vocal=?,duration_hint=?,confidence=?,
-        questions=?,status=?,gen_params=?,updated_at=? WHERE id=?`,
+        questions=?,status=?,gen_params=?,source_text=?,degraded=?,updated_at=? WHERE id=?`,
       card.mood.join(','), card.scene_desc, card.genre_hypotheses.join(','), card.vocal, card.duration_hint,
-      card.confidence, U.jstr(questions), status, U.jstr(card.gen_params || null), U.nowIso(), id);
+      card.confidence, U.jstr(questions), status, U.jstr(card.gen_params || null),
+      sourceText || null, degraded ? 1 : 0, U.nowIso(), id);
   } else {
     id = U.uid('in_');
     store.run(
-      'INSERT INTO intent_cards(id,user_id,source_kind,source_ref,mood,scene_desc,genre_hypotheses,vocal,duration_hint,confidence,questions,answers,rounds,status,gen_params,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,\'[]\',0,?,?,?,?)',
+      'INSERT INTO intent_cards(id,user_id,source_kind,source_ref,mood,scene_desc,genre_hypotheses,vocal,duration_hint,confidence,questions,answers,rounds,status,gen_params,created_at,updated_at,source_text,degraded) VALUES(?,?,?,?,?,?,?,?,?,?,?,\'[]\',0,?,?,?,?,?,?)',
       id, job.user_id, kind, payload.upload_path || null,
       card.mood.join(','), card.scene_desc, card.genre_hypotheses.join(','), card.vocal, card.duration_hint,
-      card.confidence, U.jstr(questions), status, U.jstr(card.gen_params || null), U.nowIso(), U.nowIso());
+      card.confidence, U.jstr(questions), status, U.jstr(card.gen_params || null), U.nowIso(), U.nowIso(),
+      sourceText || null, degraded ? 1 : 0);
   }
-  store.run("UPDATE jobs SET status='done', progress=100, result=?, updated_at=? WHERE id=?", U.jstr({ intent_id: id, ...result }), U.nowIso(), job.id);
+  store.run("UPDATE jobs SET status='done', progress=100, note=?, result=?, updated_at=? WHERE id=?", note, U.jstr({ intent_id: id, ...result }), U.nowIso(), job.id);
   if (job.user_id) {
     bus.jobDone(job.user_id, job.id, { intent_id: id });
     bus.intentCard(job.user_id, id, status);
@@ -366,6 +784,10 @@ function requeueOrFail(job, code, message) {
     const pl = U.jparse(job.payload, {}) || {};
     if (pl.parent_job_id) finalizeMusicParent(pl.parent_job_id);
   }
+  // mv_lipsync 子任务永久失败：定稿父 mv_shot（clip 交付、口型如实缺失），不阻塞全片
+  if (job.type === 'mv_lipsync' && job.parent_job_id) {
+    finalizeMvClipParent(job.parent_job_id);
+  }
 }
 
 // —— 心跳续租 ——
@@ -401,6 +823,15 @@ function sweep() {
       }
       if (finalizeMusicParent(job.id)) continue;
     }
+    // mv_shot 父任务等待 lipsync 子任务：续租看护；子任务全终态 → 立即收口（不重跑拍摄）
+    if (job.type === 'mv_shot') {
+      const pendingChildren = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id);
+      if (pendingChildren.length) {
+        store.run('UPDATE jobs SET lease_expire_at=? WHERE id=?', U.isoAfterMs(2 * config.engine.leaseMs), job.id);
+        continue;
+      }
+      if (finalizeMvClipParent(job.id)) continue;
+    }
     store.log('job.lease_expired', { job_id: job.id, attempts: job.attempts });
     requeueOrFail(job, 'INTERNAL', '后台处理超时，正在重试');
   }
@@ -411,6 +842,81 @@ function sweep() {
     store.run('DELETE FROM uploads WHERE id=?', up.id);
   }
   if (due.length) store.log('uploads.cleanup', { removed: due.length });
+  // N1-5：takes TTL 清理并入一期 sweep（架构 §8「takes 72h 滚动」/§11 uploads TTL 不变量同族）
+  try { sweepMvTakes(); } catch (e) { store.log('mv.takes.cleanup.error', { err: String(e && e.message).slice(0, 160) }); }
+}
+
+// —— takes TTL 清理（N1-5）：mv_takes 超 72h 且 非 best_take_id 引用 且 项目 ready 满 72h 才清（ready 前绝不动）；
+//     清 DB 行+产物文件；顺带清 var/out 无主产物（无任何表/result 引用且文件 mtime 超 72h）；审计 mv.takes.cleanup 留痕。
+//     ready 时长代理=project.updated_at（ready 后任何后续写都会顺延保护期——保守方向，绝不误删在途产物）。
+function collectOutRefs() {
+  // 全表 JSON 化后扫 `yyyy-mm/f_xxx` 引用（DB 存 rel、result/JSON 存 /f/rel，同一正则两类都抓）
+  const refs = new Set();
+  const RE = /[0-9]{4}-[0-9]{2}\/f_[A-Za-z0-9._-]+/g;
+  const tables = ['works', 'candidates', 'jobs', 'mv_projects', 'mv_characters', 'mv_shots', 'mv_takes'];
+  for (const t of tables) {
+    let rows = [];
+    try { rows = store.all('SELECT * FROM ' + t); } catch (e) { continue; }
+    for (const r of rows) {
+      const s = U.jstr(r);
+      let m;
+      RE.lastIndex = 0;
+      while ((m = RE.exec(s))) refs.add(m[0]);
+    }
+  }
+  return refs;
+}
+function listOutFiles(root, prefix, acc) {
+  acc = acc || [];
+  prefix = prefix || '';
+  let names = [];
+  try { names = fs.readdirSync(path.join(root, prefix)); } catch (e) { return acc; }
+  for (const n of names) {
+    const rel = prefix ? prefix + '/' + n : n;
+    const abs = path.join(root, rel);
+    let st = null;
+    try { st = fs.statSync(abs); } catch (e) { continue; }
+    if (st.isDirectory()) listOutFiles(root, rel, acc);
+    else if (st.isFile()) acc.push({ rel, abs, mtimeMs: st.mtimeMs });
+  }
+  return acc;
+}
+function outAbs(rel) {
+  const root = path.resolve(config.paths.out);
+  const abs = path.join(root, String(rel).replace(/^\/+/, ''));
+  return abs.startsWith(root + path.sep) ? abs : null; // 防越界
+}
+function sweepMvTakes() {
+  const now = Date.now();
+  const cutoff = new Date(now - TAKES_TTL_MS).toISOString();
+  const removed = { takes: 0, files: 0, orphans: 0 };
+  const bestRefs = new Set(
+    store.all('SELECT best_take_id AS id FROM mv_shots WHERE best_take_id IS NOT NULL').map((r) => r.id));
+  const stale = store.all(
+    'SELECT t.*, s.project_id AS _project_id FROM mv_takes t LEFT JOIN mv_shots s ON s.id=t.shot_id WHERE t.created_at<=?',
+    cutoff);
+  for (const t of stale) {
+    if (bestRefs.has(t.id)) continue;                 // best_take 引用永不删（成片原料）
+    if (!t._project_id) continue;                      // 无主行不臆删（架构 §11 不变量归人工处置）
+    const p = store.get('SELECT status, updated_at FROM mv_projects WHERE id=?', t._project_id);
+    if (!p || p.status !== 'ready') continue;          // ready 前绝不动
+    if (!(p.updated_at && p.updated_at <= cutoff)) continue; // ready 未满 72h 不动
+    if (t.video_url) {
+      const abs = outAbs(t.video_url);
+      try { if (abs && fs.existsSync(abs)) { fs.unlinkSync(abs); removed.files++; } } catch (e) { /* 文件缺失只删行 */ }
+    }
+    store.run('DELETE FROM mv_takes WHERE id=?', t.id);
+    removed.takes++;
+  }
+  // 无主产物：var/out 中不被任何表/result 引用、且 mtime 超 72h 的文件（新产物受 mtime 保护，无竞态）
+  const refs = collectOutRefs();
+  for (const f of listOutFiles(config.paths.out)) {
+    if (now - f.mtimeMs < TAKES_TTL_MS) continue;
+    if (refs.has(f.rel)) continue;
+    try { fs.unlinkSync(f.abs); removed.orphans++; } catch (e) { /* 下轮再试 */ }
+  }
+  if (removed.takes || removed.files || removed.orphans) store.log('mv.takes.cleanup', removed);
+  return removed;
 }
 
 let sweepTimer = null;
@@ -425,4 +931,6 @@ function stop() { if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null
 module.exports = {
   enqueue, getJob, poll, progress, complete, fail, heartbeat, sweep, start, stop, notify,
   finishDone, requeueOrFail,
+  broadcastMvProgress, finalizeMvClipParent, maybeAutoCompose, // MV 二期（契约 v2.8）
+  nightWindowOpen, queuedDispatchable, sweepMvTakes, // N1-5 非计算收尾（白盒/演练可复用）
 };

@@ -189,6 +189,8 @@ async function runVoice(job, ctx) {
     ? ('语音转写：' + asr.text + (asr.emotion && asr.emotion !== 'neutral' ? '；情绪：' + asr.emotion : '') + ((asr.events || []).length ? '；事件：' + asr.events.join(',') : ''))
     : '';
   if (userText) card = await tryCompile(ctx, p.system_prompt || DEFAULT_INTENT_SYSTEM, userText);
+  // 兜底要留痕：没转写或 LLM 没编出来 = 词典兜底，服务端据此标 degraded（诚实化 v11）
+  const heuristic = !card;
   if (!card) card = heuristicCard(userText || (asr && asr.text) || '', asr, 'voice');
 
   card = sanitizeCard(card);
@@ -201,6 +203,25 @@ async function runVoice(job, ctx) {
     if (Array.isArray(asr.events)) result.events = asr.events;
     if (Number.isFinite(Number(asr.duration))) result.duration = Number(asr.duration);
   }
+  if (heuristic || !asr || !asr.text) result.fallback = true;
+  await ctx.progress(90, '意图卡已生成');
+  return { result, files: [] };
+}
+
+// ---------- 文本线：端侧已识别/用户手写 → 直接编译（不再过 ASR） ----------
+// 用途：① 端侧转写喂进意图链；② 用户在「你说的话」确认页改字后重新理解。
+async function runText(job, ctx) {
+  const p = job.payload || {};
+  const own = String(p.text || '').trim().slice(0, 500);
+  if (!own) throw new Error('缺少文本内容');
+  await ctx.progress(30, '正在理解意图');
+  let card = await tryCompile(ctx, p.system_prompt || DEFAULT_INTENT_SYSTEM, '用户原话：' + own);
+  const heuristic = !card;
+  if (!card) card = heuristicCard(own, null, 'voice');
+  card = sanitizeCard(card);
+  if (!card.scene_desc) card.scene_desc = '基于你说的内容提炼的创作意图';
+  const result = Object.assign({}, card, { text: own });
+  if (heuristic) result.fallback = true;
   await ctx.progress(90, '意图卡已生成');
   return { result, files: [] };
 }
@@ -247,4 +268,4 @@ async function runImage(job, ctx) {
   return { result: card, files: [] };
 }
 
-module.exports = { runVoice, runImage, DEFAULT_INTENT_SYSTEM, extractJson, heuristicCard, sanitizeCard };
+module.exports = { runVoice, runImage, runText, DEFAULT_INTENT_SYSTEM, extractJson, heuristicCard, sanitizeCard };

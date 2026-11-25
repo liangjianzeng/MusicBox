@@ -5,12 +5,13 @@ import '../../core/api_client.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/primary_button.dart';
 import 'credit_guard.dart';
-import 'creation_state.dart';
 import 'intent_flow_page.dart';
 import 'progress_page.dart';
+import 'shelf_store.dart';
+import 'transcript_confirm_page.dart';
 import 'voice_capture.dart';
 
-/// 傻瓜级「灵感拍立得」：大按钮按住说话(≤60s) / 拍一张 / 一句话 → intent 流
+/// 简约级「灵感拍立得」：大按钮按住说话(≤60s) / 拍一张 / 一句话 → intent 流
 class ShellEasy extends ConsumerStatefulWidget {
   const ShellEasy({super.key});
 
@@ -33,22 +34,22 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
-  /// 语音上传 → 意图流
-  Future<void> _onVoice(String path) async {
-    setState(() => _busy = true);
-    try {
-      final id = await ref.read(apiClientProvider).intentVoice(path);
-      ref.read(creationProvider.notifier).setIntent(id);
-      if (!mounted) return;
-      Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => IntentFlowPage(intentId: id, easy: true),
-      ));
-    } on ApiException catch (e) {
-      _toast(e.zh);
-    } catch (_) {
-      _toast('上传失败，请重试');
-    } finally {
-      if (mounted) setState(() => _busy = false);
+  /// 语音 → 「你说的话」确认页 →（确认或改字后）意图流
+  Future<void> _onVoice(VoiceCaptureResult cap) async {
+    if (!cap.hasAnything) {
+      _toast(cap.local?.error ?? '没听清，再说一遍');
+      return;
+    }
+    if (!mounted) return;
+    final exit = await Navigator.of(context).push<ConfirmExit>(
+      MaterialPageRoute(builder: (_) => TranscriptConfirmPage(capture: cap, easy: true)),
+    );
+    if (!mounted) return;
+    if (exit?.kind == kConfirmTyped && exit!.text.isNotEmpty) {
+      _text.text = exit.text;
+      _toast('已填进「一句话」，可以直接改');
+    } else if (exit?.kind == kConfirmRedo) {
+      _toast('好，再按住说一次');
     }
   }
 
@@ -73,14 +74,33 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
     }
     setState(() => _busy = true);
     try {
-      final r = await ref.read(apiClientProvider).generate({
+      final body = <String, dynamic>{
         'mode': 'simple',
         'prompt': prompt,
         'count': 3,
-      });
+      };
+      final model = ref.read(musicModelProvider);
+      final r = await ref.read(apiClientProvider).generate(body, model: model);
       if (!mounted) return;
       _text.clear();
-      ProgressPage.push(context, '${r['job_id']}');
+      ProgressPage.push(
+        context,
+        '${r['job_id']}',
+        brief: const TaskBrief(
+            action: '生成', tierLabel: '简约', sourceLabel: '一句话', count: 3)
+            .copyLike(prompt: prompt),
+        plannedCount: 3,
+        onRetry: () async {
+          try {
+            final rr = await ref
+                .read(apiClientProvider)
+                .generate(body, model: model);
+            return '${rr['job_id']}';
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     } catch (_) {

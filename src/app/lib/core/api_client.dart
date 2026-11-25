@@ -164,6 +164,17 @@ class ApiClient {
     }
   }
 
+  // ---------- 特性域 API 客户端复用入口 ----------
+  // 说明：MV 等特性域接口集中在各自特性目录的 api client（如
+  // features/mv/mv_api_client.dart），这里只暴露共享的 Dio（Bearer
+  // 注入/401 单飞刷新）与统一错误映射，具体路径一律不进 core。
+
+  /// 共享 Dio（已带鉴权拦截器与刷新单飞）
+  Dio get http => _dio;
+
+  /// 统一调用：DioException → ApiException（中文文案），返回值即响应体
+  Future<dynamic> send(Future<Response> Function() f) => _do(f);
+
   // ---------- 认证与账户 ----------
 
   Future<Map> guestLogin() async =>
@@ -184,8 +195,16 @@ class ApiClient {
   // ---------- 文本创作线 ----------
 
   /// mode: simple|custom；返回 {job_id, credits_charged, idempotent}
-  Future<Map> generate(Map<String, dynamic> body) async =>
-      await _do(() => _dio.post('/v1/works/generate', data: body)) as Map;
+  /// model：可选，APK 自选生成模型节点 id（后端未锁定时生效；未设置则由后端指定）
+  Future<Map> generate(Map<String, dynamic> body, {String? model}) async {
+    final data = Map<String, dynamic>.from(body);
+    if (model != null && model.isNotEmpty) data['model'] = model;
+    return await _do(() => _dio.post('/v1/works/generate', data: data)) as Map;
+  }
+
+  /// 远程配置（定价/默认走向/可选模型/版本策略/公告；无鉴权）
+  Future<Map> appConfig() async =>
+      await _do(() => _dio.get('/v1/app/config')) as Map;
 
   Future<Job> job(String id) async =>
       Job.fromMap(await _do(() => _dio.get('/v1/jobs/$id')) as Map);
@@ -229,12 +248,28 @@ class ApiClient {
 
   // ---------- 多模态意图线 ----------
 
-  Future<String> intentVoice(String filePath) async {
+  /// 上传语音建意图草稿卡并派单。文件名按真实扩展名带上——服务端是按
+  /// multipart 文件名后缀 + 魔数双重校验格式的（写死 .m4a 会拒掉端侧录的 wav）。
+  Future<String> intentVoice(String filePath, {String? filename}) async {
     final fd = FormData();
     fd.files.add(MapEntry(
         'file',
-        await MultipartFile.fromFile(filePath, filename: 'voice.m4a')));
+        await MultipartFile.fromFile(filePath,
+            filename: filename ??
+                (filePath.toLowerCase().endsWith('.wav') ? 'voice.wav' : 'voice.m4a'))));
     final d = await _do(() => _dio.post('/v1/intent/voice', data: fd)) as Map;
+    return '${d['intent_id']}';
+  }
+
+  /// 文本意图线（契约 v3.2 POST /v1/intent/text）：端侧识别出的逐字、或在
+  /// 「你说的话」确认页改过的字，直接进理解链（不再过 ASR）。
+  /// 带 [intentId] 时原地重编译——改字即重新理解，不用重录。
+  Future<String> intentText(String text, {String? intentId, String? hint}) async {
+    final d = await _do(() => _dio.post('/v1/intent/text', data: {
+          'text': text,
+          if (intentId != null) 'intent_id': intentId,
+          if (hint != null && hint.isNotEmpty) 'hint': hint,
+        })) as Map;
     return '${d['intent_id']}';
   }
 
@@ -245,6 +280,13 @@ class ApiClient {
         await MultipartFile.fromFile(filePath, filename: 'photo.jpg')));
     final d = await _do(() => _dio.post('/v1/intent/image', data: fd)) as Map;
     return '${d['intent_id']}';
+  }
+
+  /// 语音能力自检（契约 v3.2 GET /v1/health/speech）：服务端识别服务在不在、
+  /// 为什么不在。原样回传 Map，由设置页诚实呈现，这里不下结论。
+  Future<Map<String, dynamic>> speechHealth() async {
+    final d = await _do(() => _dio.get('/v1/health/speech')) as Map;
+    return Map<String, dynamic>.from(d);
   }
 
   Future<Intent> intent(String id) async =>
@@ -258,6 +300,14 @@ class ApiClient {
     return Intent.fromMap(d);
   }
 
+  /// 卡面「点改」落库（契约 v2.19 PATCH /v1/intent/:id）：只提交改动的键，
+  /// 返回最新 intent（服务端裁剪后为准）。可改键：
+  /// mood / vocal / genre_hypotheses / scene_desc / sec / bpm / count
+  Future<Intent> intentPatch(String id, Map<String, dynamic> patch) async {
+    final d = await _do(() => _dio.patch('/v1/intent/$id', data: patch)) as Map;
+    return Intent.fromMap(d);
+  }
+
   /// 返回 job_id（仅 status=ready 可调）
   Future<String> intentGenerate(String id) async {
     final d = await _do(() => _dio.post('/v1/intent/$id/generate')) as Map;
@@ -268,6 +318,37 @@ class ApiClient {
   Future<Map> adjust(String workId, String text) async =>
       await _do(() => _dio.post('/v1/works/$workId/adjust',
           data: {'text': text})) as Map;
+
+  // ---------- 音乐助手（契约 v3.1：治理门面，跨模块复用 MV 范式）----------
+  // body：{session_id?, text, chips:[{type:'work'|'intent'|'job'|'candidate'|'persona', id}]}
+  // → 200 {session_id, reply, meta:{mode,intent,rejected?,fused?}, ticket?{...est}}；异常经 _do 抛 ApiException。
+  Future<Map> musicAssistantMessages({
+    String? sessionId,
+    required String text,
+    List<Map<String, dynamic>> chips = const [],
+  }) async {
+    final d = await _do(() => _dio.post('/v1/music/assistant/messages',
+        data: {
+          if (sessionId != null && sessionId.isNotEmpty) 'session_id': sessionId,
+          'text': text,
+          if (chips.isNotEmpty) 'chips': chips,
+        })) as Map;
+    return d;
+  }
+
+  /// POST /v1/music/tickets/:id/confirm {ver, hash} → 200 {ok, action, job_id, credits_charged}
+  Future<Map> musicConfirmTicket(String ticketId,
+      {String? ver, String? hash}) async =>
+      await _do(() => _dio.post('/v1/music/tickets/$ticketId/confirm',
+          data: {
+            if (ver != null) 'ver': ver,
+            if (hash != null) 'hash': hash,
+          })) as Map;
+
+  /// POST /v1/music/tickets/:id/deny → 200 {ok:true}
+  Future<void> musicDenyTicket(String ticketId) async {
+    await _do(() => _dio.post('/v1/music/tickets/$ticketId/deny'));
+  }
 
   // ---------- 人格 / 谱系 / DSP / 分享 ----------
 

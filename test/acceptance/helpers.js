@@ -132,6 +132,37 @@ function makePng(marker) {
   return Buffer.concat([Buffer.from(hex, 'hex'), marker ? Buffer.from(String(marker), 'utf8') : Buffer.alloc(0)]);
 }
 
+// ---------- MV mock 产物（架构 §4.3：有 ffmpeg→lavfi testsrc2+正弦真实 mp4；无→内置 ftyp/mdat 字节桩） ----------
+// 字节桩：ftyp 盒（major=isom）+ mdat；magic 合法（bytes[4..8]='ftyp'）、非空。V13(h) 用其钉死"mock mp4 可播"下限。
+function makeMp4Stub(marker) {
+  const ftyp = Buffer.alloc(24);
+  ftyp.writeUInt32BE(24, 0); ftyp.write('ftyp', 4); ftyp.write('isom', 8); ftyp.writeUInt32BE(0x200, 12);
+  ftyp.write('isom', 16); ftyp.write('iso2', 20);
+  const payload = Buffer.concat([Buffer.from('MB-MOCK-VIDEO', 'ascii'), marker ? Buffer.from(String(marker), 'utf8') : Buffer.alloc(0)]);
+  const mdat = Buffer.alloc(8); mdat.writeUInt32BE(8 + payload.length, 0); mdat.write('mdat', 4);
+  return Buffer.concat([ftyp, mdat, payload]);
+}
+// ffmpeg 可用→真产 2s testsrc2+mpeg4+aac mp4（真实可解码）；否则字节桩
+let _mockMp4Cache = null;
+function makeMockMp4(marker) {
+  const ff = findFfmpeg();
+  if (ff) {
+    if (!_mockMp4Cache) {
+      const tmp = path.join(os.tmpdir(), 'mb_mockmp4_' + crypto.randomBytes(4).toString('hex') + '.mp4');
+      try {
+        const r = spawnSync(ff, ['-y', '-v', 'error',
+          '-f', 'lavfi', '-i', 'testsrc2=size=240x426:rate=12:duration=2',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+          '-shortest', '-c:v', 'mpeg4', '-q:v', '5', '-c:a', 'aac', tmp], { timeout: 90000, windowsHide: true });
+        if (r.status === 0 && fs.existsSync(tmp) && fs.statSync(tmp).size > 1000) _mockMp4Cache = fs.readFileSync(tmp);
+        try { fs.unlinkSync(tmp); } catch (e) { /* noop */ }
+      } catch (e) { /* 回退字节桩 */ }
+    }
+    if (_mockMp4Cache) return marker ? Buffer.concat([_mockMp4Cache, Buffer.from(String(marker), 'utf8')]) : Buffer.from(_mockMp4Cache);
+  }
+  return makeMp4Stub(marker);
+}
+
 // ---------- ffmpeg 解析（执行器机需 ffmpeg；缺失时 fake executor 走 FFMPEG_MISSING 失败方向） ----------
 // 判定必须做"能力探测"而非只看 -version：存在只做视频编码的精简构建（如某些 IDE 自带的 ffmpeg），
 // 无法 wav→mp3(libmp3lame)，若误判为存在会把 done 方向拖成假超时。
@@ -189,7 +220,7 @@ class FakeExecutor {
   constructor(baseUrl) {
     this.baseUrl = baseUrl;
     this.api = makeApi(baseUrl);
-    this.lanes = ['music', 'intent', 'ffmpeg'];
+    this.lanes = ['music', 'intent', 'ffmpeg', 'imgspark', 'vidspark', 'lipsync', 'align']; // MV 二期 lanes（V13，契约 v2.6）
     this.stopping = false;
     this.executorId = null;
     this.pollIntervalMs = 1500;
@@ -245,8 +276,101 @@ class FakeExecutor {
     }
     if (type === 'music') return this._music(job);
     if (type === 'transcode') return this._transcode(job);
-    if (type === 'intent_voice' || type === 'intent_image') return this._intent(job);
+    if (type === 'intent_voice' || type === 'intent_image' || type === 'intent_text') return this._intent(job);
+    if (type === 'mv_cast_image') return this._mvCastImage(job);
+    if (type === 'mv_cast_video') return this._mvCastVideo(job);
+    if (type === 'mv_storyboard') return this._mvStoryboard(job);
+    if (type === 'mv_shot') return this._mvShot(job);
+    if (type === 'mv_lipsync') return this._mvLipsync(job);
+    if (type === 'mv_align') return this._mvAlign(job);
+    if (type === 'mv_preview' || type === 'mv_compose') return this._mvVideo(job, type);
     await this.api('POST', `/executor/jobs/${job.id}/fail`, { executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(), json: exJson({ code: 'UNSUPPORTED_JOB_TYPE', message: '验收 fake executor 不支持该 job 类型: ' + type }) });
+  }
+
+  // —— MV mock 分支（契约 v2.3 payload / 架构 §4.1 runner 形状；mock 语义=真实可播假产物）——
+  async _mvComplete(job, result, files, progressNote) {
+    await this.api('POST', `/executor/jobs/${job.id}/progress`, { executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(), json: { executor_id: this._exId, progress: 20, note: progressNote || '验收 mock（MV）' } });
+    const r = await this.api('POST', `/executor/jobs/${job.id}/complete`, {
+      executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(),
+      multipart: { fields: { result: JSON.stringify(result), executor_id: this._exId }, files: files || [] },
+    });
+    if (!r.ok) this.errors.push('mv complete 失败 ' + job.type + ' ' + job.id + ' → ' + r.status + ' ' + r.text.slice(0, 200));
+  }
+  // mv_cast_image：3 张有效 PNG（H3-Image ×3 候选 mock）+ face_scores
+  async _mvCastImage(job) {
+    const files = []; const logical = {}; const scores = [];
+    for (let i = 1; i <= 3; i++) {
+      const field = 'f_ci' + i;
+      files.push({ field, filename: 'cast_image_' + i + '.png', data: makePng(), contentType: 'image/png' });
+      logical['cast_image_' + i] = field;
+      scores.push(Math.round((0.9 - (i - 1) * 0.07) * 100) / 100);
+    }
+    await this._mvComplete(job, { files: logical, face_scores: scores, mock: 'mv_cast_image' }, files);
+  }
+  // mv_cast_video：stub mp4 + 13 帧有效 PNG（facegate 逐帧评分 mock）
+  async _mvCastVideo(job) {
+    const files = [{ field: 'f_cv', filename: 'cast_video.mp4', data: makeMockMp4(), contentType: 'video/mp4' }];
+    const logical = { cast_video: 'f_cv' }; const frames = [];
+    for (let i = 1; i <= 13; i++) {
+      const field = 'f_f' + i;
+      files.push({ field, filename: 'frame_' + i + '.png', data: makePng(), contentType: 'image/png' });
+      logical['frame_' + i] = field;
+      frames.push({ idx: i, score: Math.round((0.88 - (i % 5) * 0.04) * 100) / 100, pass: true });
+    }
+    await this._mvComplete(job, { files: logical, frames, mock: 'mv_cast_video' }, files);
+  }
+  // mv_storyboard：1 张关键帧 png（board_<shotId>）
+  async _mvStoryboard(job) {
+    const p = job.payload || {};
+    const shots = (p.shots && p.shots.length) ? p.shots : [{ id: 'shot_x' }];
+    const files = []; const logical = {};
+    shots.slice(0, 1).forEach((s, i) => {
+      const field = 'f_b' + i; const sid = String(s.id || 'shot_x').replace(/[^\w.-]/g, '_');
+      files.push({ field, filename: 'board_' + sid + '.png', data: makePng(), contentType: 'image/png' });
+      logical['board_' + sid] = field;
+    });
+    await this._mvComplete(job, { files: logical, mock: 'mv_storyboard' }, files);
+  }
+  // mv_shot：stub mp4（clip_<shotId>，原生声画保留、compose 剥离）
+  async _mvShot(job) {
+    const p = job.payload || {};
+    const sid = String((p.shot && p.shot.id) || p.shot_id || 'shot_x').replace(/[^\w.-]/g, '_');
+    const files = [{ field: 'f_clip', filename: 'clip_' + sid + '.mp4', data: makeMockMp4(), contentType: 'video/mp4' }];
+    await this._mvComplete(job, { files: { ['clip_' + sid]: 'f_clip' }, mock: 'mv_shot' }, files);
+  }
+  // mv_lipsync：透传 clip + sync_score=0.95（架构 §4.3：V13 只验契约/账本，质量归 V15）
+  async _mvLipsync(job) {
+    const p = job.payload || {};
+    let data = null;
+    try {
+      const abs = resolveVarPath(this.varDir, p.video || p.clip);
+      if (abs && fs.existsSync(abs)) { const b = fs.readFileSync(abs); if (b.length) data = b; }
+    } catch (e) { /* 透传失败回退 mock 产物 */ }
+    if (!data) data = makeMockMp4();
+    const sid = String(p.shot_id || (p.win && p.win.shot_id) || 'shot_x').replace(/[^\w.-]/g, '_');
+    const files = [{ field: 'f_sy', filename: 'synced_' + sid + '.mp4', data, contentType: 'video/mp4' }];
+    await this._mvComplete(job, { files: { ['synced_' + sid]: 'f_sy' }, sync_score: 0.95, mock: 'mv_lipsync' }, files);
+  }
+  // mv_align：按歌词行数均匀分配 timings（架构 §4.3 mock 语义）
+  async _mvAlign(job) {
+    const p = job.payload || {};
+    const lyrics = String(p.lyrics || '');
+    let lines = lyrics.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    if (!lines.length) lines = ['（mock 对齐行）'];
+    const total = Number(p.duration_sec) || Number(p.total_sec) || 45;
+    const step = total / lines.length;
+    const timings = lines.map((line, i) => ({ line, start: Math.round(i * step * 1000) / 1000, end: Math.round((i + 1) * step * 1000) / 1000 }));
+    await this._mvComplete(job, { files: {}, timings, mock: 'mv_align' }, [], '对齐中（验收 mock）');
+  }
+  // mv_preview / mv_compose：stub mp4（compose 另出 cover png）
+  async _mvVideo(job, type) {
+    const files = [{ field: 'f_v', filename: (type === 'mv_preview' ? 'preview' : 'mv_video') + '.mp4', data: makeMockMp4(), contentType: 'video/mp4' }];
+    const logical = {}; logical[type === 'mv_preview' ? 'preview' : 'mv_video'] = 'f_v';
+    if (type === 'mv_compose') {
+      files.push({ field: 'f_cover', filename: 'cover.png', data: makePng(), contentType: 'image/png' });
+      logical.cover = 'f_cover';
+    }
+    await this._mvComplete(job, { files: logical, ai_label: 1, degraded_shots: [], mock: type }, files);
   }
 
   // music：按契约 mock 语义产正弦 wav → complete（result.files={逻辑名:上传字段名}，契约 §4）
@@ -313,6 +437,33 @@ class FakeExecutor {
   // intent：按上传字节里有无 HIGHCONF 标记决定高/低置信意图卡（V8 用它驱动服务端澄清纪律断言）
   async _intent(job) {
     const p = job.payload || {};
+    // 文本线（端侧转写 / 确认页改字重编译）：不经 ASR，用户原话原样进 result.text；
+    // 命中 HIGHCONF → 视为 LLM 编译成功，否则视为词典兜底（fallback=true）——
+    // 让「degraded / source_text」这两条诚实化断言（v11）可确定性验证。
+    if (job.type === 'intent_text') {
+      const own = String(p.text || '').trim();
+      const hi = own.includes(HIGHCONF_MARKER);
+      const card = hi
+        ? {
+          mood: ['治愈'], scene_desc: '一个人待着的安静时刻', genre_hypotheses: ['爵士'],
+          vocal: 'instrumental', duration_hint: 'medium', confidence: 0.88, questions: [],
+        }
+        : {
+          mood: [], scene_desc: '信息不足', genre_hypotheses: ['流行'],
+          vocal: 'unknown', duration_hint: 'medium', confidence: 0.3,
+          questions: [
+            { q_idx: 0, q: '你想要什么氛围？', options: [{ idx: 0, label: '欢快动感' }, { idx: 1, label: '平静治愈' }], recommended_idx: 1 },
+          ],
+        };
+      const result = Object.assign({}, card, { text: own });
+      if (!hi) result.fallback = true;
+      const r = await this.api('POST', `/executor/jobs/${job.id}/complete`, {
+        executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(),
+        multipart: { fields: { result: JSON.stringify(result), executor_id: this._exId }, files: [] },
+      });
+      if (!r.ok) this.errors.push('intent_text complete 失败 ' + job.id + ' → ' + r.status + ' ' + r.text.slice(0, 200));
+      return;
+    }
     let hasMarker = false;
     try {
       const abs = resolveVarPath(this.varDir, p.upload_path || p.path);
@@ -433,6 +584,28 @@ function makeDb(dbPath) {
     return { table: t, rows: rows.map((r) => ({ created: cCol ? r[cCol] : null, expire: r[eCol], ttlHours: cCol ? (Date.parse(r[eCol]) - Date.parse(r[cCol])) / 3600000 : null })) };
   }
 
+  // —— MV 白盒只读（V13，契约 v2 未提供这些查询端点 → 兜底，同 DEV-LEDGER 纪律）——
+  function mvProject(id) {
+    if (!findTable(/^mv_projects$/i)) return { error: '缺少 mv_projects 表（store.js MIGRATIONS v3 未落）' };
+    const rows = all('SELECT * FROM mv_projects WHERE id=?', id);
+    return { row: rows[0] || null };
+  }
+  function mvCharactersOf(projectId) {
+    if (!findTable(/^mv_characters$/i)) return { error: '缺少 mv_characters 表（store.js MIGRATIONS v3 未落）' };
+    return { rows: all('SELECT * FROM mv_characters WHERE project_id=? ORDER BY rowid ASC', projectId) };
+  }
+  function mvShotsOf(projectId) {
+    if (!findTable(/^mv_shots$/i)) return { error: '缺少 mv_shots 表（store.js MIGRATIONS v3 未落）' };
+    return { rows: all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', projectId) };
+  }
+  function mvTakesOf(shotId) {
+    if (!findTable(/^mv_takes$/i)) return { error: '缺少 mv_takes 表（store.js MIGRATIONS v3 未落）' };
+    return { rows: all('SELECT * FROM mv_takes WHERE shot_id=? ORDER BY rowid ASC', shotId) };
+  }
+  function mvJobsOf(userId) {
+    return { rows: all("SELECT * FROM jobs WHERE user_id=? AND type LIKE 'mv_%' ORDER BY rowid ASC", userId) };
+  }
+
   // 审计（V11 report）：audit 类表 + 举报表里检索含 needle 的行（契约 §2"M2 前仅落审计"）
   function auditRowsLike(needle, extraTables) {
     const names = [findTable(/audit/i), findTable(/action_log|oplog|event_log/i)];
@@ -448,13 +621,18 @@ function makeDb(dbPath) {
     return { tables: tablesHit.join(','), hits };
   }
 
-  return { dbPath, all, tables, columns, findTable, ledgerRows, setLastCreditDate, uploadTtlRows, auditRowsLike };
+  return { dbPath, all, tables, columns, findTable, ledgerRows, setLastCreditDate, uploadTtlRows, auditRowsLike,
+    mvProject, mvCharactersOf, mvShotsOf, mvTakesOf, mvJobsOf };
 }
 
 // ---------- 套件自举 ----------
 // boot('V1') → { port, baseUrl, varDir, dbPath, api, executor, db, ffmpeg, close(), me/credits/newGuest 等 }
-async function boot(suiteName) {
-  const runId = String(suiteName || 'SUITE') + '-' + process.pid + '-' + crypto.randomBytes(3).toString('hex');
+async function boot(suiteName, opts) {
+  opts = opts || {}; // {env:{...}}：套件级 env 覆盖（如 V16 开助手灰度 MB_MV_ASSISTANT_CHAT，端点仍指不可达）
+  // 二期追加（V14/V15 真机套件，additive 不改默认行为）：
+  //   opts.runId          —— 固定 var-test/<runId>（真机断点续作：kill 后用同一 runId 重 boot 复验状态完好）
+  //   opts.noFakeExecutor —— 不启动内置 FakeExecutor（真机语境：真实 executor 是唯一拉单者，假执行器注册会抢单）
+  const runId = opts.runId || (String(suiteName || 'SUITE') + '-' + process.pid + '-' + crypto.randomBytes(3).toString('hex'));
   const varDir = path.join(ROOT, 'var-test', runId); // 独立 var 前缀，互不污染（正式运行时数据在 var/）
   const dbPath = path.join(varDir, 'db', 'musicbox.sqlite'); // server 按 MB_VAR_ROOT 派生同一路径
   const outDir = path.join(varDir, 'out');
@@ -481,8 +659,14 @@ async function boot(suiteName) {
     MB_LLM_VLM_URL: LLM_DEAD_URL,                   // 不可达 → 确定性启发式兜底（契约 §0），无 GPU/LLM 也能全链路
     MB_MUSIC_URL: 'http://127.0.0.1:9',             // 本套件不真打 GPU（fake executor 产 mock 音频）
     MB_SENSEVOICE_URL: 'http://127.0.0.1:9',
+    // —— MV 二期（V13）：开灰度总开关；GPU 端点一律指向不可达（严禁触 :8188/:8090/模型）——
+    MB_MV_ENABLED: '1',
+    MB_COMFY_URL: 'http://127.0.0.1:9',             // 不可达（验收纪律：绝不发任务给剧场 ComfyUI）
+    MB_LIPSYNC_URL: 'http://127.0.0.1:9',
+    MB_FACEGATE_URL: 'http://127.0.0.1:9',
+    MB_MV_ASSISTANT_CHAT: '0',                      // 对话版助手关（N2 灰度项，不阻塞主流程；opts.env 可覆盖）
     NODE_NO_WARNINGS: '1',
-  });
+  }, opts.env || {});
 
   const entry = path.join(ROOT, 'src', 'server', 'index.js');
   if (!fs.existsSync(entry)) {
@@ -516,10 +700,26 @@ async function boot(suiteName) {
     await sleep(250);
   }
   if (!ready) throw new Error('验收自举失败：15s 内 server 未就绪（/healthz + POST /v1/auth/guest → {access_token,…}）。最后错误: ' + lastErr + '。日志尾部:\n' + log.slice(-2500));
+  // 就绪的完整判据：迁移真正落盘可见（白盒 seed 直接开库写；防 server init 与白盒写的可见性竞态，
+  // 偶发 "no such table: works" / 白盒写入对 server 不可见的 flake，2026-11-24 夜间档用例暴露）
+  {
+    const t1 = Date.now();
+    for (;;) {
+      let hasWorks = false;
+      try {
+        const d0 = new DatabaseSync(dbPath, { readOnly: true });
+        try { hasWorks = !!d0.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='works'").get(); }
+        finally { try { d0.close(); } catch (e) { /* noop */ } }
+      } catch (e) { /* server 尚未建文件，继续等 */ }
+      if (hasWorks) break;
+      if (Date.now() - t1 > 15000) throw new Error('验收自举失败：server 已应答但 15s 内 sqlite schema（works 表）对白盒不可见。日志尾部:\n' + log.slice(-2500));
+      await sleep(150);
+    }
+  }
 
   const executor = new FakeExecutor(baseUrl);
   executor.varDir = varDir;
-  await executor.start();
+  if (!opts.noFakeExecutor) await executor.start(); // 真机套件（V14/V15）传 noFakeExecutor：真实 executor 独占拉单
 
   const db = makeDb(dbPath);
   const ffmpeg = findFfmpeg();
@@ -630,11 +830,182 @@ async function boot(suiteName) {
     return { job, cand, work, generate: g };
   };
 
+  // —— MV 白盒 seed（V13：mv job/shot 派单端点尚未进契约 → 白盒补种前置，server 落 /jobs 后删除）——
+  // 白盒写统一走 seedWrite：瞬时 SQLITE_BUSY/LOCKED/（极端窗口下的）no such table 重试 ≤8s，防与 server 写者的偶发对撞 flake
+  const _syncSleepBuf = new Int32Array(new SharedArrayBuffer(4));
+  function seedWrite(fn) {
+    const t0 = Date.now();
+    for (;;) {
+      const w = new DatabaseSync(dbPath);
+      try { return fn(w); }
+      catch (e) {
+        const m = String((e && e.message) || e);
+        if (/BUSY|LOCKED|no such table/i.test(m) && Date.now() - t0 < 8000) {
+          try { w.close(); } catch (e2) { /* noop */ }
+          Atomics.wait(_syncSleepBuf, 0, 0, 150);
+          continue;
+        }
+        throw e;
+      } finally { try { w.close(); } catch (e2) { /* noop */ } }
+    }
+  }
+  ctx.seedWork = (userId, opts) => {
+    opts = opts || {};
+    const id = opts.id || uniq('w_');
+    seedWrite((w) => {
+      w.prepare('INSERT INTO works(id,user_id,title,status,lyrics,duration_sec,format,created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .run(id, userId, opts.title || '验收 MV 母带', 'draft', opts.lyrics === undefined ? '' : opts.lyrics,
+          opts.duration_sec == null ? 45 : opts.duration_sec, 'wav', new Date().toISOString());
+    });
+    return id;
+  };
+  ctx.seedMvJob = (opts) => {
+    const id = uniq('j_');
+    const now = new Date().toISOString();
+    seedWrite((w) => {
+      w.prepare('INSERT INTO jobs(id,type,payload,status,idem_key,attempts,progress,credits_cost,user_id,parent_job_id,created_at,updated_at) VALUES(?,?,?,?,?,0,0,?,?,?,?,?)')
+        .run(id, opts.type, JSON.stringify(opts.payload || {}), 'queued', opts.idemKey || null,
+          Math.trunc(Number(opts.creditsCost) || 0), opts.userId || null, opts.parentJobId || null, now, now);
+    });
+    // 无需通知 server：engine.poll 有 2s 安全轮询兜底（core/engine.js），白盒种子 job 会被领走
+    return id;
+  };
+  ctx.seedMvShot = (projectId, opts) => {
+    opts = opts || {};
+    const id = opts.id || uniq('mvs_');
+    seedWrite((w) => {
+      w.prepare('INSERT INTO mv_shots(id,project_id,seq,kind,sec,status,rerolls) VALUES(?,?,?,?,?,?,0)')
+        .run(id, projectId, opts.seq == null ? 1 : opts.seq, opts.kind || 'story', opts.sec == null ? 5 : opts.sec, opts.status || 'draft');
+    });
+    return id;
+  };
+  ctx.setMvShot = (shotId, fields) => {
+    const keys = Object.keys(fields || {});
+    if (!keys.length) return;
+    seedWrite((w) => {
+      w.prepare('UPDATE mv_shots SET ' + keys.map((k) => k + '=?').join(',') + ' WHERE id=?')
+        .run(...keys.map((k) => fields[k]), shotId);
+    });
+  };
+  // takes 种子（N1-5 TTL 用例前置）：产物文件真实落 outDir（可设 mtime 年龄），created_at 可按小时回拨
+  ctx.seedMvTake = (shotId, opts) => {
+    opts = opts || {};
+    const id = opts.id || uniq('mvt_');
+    // 产物命名与真实 saveToOut 一致（yyyy-mm/f_*.mp4），保证「被引用=可识别」不误入无主清理
+    const _d = new Date();
+    const month = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
+    const rel = opts.videoUrl || (month + '/f_' + crypto.randomBytes(10).toString('hex') + '.mp4');
+    const abs = path.join(outDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, opts.fileBytes || makeMp4Stub(id));
+    const ageMs = (opts.ageHours == null ? 0 : Number(opts.ageHours)) * 3600000;
+    if (ageMs > 0) { const t = new Date(Date.now() - ageMs); fs.utimesSync(abs, t, t); }
+    const created = opts.createdAt || new Date(Date.now() - ageMs).toISOString();
+    seedWrite((w) => {
+      w.prepare('INSERT INTO mv_takes(id,shot_id,job_id,engine_tier,video_url,lipsynced,sync_score,origin,ai_label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+        .run(id, shotId, opts.jobId || null, opts.tier || 'quality', rel, opts.lipsynced ? 1 : 0,
+          opts.sync_score == null ? null : opts.sync_score, opts.origin || 'auto', 1, created);
+    });
+    return { id, rel, abs };
+  };
+  // 无主产物文件种子（TTL orphan 用例）：直接落 outDir，可控 mtime 年龄
+  ctx.seedOutFile = (rel, ageHours) => {
+    const abs = path.join(outDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, makeMp4Stub(rel));
+    const h = Number(ageHours) || 0;
+    if (h > 0) { const t = new Date(Date.now() - h * 3600000); fs.utimesSync(abs, t, t); }
+    return { rel, abs };
+  };
+  // —— wave-2 白盒（V13 v2.8：状态推进/账本种子——契约未提供这些端点，同 DEV-LEDGER 纪律只作测试前置）——
+  ctx.setMvProject = (projectId, fields) => {
+    const keys = Object.keys(fields || {});
+    if (!keys.length) return;
+    seedWrite((w) => {
+      w.prepare('UPDATE mv_projects SET ' + keys.map((k) => k + '=?').join(',') + ' WHERE id=?')
+        .run(...keys.map((k) => fields[k]), projectId);
+    });
+  };
+  // 账本种子：正数=发放（测试充值）；负数+projectId=mv 派单扣分模拟（ref=(mv_project,pid)，供 cancel 退款核算用例）
+  ctx.seedLedger = (userId, delta, opts) => {
+    opts = opts || {};
+    seedWrite((w) => {
+      const last = w.prepare('SELECT balance_after FROM credit_ledger WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(userId);
+      const bal = (last ? last.balance_after : 0) + Math.trunc(delta);
+      w.prepare('INSERT INTO credit_ledger(id,user_id,delta,balance_after,reason,ref_type,ref_id,created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .run(uniq('cl_'), userId, Math.trunc(delta), bal, opts.reason || (delta >= 0 ? 'test_grant' : 'mv_shot'),
+          opts.refType || (delta >= 0 ? 'test' : 'mv_project'), opts.refId || (delta >= 0 ? 'seed' : (opts.projectId || 'seed')), new Date().toISOString());
+    });
+    return Math.trunc(delta);
+  };
+  ctx.mvJobRows = (userId, type) => {
+    const like = type ? " AND type='" + type.replace(/[^\w_]/g, '') + "'" : '';
+    return db.all("SELECT * FROM jobs WHERE user_id=? AND type LIKE 'mv_%'" + like + ' ORDER BY rowid ASC', userId);
+  };
+
   return ctx;
+}
+
+// ---------- 最小 WSS 客户端（V13 mv.progress 断言；服务端帧不掩码，手写解析零依赖） ----------
+function wsConnect(baseUrl, token) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(baseUrl);
+    const req = http.request({
+      hostname: u.hostname, port: u.port, path: '/ws?token=' + encodeURIComponent(token || ''),
+      headers: {
+        Connection: 'Upgrade', Upgrade: 'websocket',
+        'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'), 'Sec-WebSocket-Version': '13',
+      },
+      timeout: 10000,
+    });
+    req.on('response', (res) => { req.destroy(); reject(new Error('WS 升级失败 HTTP ' + res.statusCode)); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('WS 升级超时')); });
+    req.on('error', reject);
+    req.on('upgrade', (res, socket, head) => {
+      const client = { events: [], closed: false, _waiters: [] };
+      client.close = () => { client.closed = true; try { socket.destroy(); } catch (e) { /* noop */ } };
+      client.waitFor = (pred, timeoutMs) => new Promise((res2) => {
+        const hit = client.events.find(pred);
+        if (hit) return res2(hit);
+        const timer = setTimeout(() => {
+          client._waiters = client._waiters.filter((wt) => { if (wt.pred === pred) { wt.resolve(null); return false; } return true; });
+        }, timeoutMs || 15000);
+        client._waiters.push({ pred, resolve: (v) => { clearTimeout(timer); res2(v); } });
+      });
+      let buf = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
+      socket.on('data', (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        for (;;) {
+          if (buf.length < 2) return;
+          const opcode = buf[0] & 0x0f;
+          let len = buf[1] & 0x7f;
+          let off = 2;
+          if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+          else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+          if (buf.length < off + len) return;
+          const payload = buf.slice(off, off + len);
+          buf = buf.slice(off + len);
+          if (opcode === 0x8) { client.closed = true; return; }
+          if (opcode === 0x9) { try { socket.write(Buffer.from([0x8a, payload.length])); } catch (e) { /* noop */ } continue; } // pong 回
+          if (opcode === 0x1) {
+            let obj = null;
+            try { obj = JSON.parse(payload.toString('utf8')); } catch (e) { /* 忽略非 JSON */ }
+            if (!obj) continue;
+            client.events.push(obj);
+            client._waiters = client._waiters.filter((wt) => { if (wt.pred(obj)) { wt.resolve(obj); return false; } return true; });
+          }
+        }
+      });
+      socket.on('error', () => { client.closed = true; });
+      socket.on('close', () => { client.closed = true; });
+      resolve(client);
+    });
+    req.end();
+  });
 }
 
 module.exports = {
   ROOT, BASE_PORT, EXECUTOR_TOKEN, DEV_OTP, WORD_A, WORD_B, HIGHCONF_MARKER,
-  boot, api: makeApi, httpReq, buildMultipart, makeSineWav, makePng, findFfmpeg, computePeaks,
-  FakeExecutor, makeDb, resolveVarPath, sleep, uniq,
+  boot, api: makeApi, httpReq, buildMultipart, makeSineWav, makePng, makeMp4Stub, makeMockMp4, findFfmpeg, computePeaks,
+  FakeExecutor, makeDb, resolveVarPath, sleep, uniq, wsConnect,
 };

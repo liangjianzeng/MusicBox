@@ -24,11 +24,28 @@ dependencies:
   # 录音/拍照（5.x 的 record_linux 传递依赖过旧会导致编译失败，故用 6.x）
   record: ^6.2.1
   image_picker: ^1.0.0
+  # MV 成片播放（竖屏 9:16）
+  video_player: ^2.9.2
+  # 端侧语音：官方 dart:ffi 包，原生 .so 由平台 AAR 自带（无需 NDK/额外 maven）
+  sherpa_onnx: 1.13.8
+  path: ^1.9.0
+  # 在线朗读兜底（端侧声库未就位/合成失败时才用）。
+  # vendored 到 third_party/：pub 上的同名包要求 Dart ≥3.10.8，本仓 SDK 3.6.0 吃不下；
+  # 这份是同一作者 v0.1.5 的 MIT 源码，SDK 约束 >=3.6.0。UI 文案只说「在线朗读」。
+  edge_tts:
+    path: third_party/edge_tts
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+
+# 只发 Android/iOS：上游 sherpa_onnx_web 把 ~15MB 的 wasm/js 声明成包 assets，
+# 会被无差别打进 APK，而原生路径走 sherpa_onnx_android_arm64、运行期从不加载它们。
+# 用 vendored 空壳顶掉瘦身（同 TongYi-Lite 的做法）；真要构建 web 目标时删掉本覆盖即可。
+dependency_overrides:
+  sherpa_onnx_web:
+    path: third_party/sherpa_onnx_web
 
 flutter:
   uses-material-design: true

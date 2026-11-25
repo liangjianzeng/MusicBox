@@ -149,6 +149,71 @@ function intentImage(ctx) {
   return { status: 202, body: { intent_id: intentId } };
 }
 
+// POST /v1/intent/text {text, hint?, intent_id?}
+// 端侧识别出的逐字、或用户在「你说的话」确认页改过的字 → 直接进理解链（不再过 ASR）。
+// 带 intent_id 时原地重编译（改字即重新理解，不用重录）；不带则新建草稿卡。
+function intentText(ctx) {
+  const user = requireUser(ctx);
+  if (!U.allowRate('intent:' + user.id, 20, 60000)) throw new U.ApiError('RATE_LIMITED', '操作过于频繁，请稍后再试');
+  const body = ctx.body || {};
+  const text = String(body.text || '').trim().slice(0, 500);
+  if (!text) throw new U.ApiError('BAD_REQUEST', '请填写内容');
+  rules.moderateFields([text]);
+  const hint = String(body.hint || '').trim().slice(0, 300);
+  if (hint) rules.moderateFields([hint]);
+  let intentId = null;
+  const wantId = String(body.intent_id || '').trim();
+  if (wantId) {
+    const row = store.get('SELECT * FROM intent_cards WHERE id=?', wantId);
+    if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
+    if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用');
+    intentId = row.id;
+    // 原话变了，之前对澄清题的回答就作废，避免「答的是上一句」
+    store.run('UPDATE intent_cards SET source_text=?,degraded=0,answers=\'[]\',rounds=0,status=\'clarifying\',updated_at=? WHERE id=?',
+      text, U.nowIso(), intentId);
+  } else {
+    intentId = newDraftIntent(user, 'text', null);
+    store.run('UPDATE intent_cards SET source_text=? WHERE id=?', text, intentId);
+  }
+  engine.enqueue({ type: 'intent_text', payload: { text, intent_id: intentId, hint }, userId: user.id });
+  store.log('intent.text', { user_id: user.id, intent_id: intentId, bytes: text.length });
+  return { status: 202, body: { intent_id: intentId } };
+}
+
+// GET /v1/health/speech —— 客户端「语音能力」自检用（公开，无需登录）。
+// 诚实纪律：识别服务在不在、为什么不在，必须能如实告诉用户，不许假装可用。
+// 探测结果缓存 15s，避免设置页反复打点把 worker 打烦。
+let _speechProbe = null; // { at, body }
+async function speechHealth(ctx) {
+  const now = Date.now();
+  if (_speechProbe && now - _speechProbe.at < 15000) {
+    return { status: 200, body: _speechProbe.body };
+  }
+  const base = String(config.senseVoiceUrl || '').replace(/\/+$/, '');
+  let asr;
+  if (!base) {
+    asr = { ok: false, reason: '服务端未配置识别服务地址' };
+  } else {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    try {
+      const r = await fetch(base + '/healthz', { signal: ctrl.signal });
+      const j = r.ok ? await r.json().catch(() => ({})) : {};
+      asr = r.ok
+        ? { ok: true, reason: j && j.model_loaded ? '就绪' : '在线（模型待首次加载）', model_loaded: !!(j && j.model_loaded), device: j && j.device }
+        : { ok: false, reason: '识别服务返回 HTTP ' + r.status };
+    } catch (e) {
+      const why = e && e.name === 'AbortError' ? '探测超时' : ((e && e.message) || '连不上');
+      asr = { ok: false, reason: '识别服务没起来（' + why + '）' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const body = { asr, checked_at: U.nowIso() };
+  _speechProbe = { at: now, body };
+  return { status: 200, body };
+}
+
 // GET /v1/intent/:id
 function getIntent(ctx) {
   const user = requireUser(ctx);
@@ -222,20 +287,107 @@ function enforceQuestions(qs) {
   return out;
 }
 
+// PATCH /v1/intent/:id —— 卡面「点改」唯一落库通道（契约 v2.19）
+// mood/genre_hypotheses/vocal/scene_desc 改卡面；sec/bpm/count 改 gen_params。
+// 编辑与澄清纪律解耦：不推进 status/rounds/confidence；consumed 拒改。
+function patchIntent(ctx) {
+  const user = requireUser(ctx);
+  const row = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
+  if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
+  if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用，不能再修改');
+  if (!U.allowRate('intent:' + user.id, 10, 60000)) throw new U.ApiError('RATE_LIMITED', '操作过于频繁，请稍后再试');
+  return patchIntentInternal(user, row, ctx.body || {});
+}
+// 内部 kernel：供 PATCH 端点与音乐助手 set_card 复用（行须已按属主加载并校验状态）
+function patchIntentInternal(user, row, body) {
+  const G = config.gen;
+  const card = store.intentOf(row);
+  const gp = U.jparse(row.gen_params, {}) || {};
+  const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+  const fields = [];
+
+  if (has('mood')) {
+    const arr = U.toArr(body.mood).map((e) => String(e).trim()).filter(Boolean);
+    if (arr.length > 3) throw new U.ApiError('BAD_REQUEST', '心情最多选 3 项');
+    card.mood = U.unionArr([], arr, 3).map((e) => String(e).slice(0, 20));
+    fields.push('mood');
+  }
+  if (has('genre_hypotheses')) {
+    const arr = U.toArr(body.genre_hypotheses).map((e) => String(e).trim()).filter(Boolean);
+    if (arr.length > 3) throw new U.ApiError('BAD_REQUEST', '流派最多选 3 项');
+    card.genre_hypotheses = U.unionArr([], arr, 3).map((e) => String(e).slice(0, 24));
+    gp.tags = card.genre_hypotheses.slice(0, 5); // 用户点的流派直接成为生乐 tags，不被推测覆盖
+    fields.push('genre_hypotheses');
+  }
+  if (has('vocal')) {
+    const v = String(body.vocal || '');
+    if (!['song', 'instrumental', 'unknown'].includes(v)) throw new U.ApiError('BAD_REQUEST', 'vocal 仅支持 song|instrumental|unknown');
+    card.vocal = v;
+    gp.instrumental = v === 'instrumental';
+    fields.push('vocal');
+  }
+  if (has('scene_desc')) {
+    const d = String(body.scene_desc || '').trim().slice(0, 301);
+    if (d.length > 300) throw new U.ApiError('BAD_REQUEST', '灵感描述不超过 300 字');
+    rules.moderateFields([d]); // 命中词库 → MODERATION_BLOCK
+    card.scene_desc = d;
+    gp.prompt = d;
+    fields.push('scene_desc');
+  }
+  if (has('sec')) {
+    const s = Number(body.sec);
+    if (!Number.isFinite(s) || s < G.sec_min || s > G.sec_max) throw new U.ApiError('BAD_REQUEST', `时长需在 ${G.sec_min}-${G.sec_max} 秒之间`);
+    gp.sec = Math.round(s);
+    card.duration_hint = gp.sec + 's';
+    fields.push('sec');
+  }
+  if (has('bpm')) {
+    const b = Number(body.bpm);
+    if (!Number.isFinite(b) || b < 40 || b > 200) throw new U.ApiError('BAD_REQUEST', 'BPM 需在 40-200 之间');
+    gp.bpm = Math.round(b);
+    fields.push('bpm');
+  }
+  if (has('count')) {
+    const c = Number(body.count);
+    if (!Number.isInteger(c) || c < G.count_min || c > G.count_max) throw new U.ApiError('BAD_REQUEST', `候选数量需在 ${G.count_min}-${G.count_max} 之间`);
+    gp.count = c;
+    fields.push('count');
+  }
+  if (!fields.length) throw new U.ApiError('BAD_REQUEST', '没有可修改的字段');
+
+  store.run(
+    'UPDATE intent_cards SET mood=?,genre_hypotheses=?,vocal=?,scene_desc=?,duration_hint=?,gen_params=?,updated_at=? WHERE id=?',
+    card.mood.join(','), card.genre_hypotheses.join(','), card.vocal, card.scene_desc, card.duration_hint,
+    U.jstr(gp), U.nowIso(), row.id);
+  bus.intentCard(user.id, row.id, row.status);
+  store.log('intent.patch', { user_id: user.id, intent_id: row.id, fields, status: row.status });
+  return { status: 200, body: store.intentOf(store.get('SELECT * FROM intent_cards WHERE id=?', row.id)) };
+}
+
 // POST /v1/intent/:id/generate —— 仅 ready；卡变 consumed；按卡组 generate 参数派单
 function generateFromIntent(ctx) {
   const user = requireUser(ctx);
   const row = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
   if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
+  return generateIntentInternal(user, row);
+}
+// 内部 kernel：供端点与音乐助手 regenerate-from-intent 复用（行须已按属主加载）
+function generateIntentInternal(user, row) {
   if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用，请重新生成');
   if (row.status !== 'ready') throw new U.ApiError('BAD_REQUEST', '意图尚未明确，请先完成澄清');
   const card = store.intentOf(row);
-  let gp = U.jparse(row.gen_params, null);
-  if (!gp) gp = intentPrompt.genParamsFromCard(card);
+  // 契约 v2.19 参数优先级：gen_params（用户显式点改）> 卡面推导 > 服务端默认
+  const gp = U.jparse(row.gen_params, {}) || {};
+  const p = { ...intentPrompt.genParamsFromCard(card) };
+  for (const k of ['mood', 'tags', 'bpm', 'sec', 'instrumental', 'prompt']) {
+    if (gp[k] !== undefined && gp[k] !== null) p[k] = gp[k];
+  }
   const r = worksApi.dispatchMusic(user, 'intent', {
-    prompt: card.scene_desc || gp.prompt || '', mood: card.mood[0] || gp.mood || '',
-    tags: (gp.tags && gp.tags.length ? gp.tags : card.genre_hypotheses), bpm: gp.bpm,
-    sec: gp.sec, count: config.gen.count_default, instrumental: gp.instrumental || card.vocal === 'instrumental',
+    prompt: card.scene_desc || p.prompt || '', mood: card.mood[0] || p.mood || '',
+    tags: (p.tags && p.tags.length ? p.tags : card.genre_hypotheses), bpm: p.bpm,
+    sec: p.sec, instrumental: p.instrumental,
+    // count 只在用户显式点改过才覆盖默认——用户选 1 首就不发 3 首（计费交付一致，对齐 DEV-LADDER-PAY）
+    count: gp.count == null ? config.gen.count_default : gp.count,
   }, { reason: 'gen' });
   if (r.status === 202 && !r.body.idempotent) {
     store.run("UPDATE intent_cards SET status='consumed', updated_at=? WHERE id=?", U.nowIso(), row.id);
@@ -247,11 +399,15 @@ function generateFromIntent(ctx) {
 
 module.exports = {
   audioDurationSec,
+  patchIntentInternal, generateIntentInternal, // 供音乐助手 set_card / regenerate-from-intent 复用
   routes: [
     { m: 'POST', p: '/v1/intent/voice', h: intentVoice, raw: true, limitMb: UP.voiceMaxMb + 2 },
     { m: 'POST', p: '/v1/intent/image', h: intentImage, raw: true, limitMb: UP.imageMaxMb + 2 },
+    { m: 'POST', p: '/v1/intent/text', h: intentText },
+    { m: 'GET', p: '/v1/health/speech', h: speechHealth },
     { m: 'GET', p: '/v1/intent/:id', h: getIntent },
     { m: 'POST', p: '/v1/intent/:id/answer', h: answerIntent },
+    { m: 'PATCH', p: '/v1/intent/:id', h: patchIntent },
     { m: 'POST', p: '/v1/intent/:id/generate', h: generateFromIntent },
   ],
 };
