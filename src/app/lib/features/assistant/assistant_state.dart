@@ -233,23 +233,22 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
       final messages = [...state.messages];
       final optimisticIndex = messages.indexWhere((m) => m.id == clientId);
       if (optimisticIndex >= 0) {
-        messages[optimisticIndex] = result.message.id.isEmpty
-            ? AssistantMessage(
-                id: result.message.id,
-                seq: result.message.seq,
-                role: 'user',
-                content: input,
-                clientMsgId: clientId)
-            : result.message;
+        final optimistic = messages[optimisticIndex];
+        messages[optimisticIndex] = AssistantMessage(
+            id: optimistic.id,
+            seq: result.message.seq > 0
+                ? result.message.seq - 1
+                : optimistic.seq,
+            role: 'user',
+            content: optimistic.content,
+            clientMsgId: clientId);
       }
-      final reply =
-          result.reply.trim().isEmpty ? '我收到了，你可以继续补充。' : result.reply.trim();
-      messages.add(AssistantMessage(
-          id: 'reply_$clientId',
-          seq: 0,
-          role: result.meta['rejected'] == true ? 'system' : 'assistant',
-          content: reply,
-          ticket: result.ticket));
+      if (result.message.id.isNotEmpty &&
+          !messages.any((m) => m.id == result.message.id)) {
+        messages.insert(
+            optimisticIndex >= 0 ? optimisticIndex + 1 : messages.length,
+            result.message);
+      }
       state = state.copyWith(
           sending: false,
           sessionId:
@@ -400,9 +399,25 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
       final sessionId = payload['session_id']?.toString() ??
           message.meta['session_id']?.toString();
       if (message.id.isNotEmpty &&
-          (sessionId == null || sessionId == state.sessionId) &&
-          !state.messages.any((m) => m.id == message.id)) {
-        state = state.copyWith(messages: [...state.messages, message]);
+          (sessionId == null || sessionId == state.sessionId)) {
+        final messages = [...state.messages];
+        final existing = messages.indexWhere((m) => m.id == message.id);
+        if (existing >= 0) {
+          messages[existing] = message;
+        } else {
+          final optimistic = message.clientMsgId?.isNotEmpty == true
+              ? messages.indexWhere((m) =>
+                  m.seq == 0 &&
+                  m.clientMsgId == message.clientMsgId &&
+                  message.seq > 0)
+              : -1;
+          if (optimistic >= 0) {
+            messages[optimistic] = message;
+          } else {
+            messages.add(message);
+          }
+        }
+        state = state.copyWith(messages: messages);
       }
       return;
     }

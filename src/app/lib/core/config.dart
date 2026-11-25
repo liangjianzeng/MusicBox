@@ -7,11 +7,11 @@ const String kAppVersion = '0.1.0';
 class AppConfig {
   AppConfig({required this.baseUrl});
 
-  /// 发布默认服务器 origin：打包期经 `--dart-define=MUSICBOX_BASE_URL=<url>` 注入（部署参数，非源码写死）。
-  /// 未注入时回退到跨网 origin，保证真机首启即达后端、直接进首页；App 内「服务器设置」保留为调试后门。
+  /// 发布默认服务器 origin：打包期经 `--dart-define=MUSICBOX_BASE_URL=<url>` 注入。
+  /// 未注入时回退到 DGX 的 Tailscale 地址；App 内「服务器设置」保留为调试后门。
   static const defaultBaseUrl = String.fromEnvironment(
     'MUSICBOX_BASE_URL',
-    defaultValue: 'http://100.100.140.75:7901',
+    defaultValue: 'http://100.81.83.59:7900',
   );
 
   String baseUrl;

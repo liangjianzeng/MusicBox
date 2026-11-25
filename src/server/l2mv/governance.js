@@ -9,6 +9,7 @@ const bus = require('../core/bus');
 const U = require('../core/util');
 const lex = require('../rules/mv_lexicon');
 const budget = require('../rules/mv_budget');
+const AC = require('../core/appconfig');
 
 const MV = config.mv;
 const TICKET_TTL_MS = 60000; // 确认票 TTL 60s（契约 v2.14）
@@ -40,12 +41,12 @@ const TOOLS = {
   'mv.shot_reorder': {
     expensive: true,
     params: { order: { kind: 'shotIds', min: 1, max: 64 } },
-    est: () => ({ credits: 0, minutes: 0 }),
+    est: (args) => { const c = AC.credits().mv || MV.credits; return { credits: (args.order || []).length * (c.storyboard || 0) + (c.compose || 0), minutes: 2 + Math.max(1, Math.round(MV.est.compose / 60)) }; },
   },
   'mv.shot_delete': { // 仅未成片镜可删（执行层再校验成片保护）
     expensive: true,
     params: { shot_id: { kind: 'shotId' } },
-    est: () => ({ credits: 0, minutes: 0 }),
+    est: () => { const c = AC.credits().mv || MV.credits; return { credits: c.compose || 0, minutes: Math.max(1, Math.round(MV.est.compose / 60)) }; },
   },
   'mv.shot_reshoot': { // 票面注明 40⚡ 估价（契约 v2.14）
     expensive: true,
@@ -53,7 +54,7 @@ const TOOLS = {
       shot_id: { kind: 'shotId' },
       reason: { kind: 'string', min: 1, max: 120, optional: true },
     },
-    est: () => ({ credits: MV.credits.shot || 0, minutes: Math.max(1, Math.round((MV.est.video || 290) / 60)) }),
+    est: () => { const c = AC.credits().mv || MV.credits; return { credits: c.shot || 0, minutes: Math.max(1, Math.round((MV.est.video || 290) / 60)) }; },
   },
 };
 
@@ -131,13 +132,13 @@ function gateTool(tool, args, ctx) {
       clean[key] = id;
     } else if (spec.kind === 'shotIds') {
       if (!Array.isArray(v)) return { ok: false, code: 'BAD_REQUEST', message: key + ' 需为镜头 id 数组' };
-      const ids = [];
-      for (const raw of v.slice(0, spec.max)) {
-        const id = String(raw);
-        if (!ids.includes(id)) ids.push(id);
+      if (v.length > spec.max || v.length < spec.min || new Set(v.map(String)).size !== v.length) {
+        return { ok: false, code: 'BAD_REQUEST', message: key + ' 需为不重复的完整镜头 id 数组' };
       }
+      const ids = v.map(String);
+      const owned = Array.from(ctx && ctx.ownedShotIds || []);
       const foreign = ids.filter((id) => !(ctx && ctx.ownedShotIds && ctx.ownedShotIds.has(id)));
-      if (foreign.length || ids.length < (spec.min || 1)) {
+      if (foreign.length || owned.length !== ids.length || owned.some((id) => !ids.includes(id))) {
         store.log('mv.assistant.audit', {
           action: 'entity_rejected', tool, key, foreign: foreign.slice(0, 3),
           user_id: ctx && ctx.user && ctx.user.id || null, project_id: ctx && ctx.project && ctx.project.id || null,
@@ -166,7 +167,7 @@ function ticketHash(action, args, est) {
 function ticketShape(r) {
   if (!r) return null;
   return {
-    id: r.id, project_id: r.project_id, action: r.action, args: U.jparse(r.args_json, {}) || {},
+    id: r.id, project_id: r.project_id, session_id: r.session_id || null, job_id: r.job_id || null, action: r.action, args: U.jparse(r.args_json, {}) || {},
     est_credits: r.est_credits || 0, est_minutes: r.est_minutes || 0,
     hash: r.hash, ver: r.ver, status: r.status,
     ttl_expire_at: r.ttl_expire_at, created_at: r.created_at, consumed_at: r.consumed_at || null,
@@ -175,15 +176,16 @@ function ticketShape(r) {
 // 过期票清扫（任意访问时顺带；幂等）
 function sweepExpiredTickets() {
   const now = U.nowIso();
-  const due = store.all("SELECT id FROM mv_tickets WHERE status='pending' AND (ttl_expire_at IS NULL OR ttl_expire_at<=? OR created_at<=?)",
+  const due = store.all("SELECT id,session_id,est_credits FROM mv_tickets WHERE status='pending' AND (ttl_expire_at IS NULL OR ttl_expire_at<=? OR created_at<=?)",
     now, U.isoAfterMs(-TICKET_TTL_MS));
   if (!due.length) return 0;
   store.run("UPDATE mv_tickets SET status='expired' WHERE status='pending' AND (ttl_expire_at IS NULL OR ttl_expire_at<=? OR created_at<=?)", now, U.isoAfterMs(-TICKET_TTL_MS));
+  for (const row of due) releaseTicketReservation(row.id);
   store.log('mv.ticket.expire', { count: due.length });
   return due.length;
 }
 // 签发：hash12(action+规范化args+est) + ver 随机短串 CAS + TTL 60s + pending + WSS mv.ticket（契约 v2.14/§14.2）
-function issueTicket(user, project, action, args, est) {
+function issueTicket(user, project, action, args, est, sessionId) {
   sweepExpiredTickets();
   if (!TOOLS[action]) throw new U.ApiError('BAD_REQUEST', '该操作不在助手职责范围内，不能发票');
   if (est === undefined || est === null) est = TOOLS[action].est(args);
@@ -194,8 +196,8 @@ function issueTicket(user, project, action, args, est) {
   const hash = ticketHash(action, args, { credits: estCredits, minutes: estMinutes });
   const now = U.nowIso();
   store.run(
-    'INSERT INTO mv_tickets(id,project_id,user_id,action,args_json,est_credits,est_minutes,hash,ver,status,ttl_expire_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-    id, project.id, user.id, action, canonicalArgs(args), estCredits, estMinutes, hash, ver, 'pending',
+    'INSERT INTO mv_tickets(id,project_id,user_id,session_id,action,args_json,est_credits,est_minutes,hash,ver,status,ttl_expire_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    id, project.id, user.id, sessionId || null, action, canonicalArgs(args), estCredits, estMinutes, hash, ver, 'pending',
     U.isoAfterMs(TICKET_TTL_MS), now);
   store.log('mv.ticket.issue', { ticket_id: id, project_id: project.id, user_id: user.id, action, est_credits: estCredits });
   try { bus.push(user.id, { type: 'mv.ticket', ticket_id: id, project_id: project.id, action, est: { credits: estCredits, minutes: estMinutes } }); } catch (e) { /* 广播失败不阻断 */ }
@@ -219,6 +221,7 @@ function verifyAndConsumeTicket(id, body, user) {
   // 一次性消费（并发同票竞态：后到者 changes=0 → 拒绝）
   const r = store.run("UPDATE mv_tickets SET status='consumed', consumed_at=? WHERE id=? AND status='pending'", U.nowIso(), row.id);
   if (r.changes !== 1) throw new U.ApiError('TICKET_UNUSABLE', '确认票已被使用', 409);
+  commitTicketReservation(row.id);
   store.log('mv.ticket.confirm', { ticket_id: row.id, project_id: row.project_id, user_id: user.id, action: row.action });
   return { id: row.id, project_id: row.project_id, action: row.action, args: U.jparse(row.args_json, {}) || {}, est_credits: row.est_credits || 0, est_minutes: row.est_minutes || 0 };
 }
@@ -228,26 +231,65 @@ function denyTicket(id, user) {
   const row = store.get('SELECT * FROM mv_tickets WHERE id=?', String(id || ''));
   if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '确认票不存在或已失效');
   if (row.status === 'pending') {
-    store.run("UPDATE mv_tickets SET status='denied' WHERE id=? AND status='pending'", row.id);
+    const changed = store.run("UPDATE mv_tickets SET status='denied' WHERE id=? AND status='pending'", row.id);
+    if (changed.changes === 1) releaseTicketReservation(row.id);
     store.log('mv.ticket.deny', { ticket_id: row.id, project_id: row.project_id, user_id: user.id, action: row.action });
   }
   return { ok: true };
 }
 // GET detail 用：pending 票清单（面板数据源，契约 v2.13.3）
+function cancelProjectTickets(projectId) {
+  const rows = store.all("SELECT id FROM mv_tickets WHERE project_id=? AND status='pending'", String(projectId || ''));
+  if (!rows.length) return 0;
+  store.run("UPDATE mv_tickets SET status='denied' WHERE project_id=? AND status='pending'", String(projectId || ''));
+  for (const row of rows) releaseTicketReservation(row.id);
+  store.log('mv.ticket.cancel', { project_id: projectId, count: rows.length });
+  return rows.length;
+}
 function fetchPendingTickets(projectId) {
   sweepExpiredTickets();
   return store.all("SELECT id,action,est_credits,est_minutes,hash,ver,status,ttl_expire_at,created_at FROM mv_tickets WHERE project_id=? AND status='pending' ORDER BY created_at DESC", projectId);
 }
 
 // ———— 五、助手侧预算双熔断（v2.14.1；与 v2.11 项目 paused 互相独立）————
-// 代发付费动作签票前核验：已扣+估价 > 报价×1.2（无报价则 budget×1.2）→ session broken + 审计，后续该会话一切请求直接拒
+function updateTicketReservation(id, to, credits) {
+  const ticket = store.get('SELECT session_id,est_credits FROM mv_tickets WHERE id=?', String(id || ''));
+  if (!ticket || !ticket.session_id) return;
+  const session = getSession(ticket.session_id);
+  if (!session) return;
+  const ctx = U.jparse(session.ctx_json, {}) || {};
+  const pending = ctx.assistant_ticket_reserved || {};
+  const committed = ctx.assistant_ticket_committed || {};
+  const amount = Math.max(0, Math.trunc(Number(credits == null ? ticket.est_credits : credits) || 0));
+  delete pending[id]; delete committed[id];
+  if (to && amount > 0) {
+    const target = to === 'assistant_ticket_reserved' ? pending : committed;
+    target[id] = amount;
+  }
+  if (Object.keys(pending).length) ctx.assistant_ticket_reserved = pending; else delete ctx.assistant_ticket_reserved;
+  if (Object.keys(committed).length) ctx.assistant_ticket_committed = committed; else delete ctx.assistant_ticket_committed;
+  store.run('UPDATE mv_chat_sessions SET ctx_json=? WHERE id=?', U.jstr(ctx), session.id);
+}
+function releaseTicketReservation(id) { updateTicketReservation(id, null, 0); }
+function commitTicketReservation(id) { updateTicketReservation(id, 'assistant_ticket_committed'); }
+function settleTicketReservation(id, credits) { updateTicketReservation(id, Number(credits) > 0 ? 'assistant_ticket_committed' : null, credits); }
+function releaseTicketReservationByJob(jobId) {
+  const rows = store.all('SELECT id FROM mv_tickets WHERE job_id=?', String(jobId || ''));
+  for (const row of rows) releaseTicketReservation(row.id);
+}
+function reservationTotal(map) { return Object.values(map || {}).reduce((sum, n) => sum + Math.max(0, Number(n) || 0), 0); }
+
+// 代发付费动作签票前核验：已扣+待确认估价+已执行估价 > 报价×1.2（无报价则 budget×1.2）→ session broken + 审计，后续该会话一切请求直接拒
 function fuseCheck(session, project, cost) {
   const extra = Math.max(0, Math.trunc(Number(cost) || 0));
   if (!session || extra <= 0) return { ok: true, broken: false };
   const est = U.jparse(project.est_json, null);
   const base = est && Number.isFinite(Number(est.credits)) && Number(est.credits) > 0 ? Number(est.credits) : budget.budgetOf(project);
   const threshold = base * FUSE_RATIO;
-  const spent = Number(project.credits_cost) || 0;
+  const ctx = U.jparse(session.ctx_json, {}) || {};
+  const reserved = reservationTotal(ctx.assistant_ticket_reserved);
+  const committed = reservationTotal(ctx.assistant_ticket_committed);
+  const spent = Math.max(Number(project.credits_cost) || 0, Math.max(0, Number(ctx.assistant_est_spent) || 0) + reserved + committed);
   if (spent + extra > threshold) {
     store.run("UPDATE mv_chat_sessions SET status='broken' WHERE id=?", session.id);
     store.log('mv.assistant.fuse', { session_id: session.id, project_id: project.id, user_id: session.user_id, spent, extra, threshold });
@@ -264,7 +306,18 @@ function createSession(user, project) {
   return store.get('SELECT * FROM mv_chat_sessions WHERE id=?', id);
 }
 function getSession(id) { return store.get('SELECT * FROM mv_chat_sessions WHERE id=?', String(id || '')); }
-function touchSession(id) { /* 记忆仅靠 messages；保留钩子位（ctx_json 不写指令全文） */ }
+function touchSession(id) {
+  const row = getSession(id);
+  if (!row) return;
+  const ctx = U.jparse(row.ctx_json, {}) || {};
+  ctx.last_active_at = U.nowIso();
+  store.run('UPDATE mv_chat_sessions SET ctx_json=? WHERE id=?', U.jstr(ctx), id);
+}
+function reserveSessionCost(session, cost, ticketId) {
+  const extra = Math.max(0, Math.trunc(Number(cost) || 0));
+  if (!session || !ticketId || extra <= 0) return;
+  updateTicketReservation(ticketId, 'assistant_ticket_reserved', extra);
+}
 // 只记已执行结果摘要（≤150 字，过禁词净化）——原始指令全文不落库
 function recordResult(session, summary, meta) {
   const s = lex.sanitize(String(summary || '')).slice(0, 150);
@@ -283,6 +336,7 @@ function recentResults(sessionId, n) {
 module.exports = {
   TOOLS, INJECTION_PATTERNS, TICKET_TTL_MS,
   isInjection, gateTool,
-  issueTicket, fetchPendingTickets, verifyAndConsumeTicket, denyTicket, sweepExpiredTickets, ticketShape, ticketHash,
-  fuseCheck, createSession, getSession, recordResult, recentResults,
+  issueTicket, fetchPendingTickets, verifyAndConsumeTicket, denyTicket, cancelProjectTickets, sweepExpiredTickets, ticketShape, ticketHash,
+  releaseTicketReservation, commitTicketReservation, settleTicketReservation, releaseTicketReservationByJob,
+  fuseCheck, createSession, getSession, touchSession, reserveSessionCost, recordResult, recentResults,
 };

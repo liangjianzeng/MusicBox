@@ -4,7 +4,11 @@
 set -u
 BASE="$HOME/MusicBox"
 SRC="$BASE/src/workers"
-mkdir -p "$BASE/var/logs" "$BASE/run"
+# 落位档即环境首（否则 worker 即 /opt 默认档：MODEL_ROOT/ROOTS 失落位 ⇒ scaffold 503）
+if [ -f "$BASE/etc/spark.env" ]; then
+  set -a; . "$BASE/etc/spark.env"; set +a
+fi
+mkdir -p "$BASE/var/logs" "$BASE/run" "$BASE/var/models/facegate/models"
 
 start_one() {
   local name="$1" port="$2" mod="$3" venv="$4"

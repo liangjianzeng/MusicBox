@@ -12,10 +12,22 @@ Future<void> showGlobalAssistant(BuildContext context,
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF17181F),
-    shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-    builder: (_) => AssistantPanel(initialTab: tab, initialPrompt: prompt),
+    backgroundColor: Colors.transparent,
+    builder: (ctx) {
+      final media = MediaQuery.of(ctx);
+      final heightFactor = tab == AssistantTab.chat ? .56 : .68;
+      return Align(
+        alignment: Alignment.bottomCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 440,
+            maxHeight:
+                (media.size.height - media.viewInsets.bottom) * heightFactor,
+          ),
+          child: AssistantPanel(initialTab: tab, initialPrompt: prompt),
+        ),
+      );
+    },
   );
 }
 
@@ -33,34 +45,42 @@ class AssistantDock extends ConsumerWidget {
       return const SizedBox.shrink();
     }
     final pending = state.pendingTickets;
-    return Material(
-      color: const Color(0xFF20212B),
-      child: InkWell(
-        onTap: () => showGlobalAssistant(context),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-          child: Row(
-            children: [
-              const Icon(Icons.auto_awesome,
-                  size: 18, color: Color(0xFFFFC86B)),
-              const SizedBox(width: 8),
-              const Expanded(
-                  child: Text('创作助手',
-                      style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700))),
-              if (state.activeTasks > 0)
-                Text('${state.activeTasks} 个任务进行中',
-                    style:
-                        const TextStyle(fontSize: 11, color: Colors.white54)),
-              if (pending > 0) ...[
-                const SizedBox(width: 8),
-                Badge(
-                    label: Text('$pending'),
-                    child: const Icon(Icons.fact_check_outlined, size: 18)),
+    return Tooltip(
+      message: '创作助手',
+      child: Material(
+        color: const Color(0xFF17181F),
+        child: InkWell(
+          onTap: () => showGlobalAssistant(context),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome,
+                    size: 14, color: Color(0xFFFFC86B)),
+                const SizedBox(width: 5),
+                const Text('助手',
+                    style: TextStyle(fontSize: 11, color: Colors.white70)),
+                const Spacer(),
+                if (state.activeTasks > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Text('${state.activeTasks} 项进行中',
+                        style: const TextStyle(
+                            fontSize: 10, color: Colors.white38)),
+                  ),
+                if (pending > 0) ...[
+                  Badge(
+                    label:
+                        Text('$pending', style: const TextStyle(fontSize: 9)),
+                    child: const Icon(Icons.fact_check_outlined,
+                        size: 14, color: Colors.white54),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                const Icon(Icons.chevron_right,
+                    size: 14, color: Colors.white24),
               ],
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_right, size: 18, color: Colors.white38),
-            ],
+            ),
           ),
         ),
       ),
@@ -112,116 +132,126 @@ class _AssistantPanelState extends ConsumerState<AssistantPanel> {
   Widget build(BuildContext context) {
     final state = ref.watch(assistantProvider);
     final assistantContext = ref.watch(assistantContextProvider);
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottomInset),
+    return Material(
+      color: const Color(0xFF17181F),
+      clipBehavior: Clip.antiAlias,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: MediaQuery.of(context).size.height * .82,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 12, 10, 8),
-                child: Row(
-                  children: [
-                    const Icon(Icons.auto_awesome, color: Color(0xFFFFC86B)),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                        child: Text('创作助手',
-                            style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w800))),
-                    Text(state.mode == 'llm+rule' ? 'AI 对话' : '规则辅助',
-                        style: const TextStyle(
-                            fontSize: 11, color: Colors.white54)),
-                    IconButton(
-                        tooltip: '新会话',
-                        onPressed: state.sending
-                            ? null
-                            : () => ref
-                                .read(assistantProvider.notifier)
-                                .newSession(),
-                        icon: const Icon(Icons.add_comment_outlined)),
-                    IconButton(
-                        tooltip: '关闭',
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close)),
-                  ],
-                ),
-              ),
-              SegmentedButton<AssistantTab>(
-                segments: const [
-                  ButtonSegment(value: AssistantTab.chat, label: Text('对话')),
-                  ButtonSegment(value: AssistantTab.tasks, label: Text('任务')),
-                  ButtonSegment(value: AssistantTab.tickets, label: Text('确认')),
-                ],
-                selected: {_tab},
-                onSelectionChanged: (value) =>
-                    setState(() => _tab = value.first),
-              ),
-              const SizedBox(height: 8),
-              if (_tab == AssistantTab.chat) ...[
-                _ContextBar(
-                    context: assistantContext,
-                    attached: _attachContext,
-                    onToggle: () =>
-                        setState(() => _attachContext = !_attachContext)),
-                if (state.error != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Text(state.error!,
-                        style: const TextStyle(color: Colors.orangeAccent)),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 10, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_awesome, color: Color(0xFFFFC86B)),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      '创作助手',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                    ),
                   ),
-                Expanded(
-                  child: state.messages.isEmpty
+                  Text(
+                    state.mode == 'llm+rule' ? 'AI 对话' : '规则辅助',
+                    style: const TextStyle(fontSize: 11, color: Colors.white54),
+                  ),
+                  IconButton(
+                    tooltip: '新会话',
+                    onPressed: state.sending
+                        ? null
+                        : () =>
+                            ref.read(assistantProvider.notifier).newSession(),
+                    icon: const Icon(Icons.add_comment_outlined),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            SegmentedButton<AssistantTab>(
+              segments: const [
+                ButtonSegment(value: AssistantTab.chat, label: Text('对话')),
+                ButtonSegment(value: AssistantTab.tasks, label: Text('任务')),
+                ButtonSegment(value: AssistantTab.tickets, label: Text('确认')),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (value) => setState(() => _tab = value.first),
+            ),
+            const SizedBox(height: 8),
+            if (_tab == AssistantTab.chat) ...[
+              _ContextBar(
+                context: assistantContext,
+                attached: _attachContext,
+                onToggle: () =>
+                    setState(() => _attachContext = !_attachContext),
+              ),
+              if (state.error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    state.error!,
+                    style: const TextStyle(color: Colors.orangeAccent),
+                  ),
+                ),
+              Expanded(
+                child: Builder(builder: (context) {
+                  final messages = state.messages
+                      .where((message) => message.role != 'tool')
+                      .toList();
+                  return messages.isEmpty
                       ? _ChatWelcome(onPrompt: _submit)
                       : ListView.builder(
                           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                          itemCount: state.messages.length,
-                          itemBuilder: (_, index) {
-                            final message = state.messages[index];
-                            return _MessageBubble(message: message);
-                          },
+                          itemCount: messages.length,
+                          itemBuilder: (_, index) =>
+                              _MessageBubble(message: messages[index]),
+                        );
+                }),
+              ),
+              _Composer(
+                controller: _input,
+                sending: state.sending,
+                onSend: _submit,
+              ),
+            ] else if (_tab == AssistantTab.tasks)
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: () =>
+                      ref.read(assistantProvider.notifier).refreshTasks(),
+                  child: state.tasks.isEmpty
+                      ? const Center(child: Text('还没有进行中的创作任务'))
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: state.tasks.length,
+                          itemBuilder: (_, index) =>
+                              _TaskTile(task: state.tasks[index]),
                         ),
                 ),
-                _Composer(
-                    controller: _input,
-                    sending: state.sending,
-                    onSend: _submit),
-              ] else if (_tab == AssistantTab.tasks)
-                Expanded(
-                  child: RefreshIndicator(
-                    onRefresh: () =>
-                        ref.read(assistantProvider.notifier).refreshTasks(),
-                    child: state.tasks.isEmpty
-                        ? const Center(child: Text('还没有进行中的创作任务'))
-                        : ListView.builder(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: state.tasks.length,
-                            itemBuilder: (_, index) =>
-                                _TaskTile(task: state.tasks[index]),
+              )
+            else
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: () =>
+                      ref.read(assistantProvider.notifier).refreshTickets(),
+                  child: state.tickets.isEmpty
+                      ? const Center(child: Text('暂无待确认事项'))
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: state.tickets.length,
+                          itemBuilder: (_, index) => _TicketCard(
+                            ticket: state.tickets[index],
+                            busy: state.busyTicketIds
+                                .contains(state.tickets[index].id),
                           ),
-                  ),
-                )
-              else
-                Expanded(
-                  child: RefreshIndicator(
-                    onRefresh: () =>
-                        ref.read(assistantProvider.notifier).refreshTickets(),
-                    child: state.tickets.isEmpty
-                        ? const Center(child: Text('暂无待确认事项'))
-                        : ListView.builder(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: state.tickets.length,
-                            itemBuilder: (_, index) => _TicketCard(
-                                ticket: state.tickets[index],
-                                busy: state.busyTicketIds
-                                    .contains(state.tickets[index].id)),
-                          ),
-                  ),
+                        ),
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );
@@ -500,14 +530,32 @@ class AssistantSuggestionCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final rc = ref.watch(remoteConfigProvider);
     if (rc != null && !rc.assistantCore) return const SizedBox.shrink();
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      child: ListTile(
-        leading: Icon(icon, color: const Color(0xFFFFC86B)),
-        title: Text(title),
-        subtitle: const Text('带着当前上下文问问创作助手'),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => showGlobalAssistant(context, prompt: prompt),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Material(
+        color: Colors.white.withValues(alpha: .025),
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => showGlobalAssistant(context, prompt: prompt),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+            child: Row(
+              children: [
+                Icon(icon, size: 14, color: const Color(0xFFFFC86B)),
+                const SizedBox(width: 7),
+                Expanded(
+                    child: Text(title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.white70))),
+                const Icon(Icons.chevron_right,
+                    size: 14, color: Colors.white24),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

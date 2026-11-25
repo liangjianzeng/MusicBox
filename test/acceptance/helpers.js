@@ -84,7 +84,7 @@ function portFree(port) {
     const srv = net.createServer();
     srv.once('error', () => resolve(false));
     srv.once('listening', () => srv.close(() => resolve(true)));
-    srv.listen(port, '127.0.0.1');
+    srv.listen(port);
   });
 }
 async function findFreePort(base, span) {

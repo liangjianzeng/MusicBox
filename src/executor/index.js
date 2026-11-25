@@ -14,7 +14,7 @@ const UPLOAD_RETRY = 3;
 
 // ---------- 参数与配置 ----------
 function parseArgs(argv) {
-  const args = { lanes: null, api: null, token: null, help: false };
+  const args = { lanes: null, api: null, token: null, mvAspectRatio: null, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -22,10 +22,12 @@ function parseArgs(argv) {
     if (a === '--api') args.api = take(args.api);
     else if (a === '--token') args.token = take(args.token);
     else if (a === '--lanes') args.lanes = take(args.lanes);
+    else if (a === '--mv-aspect-ratio' || a === '--mv-aspect') args.mvAspectRatio = take(args.mvAspectRatio);
     else if (a === '--help' || a === '-h') args.help = true;
     else if (a.startsWith('--api=')) args.api = a.slice(6);
     else if (a.startsWith('--token=')) args.token = a.slice(8);
     else if (a.startsWith('--lanes=')) args.lanes = a.slice(8);
+    else if (a.startsWith('--mv-aspect-ratio=') || a.startsWith('--mv-aspect=')) args.mvAspectRatio = a.slice(a.indexOf('=') + 1);
   }
   return args;
 }
@@ -33,12 +35,14 @@ function parseArgs(argv) {
 function loadConfig() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log('用法: node src/executor/index.js --api <API地址> --token <执行器令牌> --lanes music,intent,ffmpeg,imgspark,vidspark,lipsync,align\n' +
+    console.log('用法: node src/executor/index.js --api <API地址> --token <执行器令牌> --lanes music,intent,ffmpeg,imgspark,vidspark,lipsync,align [--mv-aspect-ratio 9:16|16:9|1:1]\n' +
       '环境: EXECUTOR_MOCK=1 | MB_API_URL MB_EXECUTOR_TOKEN MB_LANES MB_VAR_DIR\n' +
       '      MB_MUSIC_URL(默认 http://127.0.0.1:8190) MB_ASR_URL(默认 http://127.0.0.1:8191)\n' +
       '      MB_LLM_VLM_URL(默认 http://127.0.0.1:8193/v1) MB_LLM_VLM_MODEL MB_FFMPEG MB_FFPROBE\n' +
       '      MV(二期): MB_COMFY_URL(默认 http://127.0.0.1:8188，只观测不干预) MB_LIPSYNC_URL(默认 :8390)\n' +
-      '               MB_FACEGATE_URL(默认 :8395) MB_MV_ASR_URL(默认 :8391)');
+      '               MB_FACEGATE_URL(默认 :8395) MB_MV_ASR_URL(默认 :8391)\n' +
+      '               MB_MV_ASPECT_RATIO MB_MV_FPS MB_MV_SEED MB_MV_FACEGATE_GATE MB_MV_CACHE_DIR\n' +
+      '               MB_MV_COMPOSE_BUDGET_MS MB_MV_PREVIEW_BUDGET_MS');
     process.exit(0);
   }
   const lanes = String(args.lanes || process.env.MB_LANES || 'music,intent,ffmpeg')
@@ -58,6 +62,15 @@ function loadConfig() {
     facegateUrl: process.env.MB_FACEGATE_URL || 'http://127.0.0.1:8395',
     mvAsrUrl: process.env.MB_MV_ASR_URL || 'http://127.0.0.1:8391',
     mvFontFile: process.env.MB_MV_FONT || '', // compose 叠层 drawtext 字体（可选，Spark Linux 默认 fontconfig 即可）
+    mvAspectRatio: args.mvAspectRatio || process.env.MB_MV_ASPECT_RATIO || '9:16',
+    mvFps: Number(process.env.MB_MV_FPS) || 24,
+    mvSeed: Number(process.env.MB_MV_SEED),
+    mvImageWidth: Number(process.env.MB_MV_IMAGE_WIDTH) || undefined,
+    mvImageHeight: Number(process.env.MB_MV_IMAGE_HEIGHT) || undefined,
+    mvFacegateGate: Number(process.env.MB_MV_FACEGATE_GATE),
+    mvCacheDir: process.env.MB_MV_CACHE_DIR || path.join(__dirname, '..', '..', 'var', 'cache', 'mv'),
+    composeBudgetMs: Number(process.env.MB_MV_COMPOSE_BUDGET_MS),
+    previewBudgetMs: Number(process.env.MB_MV_PREVIEW_BUDGET_MS),
     llmVlmUrl: process.env.MB_LLM_VLM_URL || 'http://127.0.0.1:8193/v1',
     llmVlmModel: process.env.MB_LLM_VLM_MODEL || 'qwen38-fp4',
     ffmpegBin: process.env.MB_FFMPEG || 'ffmpeg',
@@ -191,7 +204,11 @@ async function runJob(job) {
     await postFail(job, 'UNSUPPORTED_JOB_TYPE', '本机未启用该任务通道');
     return;
   }
-  const workDir = path.join(cfg.execTmp, job.id);
+  const jobId = String(job.id == null ? '' : job.id);
+  if (!jobId || jobId === '.' || jobId === '..' || /[\\/:*?"<>|\u0000-\u001f]/.test(jobId)) {
+    await postFail(job, 'BAD_PARAMS', '任务目录名不合法'); return;
+  }
+  const workDir = path.join(cfg.execTmp, jobId);
   fs.mkdirSync(workDir, { recursive: true });
   const hb = setInterval(async () => {
     try { await apiPost('/executor/heartbeat', { job_id: job.id }, 15000); }

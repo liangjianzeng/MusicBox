@@ -137,17 +137,16 @@ function assertOwned(job, executorId) {
   }
 }
 
+function notifyAssistantJob(job, status) {
+  try { require('../l2assistant/core').notifyJob(Object.assign({}, job, { status }), status); } catch (e) { /* 观测不阻断任务 */ }
+}
+
 function setProgress(job, progress, note) {
   const p = U.clamp(progress, 0, 100);
   store.run("UPDATE jobs SET status='running', progress=?, note=?, updated_at=? WHERE id=?",
     p, String(note || '').slice(0, 200), U.nowIso(), job.id);
+  notifyAssistantJob(job, 'running');
   if (job.user_id) bus.jobProgress(job.user_id, job.id, p, note);
-  notifyAssistantJob(Object.assign({}, job, { status: 'running', progress: p }));
-}
-
-// 统一助手只消费任务变化通知；不改变 jobs 队列与既有 WSS 业务事件。
-function notifyAssistantJob(job) {
-  try { require('../l2assistant/core').notifyJob(job, job.status); } catch (e) { /* 通知失败不阻断任务 */ }
 }
 
 function progress(jobId, executorId, { progress: p, note }) {
@@ -162,10 +161,11 @@ function finishDone(job, result) {
   store.run("UPDATE jobs SET status='done', progress=100, result=?, lease_expire_at=NULL, updated_at=? WHERE id=?",
     U.jstr(result || {}), U.nowIso(), job.id);
   store.log('job.done', { job_id: job.id, type: job.type });
+  notifyAssistantJob(job, 'done');
   // lane 指标（N1-5，架构 §11 最小集）：per-type 完成耗时直方（created→done 总时长）
   try { require('./metrics').recordDone(job.type, Date.now() - (Date.parse(job.created_at) || Date.now())); } catch (e) { /* 观测不阻断 */ }
   if (job.user_id) bus.jobDone(job.user_id, job.id, result);
-  notifyAssistantJob(Object.assign({}, job, { status: 'done', progress: 100 }));
+  reconcileMvFailure(job);
 }
 
 // 落盘 multipart 文件 → Map<field, {rel,abs,bytes}>
@@ -252,6 +252,29 @@ function broadcastMvProgress(projectId, note) {
 function mvProjectOf(job, payload) {
   const pid = payload.project_id || null;
   return pid ? store.get('SELECT * FROM mv_projects WHERE id=?', pid) : null;
+}
+// 每个镜头/合成只认最新根任务；lipsync 子任务失败仍走降级，不据此判整片失败
+function reconcileMvFailure(job) {
+  const payload = U.jparse(job.payload, {}) || {};
+  const project = mvProjectOf(job, payload);
+  if (!project || !['shooting', 'composing'].includes(project.status)) return false;
+  const like = '%"project_id":"' + project.id + '"%';
+  const active = store.get("SELECT COUNT(*) AS n FROM jobs WHERE payload LIKE ? AND status IN ('queued','leased','running')", like);
+  if ((active && active.n) > 0) return false;
+  const jobs = store.all("SELECT * FROM jobs WHERE type IN ('mv_shot','mv_compose') AND payload LIKE ? ORDER BY created_at ASC, rowid ASC", like);
+  const latest = new Map();
+  for (const row of jobs) {
+    const pl = U.jparse(row.payload, {}) || {};
+    if (row.type === 'mv_shot' && pl.shot_id && !store.get('SELECT id FROM mv_shots WHERE id=?', pl.shot_id)) continue;
+    latest.set(row.type + ':' + (pl.shot_id || ''), row);
+  }
+  if (![...latest.values()].some((row) => row.status === 'failed')) return false;
+  const changed = store.run("UPDATE mv_projects SET status='failed', updated_at=? WHERE id=? AND status IN ('shooting','composing')", U.nowIso(), project.id);
+  if (changed.changes === 1) {
+    store.log('mv.project.failed', { project_id: project.id, user_id: project.user_id, job_id: job.id });
+    broadcastMvProgress(project.id, '拍摄未成功，可重拍恢复');
+  }
+  return changed.changes === 1;
 }
 function sanitizeSid(v) { return String(v || 'shot_x').replace(/[^\w.-]/g, '_'); }
 // 镜时间窗（累计 sec；有 timings 时按歌词行索引取对齐窗 ±0.2s，契约 v2.3 mv_lipsync win）
@@ -532,18 +555,16 @@ function maybeAutoCompose(projectId) {
     const statusHash = U.hash12(shots.map((s) => s.id + ':' + s.status).join('|'));
     const idemKey = 'mvac_' + U.hash12(p.user_id + '|' + p.id + '|' + statusHash);
     const cost = (AC.credits().mv || {}).compose || 0;
+    const takes = [];
+    for (const s of shots) {
+      const take = s.best_take_id ? store.get('SELECT * FROM mv_takes WHERE id=?', s.best_take_id) : null;
+      if (!take || !take.video_url) return false;
+      takes.push({ video: take.video_url, start_sec: 0, dur_sec: Math.max(0.5, Math.min(30, Number(s.sec) || 5)), seq: s.seq, strip_audio: true });
+    }
     if (!budget.checkBudget(p, cost).ok) { store.log('mv.autocompose.budget', { project_id: p.id }); return false; }
     const credits = require('../api/credits');
     try { credits.charge(p.user_id, cost, 'mv_compose', 'mv_project', p.id); }
     catch (e) { store.log('mv.autocompose.skip', { project_id: p.id, reason: String((e && e.code) || e) }); return false; }
-    // takes 清单（best_take 按 seq 拼接；compose 剥原生声画，防串音）
-    let cum = 0;
-    const takes = [];
-    for (const s of shots) {
-      const take = s.best_take_id ? store.get('SELECT * FROM mv_takes WHERE id=?', s.best_take_id) : null;
-      if (take && take.video_url) takes.push({ video: take.video_url, start_sec: Math.round(cum * 100) / 100, strip_audio: true });
-      cum += Number(s.sec) || 0;
-    }
     const work = p.work_id ? store.get('SELECT audio_master,title FROM works WHERE id=?', p.work_id) : null;
     store.run("UPDATE mv_projects SET credits_cost=credits_cost+?, status='composing', updated_at=? WHERE id=?", cost, U.nowIso(), p.id);
     try {
@@ -628,6 +649,7 @@ function completeTranscode(job, result, savedMap) {
       mp3Rel, peaksRel, mp3Rel ? 'mp3' : 'wav', payload.work_id);
   }
   store.run("UPDATE jobs SET status='done', progress=100, result=?, updated_at=? WHERE id=?", U.jstr(result), U.nowIso(), job.id);
+  notifyAssistantJob(job, 'done');
   if (job.user_id) bus.jobDone(job.user_id, job.id, result);
   // 父 job：全部 transcode 子任务到达终态即定稿（含失败——降级 wav master 交付）
   if (payload.parent_job_id) finalizeMusicParent(payload.parent_job_id);
@@ -766,8 +788,8 @@ function requeueOrFail(job, code, message) {
     store.run("UPDATE jobs SET status='queued', attempts=?, payload=?, executor_id=NULL, lease_expire_at=NULL, error_code=?, error_message=?, updated_at=? WHERE id=?",
       attempts, U.jstr(newPayload), code, message, U.nowIso(), job.id);
     store.log('job.requeue', { job_id: job.id, attempts, code });
+    notifyAssistantJob(job, 'queued');
     if (job.user_id) bus.jobProgress(job.user_id, job.id, job.progress || 0, '正在重试');
-    notifyAssistantJob(Object.assign({}, job, { status: 'queued' }));
     notify();
     return;
   }
@@ -777,13 +799,16 @@ function requeueOrFail(job, code, message) {
   if ((job.credits_cost || 0) > 0 && job.user_id) {
     const bal = store.tx(() => store.appendLedger(job.user_id, job.credits_cost, 'refund', 'job', job.id));
     store.run('UPDATE jobs SET credits_cost=0 WHERE id=?', job.id);
+    const failedPayload = U.jparse(job.payload, {}) || {};
+    if (failedPayload.project_id) store.run('UPDATE mv_projects SET credits_cost=MAX(0,credits_cost-?), credits_refunded=credits_refunded+?, updated_at=? WHERE id=?',
+      job.credits_cost, job.credits_cost, U.nowIso(), failedPayload.project_id);
     bus.creditDelta(job.user_id, job.credits_cost, bal);
   }
   if (job.user_id) {
     bus.jobError(job.user_id, job.id, { code: code === 'MODERATION_BLOCK' ? code : 'INTERNAL', message });
   }
   store.log('job.failed', { job_id: job.id, code, attempts });
-  notifyAssistantJob(Object.assign({}, job, { status: 'failed', error_code: code }));
+  notifyAssistantJob(job, 'failed');
   // 子 job 连带取消
   for (const c of store.all("SELECT * FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id)) {
     store.run("UPDATE jobs SET status='canceled', updated_at=? WHERE id=?", U.nowIso(), c.id);
@@ -797,6 +822,7 @@ function requeueOrFail(job, code, message) {
   if (job.type === 'mv_lipsync' && job.parent_job_id) {
     finalizeMvClipParent(job.parent_job_id);
   }
+  reconcileMvFailure(job);
 }
 
 // —— 心跳续租 ——
@@ -940,6 +966,6 @@ function stop() { if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null
 module.exports = {
   enqueue, getJob, poll, progress, complete, fail, heartbeat, sweep, start, stop, notify,
   finishDone, requeueOrFail,
-  broadcastMvProgress, finalizeMvClipParent, maybeAutoCompose, // MV 二期（契约 v2.8）
+  broadcastMvProgress, finalizeMvClipParent, maybeAutoCompose, reconcileMvFailure, // MV 二期（契约 v2.8）
   nightWindowOpen, queuedDispatchable, sweepMvTakes, // N1-5 非计算收尾（白盒/演练可复用）
 };

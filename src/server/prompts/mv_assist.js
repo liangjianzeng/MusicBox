@@ -30,7 +30,7 @@ async function buildScriptSuggest({ script_json, note, work, character, kind }) 
       { role: 'user', content: userParts.join('\n') },
     ], MV.llmAssistTimeoutMs);
     const json = P.extractJson(text);
-    if (!json || !Array.isArray(json.shots) || !json.shots.length) return { ok: false, code: 'NOT_READY' };
+    require('../core/mv_validator').assertShotShape(json, { work, character: character ? [character] : [], kind });
     const shots = scriptPrompt.normalizeShots(json.shots, work, character, kind);
     if (!shots.length) return { ok: false, code: 'NOT_READY' };
     return {
@@ -45,6 +45,7 @@ async function buildScriptSuggest({ script_json, note, work, character, kind }) 
       },
     };
   } catch (e) {
+    if (e && e.code === 'INVALID_LLM_OUTPUT') return { ok: false, code: e.code, message: e.message, status: 422 };
     return { ok: false, code: 'NOT_READY' }; // 端点不可达/返回不可用：如实拒绝，前端退回手动编辑
   }
 }

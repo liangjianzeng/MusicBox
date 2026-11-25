@@ -29,6 +29,7 @@ const MV = Object.create(config.mv, {
   credits: { get() { return AC.credits().mv || config.mv.credits; }, enumerable: true },
 });
 const STATUS_ORDER = ['drafting', 'casting', 'scripting', 'previewed', 'shooting', 'composing', 'ready'];
+const stageRank = (status) => status === 'failed' ? STATUS_ORDER.indexOf('shooting') : STATUS_ORDER.indexOf(status);
 const SHOT_DONE = ['clipReady', 'synced', 'locked'];
 
 // —— 机检字段防伪造（契约 v2.8.6）：只允许机检管线写入，PATCH 请求体一律静默剥除 ——
@@ -222,7 +223,7 @@ function mvImage(ctx) {
 
 // —— POST /v1/mv/image/precheck {file} —— 契约 v2.22：人像预检 4 项人话反馈（辅助非门禁，PIPL 仅即时判定不留存）；
 //    facegate(:8395) 不可达 → available:false、相关项 null、诚实降级、绝不 500、不阻断上传
-const FACEGATE_URL = process.env.MB_MV_FACEGATE_URL || 'http://127.0.0.1:8395';
+const FACEGATE_URL = MV.facegateUrl;
 function imgDims(buf) {
   if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
   if (buf[0] === 0xff && buf[1] === 0xd8) {
@@ -249,15 +250,25 @@ async function mvImagePrecheck(ctx) {
   try {
     const r = await fetch(FACEGATE_URL + '/score', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ img_b64: file.data.toString('base64') }), signal: AbortSignal.timeout(4000),
+      body: JSON.stringify({ img_b64: file.data.toString('base64') }), signal: AbortSignal.timeout(20000),
     });
     if (r.ok) {
       const j = await r.json();
       available = true;
-      const yaw = Number((j && j.yaw) || 0), pitch = Number((j && j.pitch) || 0), sc = Number((j && j.score) || 0);
-      checks.push({ key: 'frontal', pass: Math.abs(yaw) < 30 && Math.abs(pitch) < 30, msg: (Math.abs(yaw) < 30 && Math.abs(pitch) < 30) ? '正脸良好' : `偏航 ${yaw}°/俯仰 ${pitch}°，尽量正对镜头` });
-      checks.push({ key: 'lighting', pass: sc >= 0.5, msg: sc >= 0.5 ? '光照充足' : '光照偏暗，补光更佳' });
-      checks.push({ key: 'occlusion', pass: !j || j.pass !== false, msg: (j && j.occlusion) ? '面部有遮挡' : '无明显遮挡' });
+      const yaw = Number((j && j.yaw) || 0), pitch = Number((j && j.pitch) || 0);
+      const frontalOk = Math.abs(yaw) < 30 && Math.abs(pitch) < 30;
+      checks.push({ key: 'frontal', pass: frontalOk, msg: frontalOk ? '正脸良好' : `偏航 ${yaw}°/俯仰 ${pitch}°，尽量正对镜头` });
+      // 单图档（无 参考照）即 light/occlusion 直；对照档即 score 兜（score 即 身份 相似，仅 辅助读）
+      const light = j && j.light != null ? Number(j.light) : Math.max(0, Number((j && j.score) || 0));
+      checks.push({ key: 'lighting', pass: light >= 0.35, msg: light >= 0.35 ? '光照充足' : '光照偏暗，补光更佳' });
+      const occ = !!(j && j.occlusion === true);
+      checks.push({ key: 'occlusion', pass: !occ, msg: occ ? '面部有遮挡' : '无明显遮挡' });
+      if (j && j.face_detected === false) {
+        for (const k of ['frontal', 'lighting', 'occlusion']) {
+          const c = checks.find((x) => x.key === k);
+          if (c) { c.pass = null; c.msg = '未检测到人脸（上传即 仍允许，定妆 对照 首）'; }
+        }
+      }
     }
   } catch (e) { /* facegate 不可达 → 诚实降级 */ }
   if (!available) for (const k of ['frontal', 'lighting', 'occlusion']) checks.push({ key: k, pass: null, msg: '人脸预检服务未就绪' });
@@ -266,15 +277,19 @@ async function mvImagePrecheck(ctx) {
 }
 
 // —— POST /v1/mv/projects/:id/cast/confirm {character_id, cast_image_url, frame_sel[]} ——
-// 拍板固化 viewRefs（身份真源）；project status 推进到 scripting 显式延期至下一版契约（帧数据源依赖 executor）
+// 拍板固化 viewRefs（身份真源）；全部角色确认后从 casting 推进 scripting
 function castConfirm(ctx) {
   requireEnabled(ctx); const user = requireUser(ctx); ctx.user = user;
   const p = ownProject(ctx, ctx.params.id);
   if (!['casting', 'scripting'].includes(p.status)) throw new U.ApiError('BAD_REQUEST', '当前状态不可确认定妆');
   const b = ctx.body || {};
-  const chId = String(b.character_id || '').trim();
-  const ch = store.get('SELECT * FROM mv_characters WHERE id=? AND project_id=?', chId, p.id);
-  if (!ch) throw new U.ApiError('NOT_FOUND', '角色不存在或不属于该项目');
+  const requestedChId = String(b.character_id || '').trim();
+  const chars = store.all('SELECT * FROM mv_characters WHERE project_id=? ORDER BY rowid ASC', p.id);
+  const ch = requestedChId
+    ? chars.find((row) => row.id === requestedChId)
+    : (chars.length === 1 ? chars[0] : null);
+  if (!ch) throw new U.ApiError(requestedChId ? 'NOT_FOUND' : 'BAD_REQUEST',
+    requestedChId ? '角色不存在或不属于该项目' : '多角色项目必须指定 character_id');
   const castImageUrl = String(b.cast_image_url || '').trim();
   if (!castImageUrl) throw new U.ApiError('BAD_REQUEST', '缺少 cast_image_url');
   const frameSel = Array.isArray(b.frame_sel) ? b.frame_sel : [];
@@ -286,6 +301,11 @@ function castConfirm(ctx) {
   store.tx(() => {
     store.run('UPDATE mv_characters SET cast_image_url=?, viewrefs_json=?, confirmed_at=? WHERE id=?',
       castImageUrl, U.jstr(viewrefs), U.nowIso(), ch.id);
+    const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', p.id);
+    const chars = store.all('SELECT confirmed_at FROM mv_characters WHERE project_id=?', p.id);
+    if (fresh && fresh.status === 'casting' && chars.length && chars.every((c) => c.confirmed_at)) {
+      store.run("UPDATE mv_projects SET status='scripting', updated_at=? WHERE id=?", U.nowIso(), p.id);
+    }
   });
   store.log('mv.cast.confirm', { user_id: user.id, project_id: p.id, character_id: ch.id, viewrefs: viewrefs.length });
   return { status: 200, body: { character: characterShape(store.get('SELECT * FROM mv_characters WHERE id=?', ch.id)) } };
@@ -294,6 +314,9 @@ function castConfirm(ctx) {
 // —— PATCH /v1/mv/projects/:id {title?,brief?,script_json?,queue_mode?,ver} ——
 // ver CAS：失配 → 409 STALE（契约 v2.1）；script_json 变更才 ver++
 function patchProject(ctx) {
+  return patchProjectAsync(ctx);
+}
+async function patchProjectAsync(ctx) {
   requireEnabled(ctx); const user = requireUser(ctx); ctx.user = user;
   const p = ownProject(ctx, ctx.params.id);
   const b = stripMachineKeys(ctx.body || {}); // 机检字段防伪造（契约 v2.8.6）
@@ -304,20 +327,23 @@ function patchProject(ctx) {
   if (b.title !== undefined) { rules.moderateFields([b.title]); sets.push('title=?'); args.push(lex.sanitize(String(b.title)).slice(0, 80)); }
   if (b.brief !== undefined) { rules.moderateFields([b.brief]); sets.push('brief=?'); args.push(lex.sanitize(String(b.brief)).slice(0, 2000)); }
   let verBump = false;
+  let clean = null;
   if (b.script_json !== undefined) {
     if (b.script_json !== null && typeof b.script_json !== 'object') throw new U.ApiError('BAD_REQUEST', 'script_json 需为对象或 null');
     rules.moderateFields([U.jstr(b.script_json).slice(0, 4000)]);
-    const clean = lex.sanitizeDeep(b.script_json);
-    delete clean.ai_review; delete clean.timings; // 双保险（stripMachineKeys 已剥，纵深防御）
+    clean = b.script_json == null ? null : lex.sanitizeDeep(b.script_json);
+    if (clean) {
+      delete clean.ai_review; delete clean.timings;
+      const ch = mainCharacter(p.id);
+      require('../core/mv_validator').assertShotShape(clean, { work: projectWork(p) || {}, characters: ch ? [ch] : [], kind: p.kind });
+      clean.ai_review = await aireview.review({ script_json: clean, work: projectWork(p) || {}, kind: p.kind, characters: ch ? [ch] : [] });
+    }
     sets.push('script_json=?'); args.push(U.jstr(clean));
     verBump = true;
   }
   if (b.budget_credits !== undefined) {
-    // 人工恢复唯一通道（契约 v2.11）：调高预算 → paused=0 + 审计
     const nb = Number(b.budget_credits);
     if (!Number.isFinite(nb) || nb < 0 || nb > 1000000) throw new U.ApiError('BAD_REQUEST', 'budget_credits 需为 0-1000000 的数值');
-    budget.manualRaise(p, nb);
-    store.log('mv.project.patch.budget', { user_id: user.id, project_id: p.id, from: budget.budgetOf(p), to: nb });
   }
   if (b.queue_mode !== undefined) {
     const qm = String(b.queue_mode);
@@ -327,12 +353,22 @@ function patchProject(ctx) {
   if (!sets.length && b.budget_credits === undefined) throw new U.ApiError('BAD_REQUEST', '没有需要更新的字段');
   if (verBump) { sets.push('script_ver=script_ver+1'); }
   sets.push('updated_at=?'); args.push(U.nowIso());
-  store.run(`UPDATE mv_projects SET ${sets.join(',')} WHERE id=?`, ...args, p.id);
-  if (verBump) {
-    // v2.15.1 批注：剧本改动同步未成片镜（否则 boot/shoot 仍按旧 mv_shots 行拍摄——app 实测修复）
-    syncShotsFromScript(user, p, b.script_json);
-    engine.broadcastMvProgress(p.id, '剧本已更新，未成片镜已同步（成片镜不动）');
-  }
+  store.tx(() => {
+    const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', p.id);
+    if (!fresh || fresh.script_ver !== ver) throw new U.ApiError('STALE', '剧本版本已过期，请获取最新版本后重试', 409);
+    if (b.budget_credits !== undefined) {
+      const nb = Number(b.budget_credits);
+      budget.manualRaise(fresh, nb);
+      store.log('mv.project.patch.budget', { user_id: user.id, project_id: p.id, from: budget.budgetOf(fresh), to: nb });
+    }
+    const changed = store.run(`UPDATE mv_projects SET ${sets.join(',')} WHERE id=? AND script_ver=?`, ...args, p.id, ver);
+    if (changed.changes !== 1) throw new U.ApiError('STALE', '剧本版本已过期，请获取最新版本后重试', 409);
+    if (verBump) {
+      syncShotsFromScript(user, fresh, clean);
+      store.run('UPDATE mv_projects SET script_json=? WHERE id=?', U.jstr(clean), p.id);
+      engine.broadcastMvProgress(p.id, '剧本已更新，未成片镜已同步（成片镜不动）');
+    }
+  });
   store.log('mv.project.patch', { user_id: user.id, project_id: p.id, fields: Object.keys(b), ver: p.script_ver });
   return { status: 200, body: { project: projectShape(store.get('SELECT * FROM mv_projects WHERE id=?', p.id)) } };
 }
@@ -421,6 +457,7 @@ function cancelProject(ctx) {
   requireEnabled(ctx); const user = requireUser(ctx); ctx.user = user;
   const p = ownProject(ctx, ctx.params.id);
   if (['canceled', 'failed'].includes(p.status)) return { status: 200, body: { refunded: 0 } };
+  gov.cancelProjectTickets(p.id);
   const unshot = store.get("SELECT COUNT(*) AS n FROM mv_shots WHERE project_id=? AND status='draft'", p.id);
   const reserved = ((unshot && unshot.n) || 0) * (MV.credits.shot || 0);
   // 从账本核算本 project 已扣未退净额（不臆造退款；无扣费历史 → 0）
@@ -457,10 +494,6 @@ function activeOrRecent(idemKey) {
 function idemOf(user, project, type, extra) {
   return 'mvj_' + U.hash12([user.id, project.id, type, project.script_ver == null ? 1 : project.script_ver, U.jstr(extra || null)].join('|'));
 }
-function guardBudgetOrThrow(user, project, cost) {
-  const chk = budget.checkBudget(project, cost);
-  if (!chk.ok) throw new U.ApiError('BUDGET_EXCEEDED', '项目预算护栏已触发（超预算 120% 自动暂停），请调整后经人工提高预算恢复', 402);
-}
 function mainCharacter(projectId) {
   return store.get('SELECT * FROM mv_characters WHERE project_id=? ORDER BY rowid ASC', projectId);
 }
@@ -471,56 +504,103 @@ function requireScript(project) {
 function projectWork(project) {
   return project.work_id ? store.get('SELECT * FROM works WHERE id=?', project.work_id) : null;
 }
+function requireReviewClear(project) {
+  const sj = requireScript(project);
+  const ar = sj && sj.ai_review;
+  const high = ar && (ar.blocked || [...(ar.findings || []), ...(ar.llm_findings || [])].some((f) => f && f.level === 'high'));
+  if (high) throw new U.ApiError('AI_REVIEW_BLOCKED', '剧本机审存在高风险项，请先修改剧本后再开机/拍摄', 409);
+  if (ar && ar.script_hash && ar.script_hash !== aireview.scriptHash(sj)) {
+    throw new U.ApiError('AI_REVIEW_STALE', '剧本已在机审后修改，请重新完成机审后再开机/拍摄', 409);
+  }
+}
+function shootPayload(project, shot, ch, work, extra) {
+  const refs = ch ? (U.jparse(ch.viewrefs_json, []) || []).map((f) => f.url).filter(Boolean).slice(0, 3) : [];
+  const lyrics = String((work && work.lyrics) || '').split(/\r?\n/);
+  return Object.assign({
+    project_id: project.id, shot_id: shot.id,
+    shot: {
+      first_frame: shot.storyboard_url ? store.publicUrl(shot.storyboard_url) : null,
+      refs, motion: lex.sanitize(shot.desc || ''),
+      singing: shot.kind === 'singing' && project.kind === 'vocal',
+      lyric: Number.isInteger(shot.lyric_from) ? lyrics.slice(shot.lyric_from, shot.lyric_to == null ? shot.lyric_from + 1 : shot.lyric_to).join('；') : '',
+    },
+    project_kind: project.kind, seed: U.randInt(900000) + 1000, tier: 'quality', initiated_by: 'user',
+  }, extra || {});
+}
 
 // 先扣后派单（契约 v2.8.1/§1）：幂等命中→不扣分；扣分成功但 enqueue 抛/并发同键 → 即时全额 refund（账本配对）
+function persistBudgetPause(project, cost, error) {
+  if (!error || error.code !== 'BUDGET_EXCEEDED') return;
+  const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', project.id);
+  if (fresh) budget.checkBudget(fresh, cost);
+}
 function chargeThenEnqueue(user, project, { jobType, cost, reason, payload, idemKey }) {
-  const ex = activeOrRecent(idemKey);
-  if (ex) return { status: 202, body: { job_id: ex.id, credits_charged: 0, idempotent: true } };
-  if (cost > 0) credits.charge(user.id, cost, reason, 'mv_project', project.id);
-  let r;
   try {
-    r = engine.enqueue({ type: jobType, payload, userId: user.id, idemKey, creditsCost: cost });
+    return store.tx(() => {
+      const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', project.id);
+      if (!fresh) throw new U.ApiError('NOT_FOUND', 'MV 项目不存在');
+      const prior = idemKey ? store.get('SELECT * FROM jobs WHERE idem_key=?', idemKey) : null;
+      const retry = prior && ['failed', 'canceled'].includes(prior.status) ? idemKey + '_retry_' + U.uid('n_') : idemKey;
+      const ex = retry === idemKey ? activeOrRecent(idemKey) : null;
+      if (ex) return { status: 202, body: { job_id: ex.id, credits_charged: 0, idempotent: true } };
+      const chk = budget.checkBudget(fresh, cost);
+      if (!chk.ok) throw new U.ApiError('BUDGET_EXCEEDED', '项目预算护栏已触发（超预算 120% 自动暂停），请调整后经人工提高预算恢复', 402);
+      if (cost > 0) credits.charge(user.id, cost, reason, 'mv_project', fresh.id);
+      let r;
+      try {
+        r = engine.enqueue({ type: jobType, payload, userId: user.id, idemKey: retry, creditsCost: cost });
+      } catch (e) {
+        if (cost > 0) credits.refund(user.id, cost, 'mv_project', fresh.id);
+        throw e;
+      }
+      if (r.idempotent) {
+        if (cost > 0) credits.refund(user.id, cost, 'mv_project', fresh.id);
+        return { status: 202, body: { job_id: r.job.id, credits_charged: 0, idempotent: true } };
+      }
+      if (cost > 0) store.run('UPDATE mv_projects SET credits_cost=credits_cost+?, updated_at=? WHERE id=?', cost, U.nowIso(), fresh.id);
+      store.log('mv.dispatch', { user_id: user.id, project_id: fresh.id, job_type: jobType, cost, initiated_by: payload && payload.initiated_by || 'user' });
+      return { status: 202, body: { job_id: r.job.id, credits_charged: cost, idempotent: false } };
+    });
   } catch (e) {
-    if (cost > 0) credits.refund(user.id, cost, 'mv_project', project.id);
+    persistBudgetPause(project, cost, e);
     throw e;
   }
-  if (r.idempotent) { // 并发同参竞态：后到者退款（一期 DEV-LADDER-PAY 同源纪律）
-    if (cost > 0) credits.refund(user.id, cost, 'mv_project', project.id);
-    return { status: 202, body: { job_id: r.job.id, credits_charged: 0, idempotent: true } };
-  }
-  if (cost > 0) store.run('UPDATE mv_projects SET credits_cost=credits_cost+? WHERE id=?', cost, project.id);
-  store.log('mv.dispatch', { user_id: user.id, project_id: project.id, job_type: jobType, cost, initiated_by: 'user' });
-  return { status: 202, body: { job_id: r.job.id, credits_charged: cost, idempotent: false } };
 }
 
 // 剧本就绪（免费，契约 v2.9）：无剧本 → LLM/兜底编译 + 校验/机审（system free）→ 落地并物化 mv_shots（draft）
 async function ensureScript(user, project) {
   let sj = requireScript(project);
+  let compiled = null;
   if (!sj) {
     const ch = mainCharacter(project.id);
     const work = projectWork(project);
-    const compiled = await mvScript.compileScript({ work: work || {}, character: ch, brief: project.brief, kind: project.kind });
+    compiled = await mvScript.compileScript({ work: work || {}, character: ch, brief: project.brief, kind: project.kind });
     sj = compiled.script_json;
     rules.moderateFields([U.jstr(sj).slice(0, 4000)]);
-    const review = await aireview.review({ script_json: sj, work: work || {}, kind: project.kind, characters: ch ? [ch] : [] });
-    sj.ai_review = review; // 机检字段：仅本管线可写（契约 v2.8.6）
-    store.run('UPDATE mv_projects SET script_json=?, status=?, updated_at=? WHERE id=?',
-      U.jstr(sj), STATUS_ORDER.indexOf(project.status) < STATUS_ORDER.indexOf('scripting') ? 'scripting' : project.status, U.nowIso(), project.id);
-    project.script_json = U.jstr(sj);
-    store.log('mv.script.compiled', { user_id: user.id, project_id: project.id, mode: compiled.assist.mode, shots: sj.shots.length });
+    sj.ai_review = await aireview.review({ script_json: sj, work: work || {}, kind: project.kind, characters: ch ? [ch] : [] });
   }
-  // 物化镜头（幂等：已有镜头不动——编辑权在人）
-  const have = store.get('SELECT COUNT(*) AS n FROM mv_shots WHERE project_id=?', project.id);
-  if (!have || !have.n) {
-    store.tx(() => {
-      sj.shots.forEach((s, i) => {
-        store.run(
-          'INSERT INTO mv_shots(id,project_id,seq,kind,sec,lyric_from,lyric_to,desc,camera,cast_ids,status,rerolls) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)',
-          U.uid('mvs_'), project.id, s.seq || i + 1, s.kind, s.sec, s.lyric_from, s.lyric_to,
-          s.desc, s.camera, U.jstr(s.cast_ids || []), 'draft');
-      });
+  sj = store.tx(() => {
+    const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', project.id);
+    const existing = requireScript(fresh);
+    if (existing) sj = existing;
+    else store.run('UPDATE mv_projects SET script_json=?, status=?, updated_at=? WHERE id=?',
+      U.jstr(sj), stageRank(fresh.status) < stageRank('scripting') ? 'scripting' : fresh.status, U.nowIso(), fresh.id);
+    const have = store.get('SELECT COUNT(*) AS n FROM mv_shots WHERE project_id=?', fresh.id);
+    const rows = have && have.n ? store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC, rowid ASC', fresh.id) : [];
+    let changed = false;
+    sj.shots.forEach((s, i) => {
+      if (!s.id) {
+        const row = rows.find((r) => r.seq === s.seq) || rows[i];
+        s.id = row ? row.id : U.uid('mvs_');
+        changed = true;
+      }
     });
-  }
+    if (!have || !have.n) syncShotsFromScript(user, fresh, sj);
+    else if (changed) store.run('UPDATE mv_projects SET script_json=?, updated_at=? WHERE id=?', U.jstr(sj), U.nowIso(), fresh.id);
+    return sj;
+  });
+  project.script_json = U.jstr(sj);
+  if (compiled) store.log('mv.script.compiled', { user_id: user.id, project_id: project.id, mode: compiled.assist.mode, shots: sj.shots.length });
   return sj;
 }
 
@@ -531,30 +611,44 @@ function syncShotsFromScript(user, project, sj, opts) {
   opts = opts || {};
   const rows = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC, rowid ASC', project.id);
   const shots = (sj && Array.isArray(sj.shots)) ? sj.shots : [];
+  const used = new Set();
+  const fixedSeq = new Set(rows.filter((r) => SHOT_DONE.includes(r.status)).map((r) => r.seq));
   store.tx(() => {
     shots.forEach((s, i) => {
-      const row = rows[i];
-      if (!row) { // 剧本新增尾行 → 物化 draft 镜
+      let row = s.id ? rows.find((r) => r.id === s.id && !used.has(r.id)) : null;
+      if (!row && !s.id && Number.isInteger(s.seq)) row = rows.find((r) => r.seq === s.seq && !used.has(r.id));
+      if (!row && !s.id && rows[i] && !used.has(rows[i].id)) row = rows[i];
+      const wantedSeq = Number.isInteger(s.seq) ? s.seq : i + 1;
+      let seq = wantedSeq;
+      if (!row || !SHOT_DONE.includes(row.status)) {
+        while (fixedSeq.has(seq)) seq++;
+        fixedSeq.add(seq);
+      }
+      if (!row) {
+        const id = s.id || U.uid('mvs_');
+        s.id = id;
         store.run(
           'INSERT INTO mv_shots(id,project_id,seq,kind,sec,lyric_from,lyric_to,desc,camera,cast_ids,status,rerolls) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)',
-          U.uid('mvs_'), project.id, s.seq || i + 1, s.kind || 'story', s.sec == null ? 5 : s.sec,
+          id, project.id, seq, s.kind || 'story', s.sec == null ? 5 : s.sec,
           s.lyric_from == null ? null : s.lyric_from, s.lyric_to == null ? null : s.lyric_to,
           s.desc || '', s.camera || '', U.jstr(s.cast_ids || []), 'draft');
+        used.add(id);
         return;
       }
-      if (SHOT_DONE.includes(row.status)) return; // 成片镜（clipReady/synced/locked）绝不动
+      used.add(row.id);
+      if (SHOT_DONE.includes(row.status)) return;
       store.run(
         'UPDATE mv_shots SET seq=?, kind=?, sec=?, lyric_from=?, lyric_to=?, desc=?, camera=?, cast_ids=?' + (opts.resetToDraft ? ", status='draft'" : '') + ' WHERE id=?',
-        s.seq == null ? i + 1 : s.seq, s.kind || row.kind, s.sec == null ? row.sec : s.sec,
-        s.lyric_from == null ? row.lyric_from : s.lyric_from, s.lyric_to == null ? row.lyric_to : s.lyric_to,
-        s.desc == null ? row.desc : s.desc, s.camera == null ? row.camera : s.camera,
-        U.jstr(s.cast_ids || U.toArr(row.cast_ids)), row.id);
+        seq, s.kind === undefined ? row.kind : s.kind, s.sec === undefined ? row.sec : s.sec,
+        s.lyric_from === undefined ? row.lyric_from : s.lyric_from, s.lyric_to === undefined ? row.lyric_to : s.lyric_to,
+        s.desc === undefined ? row.desc : s.desc, s.camera === undefined ? row.camera : s.camera,
+        U.jstr(s.cast_ids === undefined ? U.toArr(row.cast_ids) : s.cast_ids), row.id);
     });
-    for (let i = shots.length; i < rows.length; i++) { // 脚本移除的未成片行 → 删行（成片行保留）
-      if (SHOT_DONE.includes(rows[i].status)) continue;
-      store.run('DELETE FROM mv_takes WHERE shot_id=?', rows[i].id);
-      store.run('DELETE FROM mv_shots WHERE id=?', rows[i].id);
-      store.log('mv.shot.script_removed', { user_id: user ? user.id : null, project_id: project.id, shot_id: rows[i].id, seq: rows[i].seq });
+    for (const row of rows) {
+      if (used.has(row.id) || SHOT_DONE.includes(row.status)) continue;
+      store.run('DELETE FROM mv_takes WHERE shot_id=?', row.id);
+      store.run('DELETE FROM mv_shots WHERE id=?', row.id);
+      store.log('mv.shot.script_removed', { user_id: user ? user.id : null, project_id: project.id, shot_id: row.id, seq: row.seq });
     }
   });
 }
@@ -563,10 +657,10 @@ function syncShotsFromScript(user, project, sj, opts) {
 async function mvJobs(ctx) {
   requireEnabled(ctx); const user = requireUser(ctx); ctx.user = user;
   const p = ownProject(ctx, ctx.params.id);
-  if (['canceled', 'failed'].includes(p.status)) throw new U.ApiError('NOT_FOUND', '项目已结束，不能派单');
-  if (!U.allowRate('mv:jobs:' + user.id, 30, 60000)) throw new U.ApiError('RATE_LIMITED', '派单过于频繁，请稍后再试');
   const b = ctx.body || {};
   const type = String(b.type || '');
+  if (p.status === 'canceled' || (p.status === 'failed' && type !== 'shoot')) throw new U.ApiError('NOT_FOUND', '项目已结束，不能派单');
+  if (!U.allowRate('mv:jobs:' + user.id, 30, 60000)) throw new U.ApiError('RATE_LIMITED', '派单过于频繁，请稍后再试');
   const params = (b.params && typeof b.params === 'object') ? b.params : {};
   const ch = mainCharacter(p.id);
   const work = projectWork(p);
@@ -574,7 +668,6 @@ async function mvJobs(ctx) {
 
   if (type === 'cast_image') {
     if (!ch) throw new U.ApiError('NOT_FOUND', '角色不存在');
-    guardBudgetOrThrow(user, p, MV.credits.cast_image);
     return chargeThenEnqueue(user, p, {
       jobType: 'mv_cast_image', cost: MV.credits.cast_image, reason: 'mv_cast_image',
       payload: {
@@ -590,7 +683,6 @@ async function mvJobs(ctx) {
     if (!ch) throw new U.ApiError('NOT_FOUND', '角色不存在');
     const castImage = String(params.cast_image_url || ch.cast_image_url || '').trim();
     if (!castImage) throw new U.ApiError('BAD_REQUEST', '请先派单 cast_image 并挑选定妆照（cast_image_url）');
-    guardBudgetOrThrow(user, p, MV.credits.cast_video);
     return chargeThenEnqueue(user, p, {
       jobType: 'mv_cast_video', cost: MV.credits.cast_video, reason: 'mv_cast_video',
       payload: { project_id: p.id, character_id: ch.id, cast_image: castImage, seed: U.randInt(900000) + 1000, motion: '自然转头与表情，多角度展示' },
@@ -602,7 +694,6 @@ async function mvJobs(ctx) {
     const cur = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', p.id);
     if (!cur.length) throw new U.ApiError('NOT_FOUND', '镜头未就绪');
     const cost = Math.max(1, cur.length) * MV.credits.storyboard;
-    guardBudgetOrThrow(user, p, cost);
     const viewrefs = {};
     if (ch) viewrefs[ch.id] = (U.jparse(ch.viewrefs_json, []) || []).map((f) => f.url).filter(Boolean).slice(0, 3);
     return chargeThenEnqueue(user, p, {
@@ -621,7 +712,6 @@ async function mvJobs(ctx) {
     const sj = requireScript(p);
     if (!sj) throw new U.ApiError('NOT_READY', '请先完成剧本（align 前置：剧本就绪）', 409);
     if (!String((work && work.lyrics) || '').trim()) throw new U.ApiError('NOT_READY', '母作品没有歌词，无法对齐', 409);
-    guardBudgetOrThrow(user, p, MV.credits.align);
     return chargeThenEnqueue(user, p, {
       jobType: 'mv_align', cost: MV.credits.align, reason: 'mv_align',
       payload: {
@@ -648,7 +738,6 @@ async function dispatchPreviewShootCompose(user, p, type, params, shotsIn, workI
     const prior = store.get("SELECT COUNT(*) AS n FROM jobs WHERE type='mv_preview' AND user_id=? AND payload LIKE ?", user.id, '%"project_id":"' + p.id + '"%');
     const firstFree = !((prior && prior.n) || 0);
     const cost = firstFree ? 0 : MV.credits.preview; // D9：每项目首次免费，重出 5⚡
-    if (!firstFree) guardBudgetOrThrow(user, p, cost);
     return chargeThenEnqueue(user, p, {
       jobType: 'mv_preview', cost, reason: 'mv_preview',
       payload: {
@@ -665,34 +754,33 @@ async function dispatchPreviewShootCompose(user, p, type, params, shotsIn, workI
     const shot = store.get('SELECT * FROM mv_shots WHERE id=? AND project_id=?', shotId, p.id);
     if (!shot) throw new U.ApiError('NOT_FOUND', '镜头不存在');
     if (SHOT_DONE.includes(shot.status)) throw new U.ApiError('NOT_READY', '该镜已成片，请走重拍通道（shots/:id/jobs reshoot）', 409);
-    if (STATUS_ORDER.indexOf(p.status) < STATUS_ORDER.indexOf('scripting')) throw new U.ApiError('NOT_READY', '请先完成剧本/分镜', 409);
-    guardBudgetOrThrow(user, p, MV.credits.shot);
-    const refs = ch ? (U.jparse(ch.viewrefs_json, []) || []).map((f) => f.url).filter(Boolean).slice(0, 3) : [];
-    const lyrics = String((work && work.lyrics) || '').split(/\r?\n/);
-    return chargeThenEnqueue(user, p, {
-      jobType: 'mv_shot', cost: MV.credits.shot, reason: 'mv_shot',
-      payload: {
-        project_id: p.id, shot_id: shot.id,
-        shot: {
-          first_frame: shot.storyboard_url ? store.publicUrl(shot.storyboard_url) : null,
-          refs, motion: lex.sanitize(shot.desc || ''),
-          singing: shot.kind === 'singing' && p.kind === 'vocal',
-          lyric: Number.isInteger(shot.lyric_from) ? lyrics.slice(shot.lyric_from, shot.lyric_to == null ? shot.lyric_from + 1 : shot.lyric_to).join('；') : '',
-        },
-        project_kind: p.kind, seed: U.randInt(900000) + 1000, tier: 'quality', initiated_by: 'user',
-      },
-      idemKey: 'mvb_' + U.hash12([user.id, p.id, shot.id, p.script_ver, 'pre', shot.rerolls || 0].join('|')),
-    });
+    if (stageRank(p.status) < stageRank('scripting')) throw new U.ApiError('NOT_READY', '请先完成剧本/分镜', 409);
+    requireReviewClear(p);
+    let result;
+    try {
+      result = store.tx(() => {
+        const out = chargeThenEnqueue(user, p, {
+          jobType: 'mv_shot', cost: MV.credits.shot, reason: 'mv_shot',
+          payload: shootPayload(p, shot, ch, work),
+          idemKey: 'mvb_' + U.hash12([user.id, p.id, shot.id, p.script_ver, 'pre', shot.rerolls || 0].join('|')),
+        });
+        if (!out.body.idempotent || p.status === 'failed') store.run("UPDATE mv_projects SET status='shooting', updated_at=? WHERE id=?", U.nowIso(), p.id);
+        return out;
+      });
+    } catch (e) {
+      persistBudgetPause(p, MV.credits.shot, e);
+      throw e;
+    }
+    engine.broadcastMvProgress(p.id, '已提交拍摄，剧组处理中');
+    return result;
   }
   // compose（手动补触发；自动触发在 engine.maybeAutoCompose）
   if (!shots.length || !shots.every((s) => SHOT_DONE.includes(s.status))) throw new U.ApiError('NOT_READY', '尚有镜头未成片，不能合成', 409);
-  guardBudgetOrThrow(user, p, MV.credits.compose);
-  let cum = 0;
   const takes = [];
   for (const s of shots) {
     const take = s.best_take_id ? store.get('SELECT * FROM mv_takes WHERE id=?', s.best_take_id) : null;
-    if (take && take.video_url) takes.push({ video: take.video_url, start_sec: Math.round(cum * 100) / 100, strip_audio: true });
-    cum += Number(s.sec) || 0;
+    if (!take || !take.video_url) throw new U.ApiError('NOT_READY', '镜头 ' + s.id + ' 缺少可用成片，请先重拍', 409);
+    takes.push({ video: take.video_url, start_sec: 0, dur_sec: Math.max(0.5, Math.min(30, Number(s.sec) || 5)), seq: s.seq, strip_audio: true });
   }
   return chargeThenEnqueue(user, p, {
     jobType: 'mv_compose', cost: MV.credits.compose, reason: 'mv_compose',
@@ -714,9 +802,10 @@ async function mvBoot(ctx) {
   requireEnabled(ctx); const user = requireUser(ctx); ctx.user = user;
   const p = ownProject(ctx, ctx.params.id);
   const b = ctx.body || {};
-  if (['canceled', 'failed'].includes(p.status)) throw new U.ApiError('NOT_READY', '项目已结束，不能开机', 409);
-  // ① 状态门：必须先出样片（S7 先看片再掏分）
-  if (STATUS_ORDER.indexOf(p.status) < STATUS_ORDER.indexOf('previewed')) {
+  if (p.status === 'canceled') throw new U.ApiError('NOT_READY', '项目已取消，不能开机', 409);
+  requireReviewClear(p);
+  // ① 状态门：必须先出样片（S7 先看片再掏分）；failed 允许从原报价重拍恢复
+  if (stageRank(p.status) < stageRank('previewed')) {
     throw new U.ApiError('NOT_READY', '请先出样片与报价（boot 前置：status≥previewed）', 409);
   }
   // ② 报价 CAS（est_ver=hash12，报价卡数据源=GET project.est/est_ver）
@@ -724,41 +813,50 @@ async function mvBoot(ctx) {
   if (!est || !p.est_ver) throw new U.ApiError('NOT_READY', '报价尚未生成，请先出样片', 409);
   if (String(b.est_ver || '') !== String(p.est_ver)) throw new U.ApiError('EST_STALE', '报价已过期，请重新查看报价卡', 409);
   const shots = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', p.id);
+  const ch = mainCharacter(p.id);
+  const work = projectWork(p);
   const pending = shots.filter((s) => !SHOT_DONE.includes(s.status));
   if (!shots.length) throw new U.ApiError('NOT_READY', '没有可拍的镜头', 409);
   if (!pending.length) { // 全部已成片：幂等返回既有 shot jobs（boot 不重复扣分）
     const jobs = store.all("SELECT id FROM jobs WHERE user_id=? AND type='mv_shot' AND payload LIKE ? ORDER BY rowid ASC",
       user.id, '%"project_id":"' + p.id + '"%');
+    if (p.status === 'failed') store.run("UPDATE mv_projects SET status='shooting', updated_at=? WHERE id=?", U.nowIso(), p.id);
     return { status: 202, body: { jobs: jobs.map((j) => j.id), credits_charged: 0, idempotent: true } };
   }
-  // ③ 预算护栏（cost+est > budget×1.2 → 402 + paused=1，S10/v2.11）
+  // ③ 余额核验（报价总额硬顶，先扣后派单的前置）
   const estTotal = Number(est.credits) || budget.estimate(p, shots).credits;
-  guardBudgetOrThrow(user, p, estTotal);
-  // ④ 余额核验（报价总额硬顶，先扣后派单的前置）
   const bal = store.getBalance(user.id);
   if (bal < estTotal) throw new U.ApiError('CREDITS_NOT_ENOUGH', `积分不足，开机需要约 ${estTotal} 积分（含后续口型/合成），当前余额 ${bal}`);
-  // ⑤ enqueueOnce 逐镜（idem=hash(user+project+shot+ver)，已成片跳过；重复 boot 同批 job）
+  // ④ 整批派单串行化；逐镜幂等、预算与扣费在同一事务
   const jobIds = [];
   let charged = 0;
   let anyNew = false;
-  for (const s of pending) {
-    const idemKey = 'mvb_' + U.hash12([user.id, p.id, s.id, p.script_ver, 'boot'].join('|'));
-    const r = chargeThenEnqueue(user, p, {
-      jobType: 'mv_shot', cost: MV.credits.shot, reason: 'mv_shot',
-      payload: {
-        project_id: p.id, shot_id: s.id,
-        shot: { first_frame: s.storyboard_url ? store.publicUrl(s.storyboard_url) : null, refs: [], motion: lex.sanitize(s.desc || ''), singing: s.kind === 'singing' && p.kind === 'vocal', lyric: '' },
-        project_kind: p.kind, seed: U.randInt(900000) + 1000, tier: 'quality', initiated_by: 'user',
-      },
-      idemKey,
+  try {
+    store.tx(() => {
+      const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', p.id);
+      if (!fresh || fresh.status === 'canceled') throw new U.ApiError('NOT_READY', '项目已取消，不能开机', 409);
+      if (String(fresh.est_ver || '') !== String(p.est_ver)) throw new U.ApiError('EST_STALE', '报价已过期，请重新查看报价卡', 409);
+      requireReviewClear(fresh);
+      const chk = budget.checkBudget(fresh, estTotal);
+      if (!chk.ok) throw new U.ApiError('BUDGET_EXCEEDED', '项目预算护栏已触发（超预算 120% 自动暂停），请调整后经人工提高预算恢复', 402);
+      for (const s of pending) {
+        const idemKey = 'mvb_' + U.hash12([user.id, p.id, s.id, fresh.script_ver, 'boot'].join('|'));
+        const r = chargeThenEnqueue(user, fresh, {
+          jobType: 'mv_shot', cost: MV.credits.shot, reason: 'mv_shot',
+          payload: shootPayload(fresh, s, ch, work), idemKey,
+        });
+        jobIds.push(r.body.job_id);
+        charged += r.body.credits_charged || 0;
+        if (!r.body.idempotent) anyNew = true;
+      }
+      if (anyNew || fresh.status === 'failed' || stageRank(fresh.status) < stageRank('shooting')) {
+        store.run("UPDATE mv_projects SET status='shooting', updated_at=? WHERE id=?", U.nowIso(), fresh.id);
+        engine.broadcastMvProgress(fresh.id, '已开机开拍，剧组进场（' + pending.length + ' 镜）');
+      }
     });
-    jobIds.push(r.body.job_id);
-    charged += r.body.credits_charged || 0;
-    if (!r.body.idempotent) anyNew = true;
-  }
-  if (anyNew || STATUS_ORDER.indexOf(p.status) < STATUS_ORDER.indexOf('shooting')) {
-    store.run("UPDATE mv_projects SET status='shooting', updated_at=? WHERE id=?", U.nowIso(), p.id);
-    engine.broadcastMvProgress(p.id, '已开机开拍，剧组进场（' + pending.length + ' 镜）');
+  } catch (e) {
+    persistBudgetPause(p, estTotal, e);
+    throw e;
   }
   store.log('mv.boot', { user_id: user.id, project_id: p.id, shots: pending.length, charged, est_ver: p.est_ver });
   return { status: 202, body: { jobs: jobIds, credits_charged: charged, idempotent: !anyNew } };
@@ -771,14 +869,19 @@ async function shotJobs(ctx) {
   const shot = store.get('SELECT * FROM mv_shots WHERE id=?', ctx.params.id);
   if (!shot) throw new U.ApiError('NOT_FOUND', '镜头不存在');
   const p = ownProject(ctx, shot.project_id);
-  if (['canceled', 'failed'].includes(p.status)) throw new U.ApiError('NOT_FOUND', '项目已结束');
-  return shotJobsCore(user, p, shot, ctx.body || {});
+  if (p.status === 'canceled') throw new U.ApiError('NOT_FOUND', '项目已取消');
+  const body = ctx.body || {};
+  const system = String(body.initiated_by || '') === 'system';
+  if (system && !U.timingSafeEq(String((ctx.headers || {})['x-executor-token'] || ''), config.executorToken)) {
+    throw new U.ApiError('FORBIDDEN', '系统补拍仅允许执行器凭证调用', 403);
+  }
+  return shotJobsCore(user, p, shot, body, system);
 }
 // 内核（wave-3 抽取：确认票执行路径复用同一函数——扣费唯一落点 chargeThenEnqueue，不开新账）
-async function shotJobsCore(user, p, shot, b) {
+async function shotJobsCore(user, p, shot, b, system = false) {
   const type = String(b.type || '');
   if (!['reshoot', 'resync'].includes(type)) throw new U.ApiError('BAD_REQUEST', 'type 仅支持 reshoot 或 resync');
-  const system = String(b.initiated_by || 'user') === 'system';
+  if (type === 'reshoot' && !system) requireReviewClear(p);
   const reason = lex.sanitize(String(b.reason || '')).slice(0, 120);
   if (reason) rules.moderateFields([reason]);
   const work = projectWork(p);
@@ -791,22 +894,12 @@ async function shotJobsCore(user, p, shot, b) {
   }
   const jobType = type === 'reshoot' ? 'mv_shot' : 'mv_lipsync';
   const cost = system ? 0 : (type === 'reshoot' ? MV.credits.shot : MV.credits.lipsync);
-  if (!system) guardBudgetOrThrow(user, p, cost);
   const rerolls = (shot.rerolls || 0) + (system ? 0 : 1);
   // chips 诊断链（§5.3 单一真源：reason_history）
   const hist = U.jparse(shot.reason_history, []) || [];
   hist.push({ chip: reason || type, at: U.nowIso(), action: type, billed: cost > 0, initiated_by: system ? 'system' : 'user', ...(motionAssist ? { motion_assist: motionAssist } : {}) });
   const payload = type === 'reshoot'
-    ? {
-        project_id: p.id, shot_id: shot.id,
-        shot: {
-          first_frame: shot.storyboard_url ? store.publicUrl(shot.storyboard_url) : null,
-          refs: (() => { const ch = mainCharacter(p.id); return ch ? (U.jparse(ch.viewrefs_json, []) || []).map((f) => f.url).filter(Boolean).slice(0, 3) : []; })(),
-          motion: motionOut, singing: shot.kind === 'singing' && p.kind === 'vocal', lyric: '',
-        },
-        project_kind: p.kind, seed: U.randInt(900000) + 1000, tier: 'quality',
-        origin: system ? 'system_auto' : 'user_reshoot', initiated_by: system ? 'system' : 'user',
-      }
+    ? shootPayload(p, shot, mainCharacter(p.id), work, { origin: system ? 'system_auto' : 'user_reshoot', initiated_by: system ? 'system' : 'user' })
     : (() => {
         const take = shot.best_take_id ? store.get('SELECT * FROM mv_takes WHERE id=?', shot.best_take_id) : null;
         let win = { start_sec: 0, dur_sec: Math.max(0.5, Number(shot.sec) || 5), shot_id: shot.id };
@@ -818,13 +911,26 @@ async function shotJobsCore(user, p, shot, b) {
         }
         return { project_id: p.id, shot_id: shot.id, take_id: shot.best_take_id, video: take ? take.video_url : null, audio_master: (work && work.audio_master) || null, win, reroll: 0, origin: system ? 'system_auto' : 'auto' };
       })();
+  if (type === 'reshoot') payload.shot.motion = motionOut;
   const idemKey = 'mvsj_' + U.hash12([user.id, p.id, shot.id, type, rerolls, system ? 'sys' : 'usr'].join('|'));
-  if (!system) {
-    if (type === 'reshoot') store.run("UPDATE mv_shots SET status='stale', rerolls=? WHERE id=?", rerolls, shot.id);
-    else store.run('UPDATE mv_shots SET rerolls=? WHERE id=?', rerolls, shot.id);
+  let r;
+  try {
+    r = store.tx(() => {
+      if (!system) {
+        if (type === 'reshoot') store.run("UPDATE mv_shots SET status='stale', rerolls=? WHERE id=?", rerolls, shot.id);
+        else store.run("UPDATE mv_shots SET rerolls=? WHERE id=?", rerolls, shot.id);
+      }
+      store.run('UPDATE mv_shots SET reason_history=? WHERE id=?', U.jstr(hist.slice(-20)), shot.id);
+      const out = chargeThenEnqueue(user, p, { jobType, cost, reason: type === 'reshoot' ? 'mv_shot' : 'mv_lipsync', payload, idemKey });
+      if (!system && type === 'reshoot' && (!out.body.idempotent || p.status === 'failed')) {
+        store.run("UPDATE mv_projects SET status='shooting', updated_at=? WHERE id=?", U.nowIso(), p.id);
+      }
+      return out;
+    });
+  } catch (e) {
+    persistBudgetPause(p, cost, e);
+    throw e;
   }
-  store.run('UPDATE mv_shots SET reason_history=? WHERE id=?', U.jstr(hist.slice(-20)), shot.id);
-  const r = chargeThenEnqueue(user, p, { jobType, cost, reason: type === 'reshoot' ? 'mv_shot' : 'mv_lipsync', payload, idemKey });
   if (system) store.log('mv.shot.system_action', { project_id: p.id, shot_id: shot.id, type, initiated_by: 'system', credits_cost: 0 });
   engine.broadcastMvProgress(p.id, system ? '系统自动返工中（不扣分）' : '已提交返工，剧组处理中');
   return { status: 202, body: { job_id: r.body.job_id, credits_charged: r.body.credits_charged, idempotent: r.body.idempotent } };
@@ -844,7 +950,10 @@ async function suggestScript(ctx) {
   const r = await mvAssist.buildScriptSuggest({
     script_json: sj, note, work: projectWork(p) || {}, character: mainCharacter(p.id), kind: p.kind,
   });
-  if (!r.ok) throw new U.ApiError('NOT_READY', 'AI 编剧暂不可用（后台未就绪），已退回手动编辑', 409);
+  if (!r.ok) {
+    if (r.code === 'INVALID_LLM_OUTPUT') throw new U.ApiError(r.code, r.message || 'AI 编剧返回的分镜结构不合法', 422);
+    throw new U.ApiError('NOT_READY', 'AI 编剧暂不可用（后台未就绪），已退回手动编辑', 409);
+  }
   store.run('UPDATE mv_projects SET suggest_json=?, updated_at=? WHERE id=?', U.jstr(r.suggest), U.nowIso(), p.id); // 挂草稿不 ver++（suggest 纪律）
   store.log('mv.suggest', { user_id: user.id, project_id: p.id, suggest_id: r.suggest.id, mode: r.suggest.mode });
   return { status: 200, body: { suggest: r.suggest } };
@@ -862,16 +971,22 @@ async function suggestApply(ctx) {
   if (!stored || stored.id !== String(b.suggest_id || '')) throw new U.ApiError('NOT_FOUND', '建议不存在或已被采纳');
   const ch = mainCharacter(p.id);
   const work = projectWork(p) || {};
-  const shots = mvScript.normalizeShots((stored.script && stored.script.shots) || [], work, ch, p.kind);
+  const rawShots = (stored.script && stored.script.shots) || [];
+  require('../core/mv_validator').assertShotShape({ shots: rawShots }, { work, characters: ch ? [ch] : [], kind: p.kind });
+  const shots = mvScript.normalizeShots(rawShots, work, ch, p.kind);
   if (!shots.length) throw new U.ApiError('NOT_READY', '建议内容不可用', 409);
   const sj = { shots, assist: { mode: 'llm+rule', ts: U.nowIso(), from: 'suggest' } };
   rules.moderateFields([U.jstr(sj).slice(0, 4000)]);
   const review = await aireview.review({ script_json: sj, work, kind: p.kind, characters: ch ? [ch] : [] }); // 机审重跑（v2.10）
   sj.ai_review = review;
-  store.run('UPDATE mv_projects SET script_json=?, script_ver=script_ver+1, suggest_json=NULL, updated_at=? WHERE id=?',
-    U.jstr(sj), U.nowIso(), p.id);
-  // 未成片镜按新剧本刷新（已成片镜不动——拍板权在人）；v2.15.1：统一走同步物化（含新增/删行/seq 对齐，stale→draft）
-  syncShotsFromScript(user, p, { shots }, { resetToDraft: true });
+  store.tx(() => {
+    const fresh = store.get('SELECT * FROM mv_projects WHERE id=?', p.id);
+    if (!fresh || fresh.script_ver !== ver) throw new U.ApiError('STALE', '剧本版本已过期，请获取最新版本后重试', 409);
+    store.run('UPDATE mv_projects SET script_json=?, script_ver=script_ver+1, suggest_json=NULL, updated_at=? WHERE id=?',
+      U.jstr(sj), U.nowIso(), fresh.id);
+    syncShotsFromScript(user, fresh, sj, { resetToDraft: true });
+    store.run('UPDATE mv_projects SET script_json=? WHERE id=?', U.jstr(sj), fresh.id);
+  });
   store.log('mv.suggest.apply', { user_id: user.id, project_id: p.id, suggest_id: stored.id, ver: p.script_ver });
   engine.broadcastMvProgress(p.id, '已采纳编剧的新版剧本');
   return { status: 200, body: { project: projectShape(store.get('SELECT * FROM mv_projects WHERE id=?', p.id)) } };
@@ -924,7 +1039,10 @@ async function executeTicketAction(user, project, action, args, ticket) {
     const sj = requireScript(project);
     if (!sj) throw new U.ApiError('NOT_READY', '还没有剧本，先出分镜再让编剧改稿', 409);
     const r = await mvAssist.buildScriptSuggest({ script_json: sj, note: String(args.instruction || ''), work: projectWork(project) || {}, character: mainCharacter(project.id), kind: project.kind });
-    if (!r.ok) throw new U.ApiError('NOT_READY', 'AI 编剧暂不可用（后台未就绪），请稍后再批准，或改用手动编辑', 409);
+    if (!r.ok) {
+      if (r.code === 'INVALID_LLM_OUTPUT') throw new U.ApiError(r.code, r.message || 'AI 编剧返回的分镜结构不合法', 422);
+      throw new U.ApiError('NOT_READY', 'AI 编剧暂不可用（后台未就绪），请稍后再批准，或改用手动编辑', 409);
+    }
     store.run('UPDATE mv_projects SET suggest_json=?, updated_at=? WHERE id=?', U.jstr(r.suggest), U.nowIso(), project.id); // 挂草稿不 ver++（suggest 纪律）
     store.log('mv.suggest', { user_id: user.id, project_id: project.id, suggest_id: r.suggest.id, mode: r.suggest.mode, initiated_by: 'assistant' });
     store.log('mv.assistant.exec', Object.assign({}, audit, { result: 'suggest_drafted' }));
@@ -962,7 +1080,7 @@ async function executeTicketAction(user, project, action, args, ticket) {
     // 复用 shots/:id/jobs 内核（40⚡ 先扣后派单 / 预算护栏 / 幂等 / reason_history chips 链全同语义）
     const r = await shotJobsCore(user, project, shot, { type: 'reshoot', reason: args.reason || '助手代提交返工', initiated_by: 'user' });
     store.log('mv.assistant.exec', Object.assign({}, audit, { result: 'reshoot_enqueued', job_id: r.body.job_id, credits_charged: r.body.credits_charged }));
-    return { reply: '已提交重拍，剧组进场（本次扣 ' + r.body.credits_charged + ' 积分）。', job_id: r.body.job_id, credits_charged: r.body.credits_charged };
+    return { reply: r.body.credits_charged > 0 ? '已提交重拍，剧组进场（本次扣 ' + r.body.credits_charged + ' 积分）。' : '已提交重拍，剧组进场（本次未扣积分）。', job_id: r.body.job_id, credits_charged: r.body.credits_charged };
   }
   return applyAssistantTool(user, project, action, args); // 理论上到不了（昂贵项已在上面），防御位
 }
@@ -979,8 +1097,21 @@ async function ticketConfirm(ctx) {
   const b = ctx.body || {};
   const consumed = gov.verifyAndConsumeTicket(ctx.params.id, { ver: b.ver, hash: b.hash }, user);
   const p = ownProject(ctx, consumed.project_id); // 归属再校验（项目转让/取消后票自然失效于执行期）
-  if (['canceled', 'failed'].includes(p.status)) throw new U.ApiError('NOT_READY', '项目已结束，确认未执行', 409);
-  const out = await executeTicketAction(user, p, consumed.action, consumed.args, consumed);
+  if (p.status === 'canceled') {
+    gov.releaseTicketReservation(consumed.id);
+    store.run("UPDATE mv_tickets SET status='failed' WHERE id=?", consumed.id);
+    throw new U.ApiError('NOT_READY', '项目已取消，确认未执行', 409);
+  }
+  let out;
+  try {
+    out = await executeTicketAction(user, p, consumed.action, consumed.args, consumed);
+  } catch (e) {
+    gov.releaseTicketReservation(consumed.id);
+    store.run("UPDATE mv_tickets SET status='failed' WHERE id=?", consumed.id);
+    throw e;
+  }
+  gov.settleTicketReservation(consumed.id, out.credits_charged || 0);
+  if (out.job_id) store.run('UPDATE mv_tickets SET job_id=? WHERE id=?', out.job_id, consumed.id);
   return { status: 200, body: Object.assign({ executed: true }, out) };
 }
 

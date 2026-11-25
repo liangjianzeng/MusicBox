@@ -1,6 +1,6 @@
-# mv-facegate（Spark 草案）—— ArcFace 身份门控 :8395（2026-11-24）
-# 草案纪律：本阶段禁止 systemctl enable/run（insightface onnx venv 属 N0-4，宿主协调 S4/S6）。
-# CPU 常驻 ~2G；仅回环监听（架构 §1.2：83xx 段不对外）。
+# mv-facegate（Spark 运行单元）—— ArcFace 身份门控 :8395（2026-11-25）
+# 已实现 InsightFace/inswapper 懒加载；启用前需安装 onnx/venv，并经宿主协调 S4/S6。
+# 仅回环监听（架构 §1.2：83xx 段不对外）。
 [Unit]
 Description=MusicBox MV Facegate Service (insightface, :8395)
 After=network-online.target

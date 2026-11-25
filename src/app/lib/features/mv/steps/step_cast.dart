@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../widgets/mv_theme.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -91,24 +92,24 @@ class _StepCastState extends ConsumerState<StepCast> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       children: [
-        const Text('选一位主演（N1 单主演）',
+        Text('选一位主演（N1 单主演）',
             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        const Text('两条通道任选：上传真人照片更像你；AI 歌手免人脸、更快。',
-            style: TextStyle(fontSize: 12, color: Colors.white38)),
-        const SizedBox(height: 12),
+        SizedBox(height: 4),
+        Text('两条通道任选：上传真人照片更像你；AI 歌手免人脸、更快。',
+            style: TextStyle(fontSize: 12, color: context.mvTextMuted)),
+        SizedBox(height: 12),
         // 性别 m/f
         Row(
           children: [
-            const Text('主演性别：',
-                style: TextStyle(fontSize: 13, color: Colors.white70)),
-            const SizedBox(width: 8),
+            Text('主演性别：',
+                style: TextStyle(fontSize: 13, color: context.mvTextSecondary)),
+            SizedBox(width: 8),
             _GenderChip(
                 label: '女',
                 value: 'f',
                 selected: state.gender == 'f',
                 onTap: () => n.setGender('f')),
-            const SizedBox(width: 8),
+            SizedBox(width: 8),
             _GenderChip(
                 label: '男',
                 value: 'm',
@@ -116,7 +117,7 @@ class _StepCastState extends ConsumerState<StepCast> {
                 onTap: () => n.setGender('m')),
           ],
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: 14),
         // 双通道并列
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -144,7 +145,7 @@ class _StepCastState extends ConsumerState<StepCast> {
                     : null,
               ),
             ),
-            const SizedBox(width: 10),
+            SizedBox(width: 10),
             Expanded(
               child: _ChannelCard(
                 selected: state.channel == 'ai',
@@ -154,13 +155,13 @@ class _StepCastState extends ConsumerState<StepCast> {
                 selectedColor: scheme.tertiary,
                 onTap: () => n.setChannel('ai'),
                 child: state.channel == 'ai'
-                    ? const Padding(
+                    ? Padding(
                         padding: EdgeInsets.only(top: 4),
                         child: Text(
                           '不上传任何真人照片，由剧组原创一位歌手。',
                           style: TextStyle(
                               fontSize: 12,
-                              color: Colors.white54,
+                              color: context.mvTextSecondary,
                               height: 1.4),
                         ),
                       )
@@ -169,12 +170,12 @@ class _StepCastState extends ConsumerState<StepCast> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         if ((state.uploadError ?? '').isNotEmpty)
           _ErrorLine(text: state.uploadError!),
         if ((state.submitError ?? '').isNotEmpty)
           _ErrorLine(text: state.submitError!),
-        const SizedBox(height: 8),
+        SizedBox(height: 8),
         // 确认主演（建项目 + 派定妆照任务；失败如实呈现）
         SizedBox(
           width: double.infinity,
@@ -183,20 +184,22 @@ class _StepCastState extends ConsumerState<StepCast> {
                 ? () => n.submitCast()
                 : null,
             icon: state.submitting
-                ? const SizedBox(
+                ? SizedBox(
                     width: 14,
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.check, size: 18),
-            label: Text(state.project != null && (state.imageId ?? '').isNotEmpty
-                ? '已确认 · 重新提交'
-                : '确认主演，去定妆'),
+                : Icon(Icons.check, size: 18),
+            label: Text(
+                state.project != null && (state.imageId ?? '').isNotEmpty
+                    ? '已确认 · 重新提交'
+                    : '确认主演，去定妆'),
           ),
         ),
-        const SizedBox(height: 6),
-        const Text(
+        SizedBox(height: 6),
+        Text(
           '说明：含真人照片的成片按合规要求标注 AI 生成；照片仅用于本次角色生成，72 小时后自动删除。',
-          style: TextStyle(fontSize: 11, color: Colors.white24, height: 1.4),
+          style:
+              TextStyle(fontSize: 11, color: context.mvTextMuted, height: 1.4),
         ),
       ],
     );
@@ -258,9 +261,9 @@ class _ChannelCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           color: selected
               ? selectedColor.withValues(alpha: .12)
-              : Colors.white.withValues(alpha: .03),
+              : context.mvSurfaceRaised.withValues(alpha: .03),
           border: Border.all(
-              color: selected ? selectedColor : Colors.white10, width: 1.2),
+              color: selected ? selectedColor : context.mvBorder, width: 1.2),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -269,8 +272,8 @@ class _ChannelCard extends StatelessWidget {
               children: [
                 Icon(icon,
                     size: 20,
-                    color: selected ? selectedColor : Colors.white38),
-                const SizedBox(width: 6),
+                    color: selected ? selectedColor : context.mvTextMuted),
+                SizedBox(width: 6),
                 Expanded(
                   child: Text(title,
                       maxLines: 1,
@@ -278,18 +281,19 @@ class _ChannelCard extends StatelessWidget {
                       style: TextStyle(
                           fontSize: 13.5,
                           fontWeight: FontWeight.w700,
-                          color: selected ? Colors.white : Colors.white70)),
+                          color: selected
+                              ? context.mvTextPrimary
+                              : context.mvTextSecondary)),
                 ),
                 if (selected)
                   Icon(Icons.check_circle_rounded,
                       size: 16, color: selectedColor),
               ],
             ),
-            const SizedBox(height: 2),
+            SizedBox(height: 2),
             Text(subtitle,
-                style:
-                    const TextStyle(fontSize: 11, color: Colors.white38)),
-            if (child != null) ...[const SizedBox(height: 10), child!],
+                style: TextStyle(fontSize: 11, color: context.mvTextMuted)),
+            if (child != null) ...[SizedBox(height: 10), child!],
           ],
         ),
       ),
@@ -333,30 +337,31 @@ class _UploadBody extends StatelessWidget {
               fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => Container(
                 height: 80,
-                color: Colors.white10,
-                child: const Center(
+                color: context.mvBorder,
+                child: Center(
                     child: Text('预览失败',
-                        style: TextStyle(color: Colors.white38, fontSize: 11))),
+                        style: TextStyle(
+                            color: context.mvTextMuted, fontSize: 11))),
               ),
             ),
           ),
-          const SizedBox(height: 6),
+          SizedBox(height: 6),
         ],
         Row(
           children: [
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: picking ? null : () => onPick(ImageSource.camera),
-                icon: const Icon(Icons.photo_camera_outlined, size: 16),
-                label: const Text('拍照', style: TextStyle(fontSize: 12)),
+                icon: Icon(Icons.photo_camera_outlined, size: 16),
+                label: Text('拍照', style: TextStyle(fontSize: 12)),
               ),
             ),
-            const SizedBox(width: 6),
+            SizedBox(width: 6),
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: picking ? null : () => onPick(ImageSource.gallery),
-                icon: const Icon(Icons.photo_library_outlined, size: 16),
-                label: const Text('相册', style: TextStyle(fontSize: 12)),
+                icon: Icon(Icons.photo_library_outlined, size: 16),
+                label: Text('相册', style: TextStyle(fontSize: 12)),
               ),
             ),
           ],
@@ -364,9 +369,9 @@ class _UploadBody extends StatelessWidget {
         if ((state.imagePath ?? '').isNotEmpty) ...[
           _PrecheckCard(
               data: precheck, checking: prechecking, onRecheck: onRecheck),
-          const SizedBox(height: 4),
+          SizedBox(height: 4),
         ],
-        const SizedBox(height: 4),
+        SizedBox(height: 4),
         CheckboxListTile(
           value: state.authorized,
           onChanged: (v) => onAuthorized(v ?? false),
@@ -374,7 +379,7 @@ class _UploadBody extends StatelessWidget {
           controlAffinity: ListTileControlAffinity.leading,
           contentPadding: EdgeInsets.zero,
           visualDensity: VisualDensity.compact,
-          title: const Text(
+          title: Text(
             '本人或已获授权（真人照片必勾）',
             style: TextStyle(fontSize: 12, height: 1.3),
           ),
@@ -394,12 +399,11 @@ class _ErrorLine extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          const Icon(Icons.error_outline, size: 15, color: Colors.redAccent),
-          const SizedBox(width: 6),
+          Icon(Icons.error_outline, size: 15, color: context.mvError),
+          SizedBox(width: 6),
           Expanded(
               child: Text(text,
-                  style:
-                      const TextStyle(fontSize: 12, color: Colors.redAccent))),
+                  style: TextStyle(fontSize: 12, color: context.mvError))),
         ],
       ),
     );
@@ -425,7 +429,7 @@ class _PrecheckCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (checking) {
-      return const Padding(
+      return Padding(
         padding: EdgeInsets.symmetric(vertical: 8),
         child: Row(
           children: [
@@ -435,7 +439,7 @@ class _PrecheckCard extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2)),
             SizedBox(width: 8),
             Text('人像预检中…',
-                style: TextStyle(fontSize: 12, color: Colors.white54)),
+                style: TextStyle(fontSize: 12, color: context.mvTextSecondary)),
           ],
         ),
       );
@@ -449,9 +453,9 @@ class _PrecheckCard extends StatelessWidget {
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.all(11),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .03),
+        color: context.mvSurfaceRaised.withValues(alpha: .03),
         borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: context.mvBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -459,46 +463,51 @@ class _PrecheckCard extends StatelessWidget {
           Row(
             children: [
               Icon(Icons.face_retouching_natural_outlined,
-                  size: 15, color: available ? Colors.teal : Colors.white38),
-              const SizedBox(width: 6),
-              const Text('人像预检',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
+                  size: 15,
+                  color: available ? context.mvInfo : context.mvTextMuted),
+              SizedBox(width: 6),
+              Text('人像预检',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
               const Spacer(),
               Text(available ? '服务已就绪' : '服务未就绪',
                   style: TextStyle(
                       fontSize: 10.5,
-                      color: available ? Colors.teal : Colors.white38)),
+                      color: available ? context.mvInfo : context.mvTextMuted)),
               if (onRecheck != null) ...[
-                const SizedBox(width: 6),
+                SizedBox(width: 6),
                 InkWell(
                     onTap: onRecheck,
-                    child: const Icon(Icons.refresh,
-                        size: 15, color: Colors.white54)),
+                    child: Icon(Icons.refresh,
+                        size: 15, color: context.mvTextSecondary)),
               ],
             ],
           ),
-          const SizedBox(height: 7),
+          SizedBox(height: 7),
           if (checks.isEmpty)
             Text(msg.isNotEmpty ? msg : '暂无法预检（不影响上传）。',
-                style: const TextStyle(fontSize: 11.5, color: Colors.white54))
+                style:
+                    TextStyle(fontSize: 11.5, color: context.mvTextSecondary))
           else
             for (final c in checks)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 1.5),
                 child: Row(
                   children: [
-                    Icon(_passIcon(c['pass']), size: 14, color: _passColor(c['pass'])),
-                    const SizedBox(width: 6),
+                    Icon(_passIcon(c['pass']),
+                        size: 14, color: _passColor(context, c['pass'])),
+                    SizedBox(width: 6),
                     SizedBox(
                         width: 52,
                         child: Text(_keys['${c['key']}'] ?? '${c['key']}',
-                            style: const TextStyle(
-                                fontSize: 11.5, color: Colors.white70))),
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: context.mvTextSecondary))),
                     Expanded(
                         child: Text('${c['msg'] ?? ''}',
-                            style: const TextStyle(
+                            style: TextStyle(
                                 fontSize: 11.5,
-                                color: Colors.white54,
+                                color: context.mvTextSecondary,
                                 height: 1.3))),
                   ],
                 ),
@@ -514,9 +523,9 @@ class _PrecheckCard extends StatelessWidget {
     return Icons.help_outline;
   }
 
-  Color _passColor(dynamic p) {
-    if (p == true) return Colors.greenAccent;
-    if (p == false) return Colors.orangeAccent;
-    return Colors.white38;
+  Color _passColor(BuildContext context, dynamic p) {
+    if (p == true) return context.mvSuccess;
+    if (p == false) return context.mvWarning;
+    return context.mvTextMuted;
   }
 }

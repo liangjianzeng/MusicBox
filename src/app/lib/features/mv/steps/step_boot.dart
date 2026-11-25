@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../mv_models.dart';
 import '../mv_progress_page.dart';
 import '../mv_state.dart';
+import '../widgets/mv_common.dart';
+import '../widgets/mv_theme.dart';
 import '../widgets/mv_video_player.dart';
 
 /// 步⑤ 样片 → 报价 → 开机（S7 流程硬门禁：样片先行，「开机开拍」永远手动）。
@@ -56,12 +58,18 @@ class _StepBootState extends ConsumerState<StepBoot> {
   }
 
   Future<void> _makePreview(MvProjectDetailNotifier n) async {
-    final (ok, err, charged) = await n.requestPreview();
-    _toast(ok
-        ? (charged > 0
-            ? '样片重出任务已提交（扣 $charged ⚡，首个免费已用掉）'
-            : '样片任务已提交（本次免费），约 1–2 分钟')
-        : (err ?? '样片提交失败，请重试'));
+    if (_booting) return;
+    setState(() => _booting = true);
+    try {
+      final (ok, err, charged) = await n.requestPreview();
+      _toast(ok
+          ? (charged > 0
+              ? '样片重出任务已提交（扣 $charged ⚡，首个免费已用掉）'
+              : '样片任务已提交（本次免费），约 1–2 分钟')
+          : (err ?? '样片提交失败，请重试'));
+    } finally {
+      if (mounted) setState(() => _booting = false);
+    }
   }
 
   Future<void> _bootFlow(
@@ -70,21 +78,19 @@ class _StepBootState extends ConsumerState<StepBoot> {
     final go = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('确认开机开拍'),
+        title: Text('确认开机开拍'),
         content: Text(
           '开机后立即进入拍摄队列（分钟级异步工程，可离开 App）。\n'
           '本次按报价卡执行：拍 ${est?.shots ?? '--'} 镜 · '
           '约 ${est?.credits ?? '--'} ⚡ · 预计 ${est?.minutes ?? '--'} 分钟。\n'
           '未拍镜取消可全额退。',
-          style: const TextStyle(fontSize: 13, height: 1.5),
+          style: TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('再看看')),
+              onPressed: () => Navigator.pop(ctx, false), child: Text('再看看')),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('拍板开机')),
+              onPressed: () => Navigator.pop(ctx, true), child: Text('拍板开机')),
         ],
       ),
     );
@@ -104,16 +110,15 @@ class _StepBootState extends ConsumerState<StepBoot> {
         await showDialog<void>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('报价已更新'),
-            content: const Text(
+            title: Text('报价已更新'),
+            content: Text(
               '剧本或镜数有变化，这份报价已过期。已为你刷新报价卡，'
               '请核对新报价后再点「开机开拍」。',
               style: TextStyle(fontSize: 13, height: 1.5),
             ),
             actions: [
               FilledButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('好的')),
+                  onPressed: () => Navigator.pop(ctx), child: Text('好的')),
             ],
           ),
         );
@@ -132,42 +137,46 @@ class _StepBootState extends ConsumerState<StepBoot> {
   Future<void> _budgetDialog(
       BuildContext context, MvProjectDetailNotifier n, MvProject p) async {
     final need = ((p.est?.credits ?? p.creditsCost) * 1.25).ceil();
-    final ctrl =
-        TextEditingController(text: (need ~/ 50 * 50).clamp(50, 999999).toString());
+    final ctrl = TextEditingController(
+        text: (need ~/ 50 * 50).clamp(50, 999999).toString());
     final newBudget = await showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('预算护栏已触发'),
+        title: Text('预算护栏已触发'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               '本次开机将超出项目预算（${p.budgetCredits} ⚡）的 120%，'
               '已自动暂停计费派单。仅可人工调高预算恢复（不自动恢复）。',
-              style: const TextStyle(fontSize: 12.5, height: 1.5),
+              style: TextStyle(fontSize: 12.5, height: 1.5),
             ),
-            const SizedBox(height: 10),
+            SizedBox(height: 10),
             TextField(
               controller: ctrl,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: '新预算（⚡）', isDense: true),
+              decoration:
+                  const InputDecoration(labelText: '新预算（⚡）', isDense: true),
             ),
           ],
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('先不拍')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('先不拍')),
           FilledButton(
               onPressed: () =>
                   Navigator.pop(ctx, int.tryParse(ctrl.text.trim())),
-              child: const Text('调高预算')),
+              child: Text('调高预算')),
         ],
       ),
     );
     if (newBudget == null || newBudget <= 0) return;
-    final err = await n.raiseBudget(newBudget);
-    _toast(err ?? '预算已调高到 $newBudget ⚡，护栏解除，可重新开机');
+    setState(() => _booting = true);
+    try {
+      final err = await n.raiseBudget(newBudget);
+      _toast(err ?? '预算已调高到 $newBudget ⚡，护栏解除，可重新开机');
+    } finally {
+      if (mounted) setState(() => _booting = false);
+    }
   }
 
   /// 余额不足：诚实对话 + 退未拍镜通道
@@ -176,29 +185,33 @@ class _StepBootState extends ConsumerState<StepBoot> {
     final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('积分不足'),
-        content: const Text(
+        title: Text('积分不足'),
+        content: Text(
           '开机需要约一整笔拍摄积分，当前余额不够。\n'
           '· 每日登录可领免费积分，攒够再来开机；\n'
           '· 也可以取消这个项目，未拍镜的预留积分会全额退回。',
           style: TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('知道了')),
           TextButton(
               onPressed: () => Navigator.pop(ctx, 'cancel'),
-              child: const Text('取消并退未拍镜',
-                  style: TextStyle(color: Colors.orangeAccent))),
+              child:
+                  Text('取消并退未拍镜', style: TextStyle(color: context.mvWarning))),
         ],
       ),
     );
     if (choice != 'cancel') return;
-    final (refunded, err) = await n.cancel();
-    _toast(err ??
-        (refunded != null && refunded > 0
-            ? '已取消，退回 $refunded ⚡（未拍镜全额退）'
-            : '已取消（无待退积分）'));
+    setState(() => _booting = true);
+    try {
+      final (refunded, err) = await n.cancel();
+      _toast(err ??
+          (refunded != null && refunded > 0
+              ? '已取消，退回 $refunded ⚡（未拍镜全额退）'
+              : '已取消（无待退积分）'));
+    } finally {
+      if (mounted) setState(() => _booting = false);
+    }
   }
 
   @override
@@ -206,8 +219,9 @@ class _StepBootState extends ConsumerState<StepBoot> {
     final wizard = ref.watch(mvWizardProvider(widget.workId));
     final p = wizard.project;
     if (p == null) {
-      return const Center(
-          child: Text('请先完成前面的确认门', style: TextStyle(color: Colors.white38)));
+      return Center(
+          child:
+              Text('请先完成前面的确认门', style: TextStyle(color: context.mvTextMuted)));
     }
     final detailState = ref.watch(mvProjectDetailProvider(p.id));
     final detail = detailState.detail;
@@ -221,117 +235,122 @@ class _StepBootState extends ConsumerState<StepBoot> {
         !live.paused &&
         (detail?.shots.isNotEmpty ?? false);
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      children: [
-        const Text('先看片，再掏分',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        const Text('免费预览样片 = 分镜关键帧 × 已制曲混音（非正式画面），看完再按报价拍板开机。',
-            style: TextStyle(fontSize: 11.5, color: Colors.white38)),
-        const SizedBox(height: 12),
-        // ---- 样片播放器（非正式角标） ----
-        Stack(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: MvVideoPlayer(
-                url: hasPreview ? previewUrl : null,
-                coverUrl: live.coverUrl,
-                aspectRatio: 9 / 16,
-                placeholderHint: hasPreview
-                    ? '样片暂不可播（片源或服务异常）'
-                    : '还没有样片 —— 点下方按钮免费出片',
+    return MvLeaveGuard(
+      busy: _booting,
+      message: '样片、开机或预算调整仍在提交中。离开不会取消后台任务，'
+          '但可能看不到本次扣分与执行回执。确定离开吗？',
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          Text('先看片，再掏分',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          SizedBox(height: 4),
+          Text('免费预览样片 = 分镜关键帧 × 已制曲混音（非正式画面），看完再按报价拍板开机。',
+              style: TextStyle(fontSize: 11.5, color: context.mvTextMuted)),
+          SizedBox(height: 12),
+          // ---- 样片播放器（非正式角标） ----
+          Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: MvVideoPlayer(
+                  url: hasPreview ? previewUrl : null,
+                  coverUrl: live.coverUrl,
+                  aspectRatio: 9 / 16,
+                  placeholderHint:
+                      hasPreview ? '样片暂不可播（片源或服务异常）' : '还没有样片 —— 点下方按钮免费出片',
+                ),
               ),
+              if (hasPreview)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: _InformalBadge(),
+                ),
+            ],
+          ),
+          SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: live.hasScript && !live.ready
+                      ? () => _makePreview(n)
+                      : null,
+                  icon: Icon(Icons.movie_outlined, size: 16),
+                  label: Text(hasPreview ? '重出样片（5 ⚡）' : '免费出样片',
+                      style: TextStyle(fontSize: 12)),
+                ),
+              ),
+            ],
+          ),
+          if (!live.hasScript)
+            Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('还没有剧本/分镜：回到上一步先「生成分镜」，样片需要先有镜头。',
+                  style: TextStyle(fontSize: 11, color: context.mvTextMuted)),
+            )
+          else if (!hasPreview)
+            Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                  '还没有样片：点上方「免费出样片」派单；执行器合片约 1–2 分钟，'
+                  '完成后本页自动出现样片与报价卡。',
+                  style: TextStyle(fontSize: 11, color: context.mvTextMuted)),
+            )
+          else if (!live.canBootGate)
+            const _WaitNote(text: '样片已出，报价卡生成中（服务端在样片完成时产出报价快照）。'),
+          SizedBox(height: 16),
+          // ---- 报价卡 ----
+          _EstCard(
+              est: est,
+              estVer: live.estVer,
+              paused: live.paused,
+              budget: live.budgetCredits),
+          SizedBox(height: 16),
+          // ---- 开机开拍（计费门，永远手动） ----
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: canBoot && !_booting
+                  ? () => _bootFlow(context, n, live)
+                  : null,
+              icon: _booting
+                  ? SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(Icons.rocket_launch_outlined, size: 18),
+              label: Text(live.status == 'failed'
+                  ? '重新开机恢复'
+                  : live.statusRank >= 4
+                      ? '剧组已进场（拍摄中）'
+                      : '开机开拍'),
             ),
-            if (hasPreview)
-              const Positioned(
-                top: 8,
-                left: 8,
-                child: _InformalBadge(),
-              ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: live.hasScript && !live.ready
-                    ? () => _makePreview(n)
-                    : null,
-                icon: const Icon(Icons.movie_outlined, size: 16),
-                label: Text(hasPreview ? '重出样片（5 ⚡）' : '免费出样片',
-                    style: const TextStyle(fontSize: 12)),
-              ),
+          ),
+          if ((live.estVer ?? '').isEmpty && live.hasScript)
+            Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('报价卡会在样片产出时生成 —— 没看样片之前不开机，这是产品纪律。',
+                  style: TextStyle(fontSize: 11, color: context.mvTextMuted)),
             ),
-          ],
-        ),
-        if (!live.hasScript)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Text('还没有剧本/分镜：回到上一步先「生成分镜」，样片需要先有镜头。',
-                style: TextStyle(fontSize: 11, color: Colors.white24)),
-          )
-        else if (!hasPreview)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Text('还没有样片：点上方「免费出样片」派单；执行器合片约 1–2 分钟，'
-                '完成后本页自动出现样片与报价卡。',
-                style: TextStyle(fontSize: 11, color: Colors.white24)),
-          )
-        else if (!live.canBootGate)
-          const _WaitNote(
-              text: '样片已出，报价卡生成中（服务端在样片完成时产出报价快照）。'),
-        const SizedBox(height: 16),
-        // ---- 报价卡 ----
-        _EstCard(
-            est: est,
-            estVer: live.estVer,
-            paused: live.paused,
-            budget: live.budgetCredits),
-        const SizedBox(height: 16),
-        // ---- 开机开拍（计费门，永远手动） ----
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: canBoot && !_booting
-                ? () => _bootFlow(context, n, live)
-                : null,
-            icon: _booting
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.rocket_launch_outlined, size: 18),
-            label: Text(live.statusRank >= 4
-                ? '剧组已进场（拍摄中）'
-                : '开机开拍'),
-          ),
-        ),
-        if ((live.estVer ?? '').isEmpty && live.hasScript)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Text('报价卡会在样片产出时生成 —— 没看样片之前不开机，这是产品纪律。',
-                style: TextStyle(fontSize: 11, color: Colors.white24)),
-          ),
-        if (live.paused)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Text('预算护栏已触发：本页可在人工确认后调高预算恢复。',
-                style: TextStyle(fontSize: 11, color: Colors.orangeAccent)),
-          ),
-        const SizedBox(height: 10),
-        if (live.statusRank >= 4)
-          OutlinedButton.icon(
-            onPressed: () => MvProgressPage.push(context, projectId: p.id),
-            icon: const Icon(Icons.dashboard_outlined, size: 16),
-            label: const Text('去剧组通告板看进度'),
-          ),
-      ],
+          if (live.paused)
+            Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('预算护栏已触发：本页可在人工确认后调高预算恢复。',
+                  style: TextStyle(fontSize: 11, color: context.mvWarning)),
+            ),
+          SizedBox(height: 10),
+          if (live.statusRank >= 4)
+            OutlinedButton.icon(
+              onPressed: () => MvProgressPage.push(context, projectId: p.id),
+              icon: Icon(Icons.dashboard_outlined, size: 16),
+              label: Text('去剧组通告板看进度'),
+            ),
+        ],
+      ),
     );
   }
-
 }
 
 /// 「非正式画面」角标（样片水印的页侧提示；成片不挂）
@@ -343,13 +362,13 @@ class _InformalBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: .55),
+        color: context.mvColors.scrim.withValues(alpha: .55),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.amberAccent.withValues(alpha: .6)),
+        border: Border.all(color: context.mvOnScrim.withValues(alpha: .6)),
       ),
-      child: const Text('预览样片 · 非正式画面',
-          style: TextStyle(
-              fontSize: 10, color: Colors.amberAccent, height: 1.2)),
+      child: Text('预览样片 · 非正式画面',
+          style:
+              TextStyle(fontSize: 10, color: context.mvOnScrim, height: 1.2)),
     );
   }
 }
@@ -364,22 +383,22 @@ class _WaitNote extends StatelessWidget {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: Colors.amber.withValues(alpha: .06),
+        color: context.mvWarning.withValues(alpha: .06),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.amber.withValues(alpha: .25)),
+        border: Border.all(color: context.mvWarning.withValues(alpha: .25)),
       ),
       child: Row(
         children: [
-          const SizedBox(
+          SizedBox(
               width: 14,
               height: 14,
-              child:
-                  CircularProgressIndicator(strokeWidth: 2, color: Colors.amber)),
-          const SizedBox(width: 10),
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: context.mvWarning)),
+          SizedBox(width: 10),
           Expanded(
               child: Text(text,
-                  style: const TextStyle(
-                      fontSize: 11.5, color: Colors.amberAccent, height: 1.4))),
+                  style: TextStyle(
+                      fontSize: 11.5, color: context.mvWarning, height: 1.4))),
         ],
       ),
     );
@@ -409,36 +428,39 @@ class _EstCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         color: scheme.primaryContainer.withValues(alpha: .07),
         border: Border.all(
-            color: (empty ? Colors.white10 : scheme.primary.withValues(alpha: .4))),
+            color: (empty
+                ? context.mvBorder
+                : scheme.primary.withValues(alpha: .4))),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Text('报价卡',
-                  style:
-                      TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+              Text('报价卡',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
               const Spacer(),
               if ((estVer ?? '').isNotEmpty)
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: .06),
+                    color: context.mvSurfaceRaised.withValues(alpha: .06),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: Text('报价版 ${estVer!.length > 8 ? estVer!.substring(0, 8) : estVer}',
-                      style: const TextStyle(
-                          fontSize: 10, color: Colors.white38)),
+                  child: Text(
+                      '报价版 ${estVer!.length > 8 ? estVer!.substring(0, 8) : estVer}',
+                      style:
+                          TextStyle(fontSize: 10, color: context.mvTextMuted)),
                 ),
             ],
           ),
-          const SizedBox(height: 10),
+          SizedBox(height: 10),
           if (empty)
-            const Text(
+            Text(
               '报价还没生成 —— 它随样片一起产出（预计耗时按队列深度 + 实测均值动态计算）。',
-              style: TextStyle(fontSize: 12, color: Colors.white38, height: 1.5),
+              style: TextStyle(
+                  fontSize: 12, color: context.mvTextMuted, height: 1.5),
             )
           else ...[
             Text(
@@ -446,26 +468,29 @@ class _EstCard extends StatelessWidget {
               '约 ${e.credits} ⚡ · 拍 ${e.shots} 镜'
               '${e.lipsync > 0 ? '（含 ${e.lipsync} 镜对口型）' : ''}',
               style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w800, color: scheme.primary),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.primary),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: 8),
             ...e.breakdown.map((r) => Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Row(
                     children: [
                       Expanded(
                           child: Text('${mvHuman(r.item)}（${mvHuman(r.unit)}）',
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.white54))),
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: context.mvTextSecondary))),
                       Text('${r.count} × ${r.credits} ⚡',
-                          style: const TextStyle(
-                              fontSize: 12, color: Colors.white70)),
+                          style: TextStyle(
+                              fontSize: 12, color: context.mvTextSecondary)),
                     ],
                   ),
                 )),
-            const Divider(color: Colors.white10, height: 18),
+            Divider(color: context.mvBorder, height: 18),
             Text('预算护栏 $budget ⚡${paused ? ' · 已暂停（需人工调高）' : ''}',
-                style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                style: TextStyle(fontSize: 11, color: context.mvTextMuted)),
           ],
         ],
       ),

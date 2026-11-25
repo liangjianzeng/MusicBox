@@ -67,6 +67,7 @@ const config = {
   mv: {
     enabled: envStr('MB_MV_ENABLED', '0') === '1',               // 二期 MV 总开关，默认 false
     comfyBaseUrl: envStr('MB_COMFY_URL', 'http://127.0.0.1:8188'), // 共用 ComfyUI 队列（ADR-MV-4，只发任务+观测）
+    facegateUrl: envStr('MB_MV_FACEGATE_URL', envStr('MB_FACEGATE_URL', 'http://127.0.0.1:8395')).replace(/\/+$/, ''),
     budgetDefault: envInt('MB_MV_BUDGET_DEFAULT', 1200),         // 项目级预算护栏默认值（D13）
     // credits.mv 定价（架构 §6 / mv-plan §6，照 v1 先扣后派单）：
     // preview 首次免（D9）；系统自动补拍恒 0（initiated_by=system）

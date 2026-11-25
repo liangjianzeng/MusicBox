@@ -177,6 +177,7 @@ function normalizeShots(shots, work, character, kind) {
     } else { from = null; to = null; }
     const casts = U.toArr(s.cast_ids).filter((x) => castId && x === castId);
     out.push({
+      ...(typeof s.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(s.id) ? { id: s.id } : {}),
       seq: i + 1, kind: kindV,
       sec: U.clamp(Number(s.sec) || 4, 1, 30),
       lyric_from: kindV === 'singing' ? from : (from), lyric_to: kindV === 'singing' ? to : to,
@@ -212,9 +213,7 @@ async function llmScript({ work, character, brief, kind }) {
     { role: 'user', content: userParts.join('\n') },
   ], MV.llmAssistTimeoutMs);
   const json = P.extractJson(text);
-  if (!json || !Array.isArray(json.shots) || json.shots.length < 4) {
-    throw new U.ApiError('INTERNAL', '剧本编译返回不可用');
-  }
+  require('../core/mv_validator').assertShotShape(json, { work, character: character ? [character] : [], kind });
   return { shots: normalizeShots(json.shots, work, character, kind) };
 }
 
@@ -226,6 +225,7 @@ async function compileScript({ work, character, brief, kind }) {
     script = await llmScript({ work, character, brief, kind });
     mode = 'llm+rule'; // LLM 产物仍经规则归一化（normalizeShots），标注如实
   } catch (e) {
+    if (e && e.code === 'INVALID_LLM_OUTPUT') throw e;
     script = fallbackScript({ work, character, brief, kind });
     mode = 'rule';
   }

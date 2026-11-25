@@ -157,8 +157,8 @@ class MePage extends ConsumerWidget {
                   ListTile(
                     leading: const Icon(Icons.auto_awesome_outlined),
                     title: const Text('创作助手'),
-                    subtitle:
-                        const Text('带着当前页面上下文对话', style: TextStyle(fontSize: 12)),
+                    subtitle: const Text('带着当前页面上下文对话',
+                        style: TextStyle(fontSize: 12)),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => _openAssistant(context, ref),
                   ),

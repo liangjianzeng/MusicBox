@@ -10,6 +10,11 @@ const validator = require('./mv_validator');
 
 const MV = config.mv;
 
+function scriptHash(script_json) {
+  const shots = ((script_json && Array.isArray(script_json.shots) ? script_json.shots : [])).map(({ id, ...shot }) => shot);
+  return U.hash12(U.jstr(shots));
+}
+
 const LLM_SYSTEM = [
   '你是 MV 制片安全与观赏性审读员。审阅分镜 JSON，找出风险与改进点。',
   '只输出严格 JSON：{"findings":[{"rule":"标识","msg":"人话说明","level":"high|warn"}]}，无问题输出 {"findings":[]}。',
@@ -77,6 +82,7 @@ async function review({ script_json, work, kind, characters }) {
   const findings = ruleFindings({ script_json, work, kind, characters });
   const llm_findings = await llmOverlay({ script_json, kind });
   return {
+    script_hash: scriptHash(script_json),
     engine: llm_findings && llm_findings.length ? 'LLM 审查＋规则机检' : '规则机检',
     findings,
     llm_findings: llm_findings || null,
@@ -85,4 +91,4 @@ async function review({ script_json, work, kind, characters }) {
   };
 }
 
-module.exports = { ruleFindings, llmOverlay, review };
+module.exports = { scriptHash, ruleFindings, llmOverlay, review };

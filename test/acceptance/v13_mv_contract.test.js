@@ -10,6 +10,7 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const { DatabaseSync } = require('node:sqlite');
 const H = require('./helpers.js');
 
 const MVlanes = require('../../src/server/lanes/index.js'); // 白盒读 server lane 表（V13 CI 断言 laneOf 路由）
@@ -17,6 +18,10 @@ const MVlanes = require('../../src/server/lanes/index.js'); // 白盒读 server 
 let S; // boot 上下文
 
 function sumDelta(ledger) { return ledger.rows.reduce((s, r) => s + r.delta, 0); }
+function dbWrite(sql, ...params) {
+  const db = new DatabaseSync(S.dbPath);
+  try { db.prepare(sql).run(...params); } finally { db.close(); }
+}
 
 // 建一个带 work 的 MV 项目（work 白盒种子：adopt 链依赖 ffmpeg transcode，V13 不依赖）
 async function newProject(guest, opts) {
@@ -172,7 +177,7 @@ describe('V13 MV 契约与账本（mock）', () => {
     assert.ok(S.db.mvTakesOf(shotId).rows.some((t) => t.origin === 'user_reshoot'), 'V13-④ user 重拍 take.origin 应=user_reshoot');
     // system 发起：0 分 + credits_cost=0 + origin system_auto + 审计 initiated_by=system（契约 v2.4 系统补拍恒免费）
     const c1 = (await S.credits(g.token)).balance;
-    const sr = await S.api('POST', '/v1/mv/shots/' + shotId + '/jobs', { token: g.token, json: { type: 'reshoot', initiated_by: 'system', reason: '不像本人' } });
+    const sr = await S.api('POST', '/v1/mv/shots/' + shotId + '/jobs', { token: g.token, executorToken: H.EXECUTOR_TOKEN, json: { type: 'reshoot', initiated_by: 'system', reason: '不像本人' } });
     assert.strictEqual(sr.status, 202, 'V13-④ system reshoot 应 202，实际 ' + sr.status + ' ' + sr.text.slice(0, 200));
     assert.strictEqual(sr.json.credits_charged, 0, 'V13-④ system reshoot 恒免费（credits_charged=0），实际 ' + sr.json.credits_charged);
     assert.strictEqual((await S.credits(g.token)).balance, c1, 'V13-④ system reshoot 不得扣分');
@@ -282,6 +287,26 @@ describe('V13 MV 契约与账本（mock）', () => {
     assert.strictEqual(dl.buffer.toString('ascii', 4, 8), 'ftyp', 'V13-⑧ mp4 须含 ftyp 盒（可播下限断言；真实解码归 V14 真机），实际 ' + dl.buffer.toString('ascii', 4, 8));
   });
 
+  it('V13-⑧b compose 使用每镜时长与零源偏移，不再按累计时间跳镜', async () => {
+    const g = await S.newGuest();
+    const { r } = await newProject(g);
+    const pid = r.json.project.id;
+    S.setMvProject(pid, { status: 'shooting' });
+    const durations = [6, 8];
+    durations.forEach((sec, i) => {
+      const id = S.seedMvShot(pid, { seq: i + 1, kind: 'story', sec, status: 'clipReady' });
+      const take = S.seedMvTake(id);
+      S.setMvShot(id, { best_take_id: take.id });
+    });
+    const compose = await S.api('POST', '/v1/mv/projects/' + pid + '/jobs', { token: g.token, json: { type: 'compose' } });
+    assert.strictEqual(compose.status, 202, 'V13-⑧b compose 应 202，实际 ' + compose.status + ' ' + compose.text.slice(0, 200));
+    const row = S.mvJobRows(g.user.id, 'mv_compose').find((x) => x.id === compose.json.job_id);
+    const takes = JSON.parse(row.payload).takes;
+    assert.deepStrictEqual(takes.map((t) => t.start_sec), [0, 0], 'V13-⑧b 每个源视频必须从头读取');
+    assert.deepStrictEqual(takes.map((t) => t.dur_sec), durations, 'V13-⑧b 每镜必须携带自身时长');
+    assert.deepStrictEqual(takes.map((t) => t.seq), [1, 2], 'V13-⑧b 每镜必须携带稳定镜序');
+  });
+
   it('V13-⑨ PATCH ver CAS（409 STALE）+ GET 聚合形状 + report STUB 诚实标注', async () => {
     const g = await S.newGuest();
     const { r } = await newProject(g);
@@ -294,7 +319,7 @@ describe('V13 MV 契约与账本（mock）', () => {
     assert.strictEqual(ok.status, 200, 'V13-⑨ ver 匹配应 200 {project}，实际 ' + ok.status + ' ' + ok.text.slice(0, 200));
     assert.strictEqual(ok.json.project.title, '新片名', 'V13-⑨ PATCH title 应生效，实际 ' + ok.json.project.title);
     assert.strictEqual(ok.json.project.script_ver, 1, 'V13-⑨ 仅改 title 不 ver++（剧本编辑才 ver++），实际 ' + ok.json.project.script_ver);
-    const sc = await S.api('PATCH', '/v1/mv/projects/' + p.id, { token: g.token, json: { script_json: { scenes: [{ shots: [{ seq: 1, kind: 'story', sec: 5 }] }] }, ver: 1 } });
+    const sc = await S.api('PATCH', '/v1/mv/projects/' + p.id, { token: g.token, json: { script_json: { shots: [{ seq: 1, kind: 'story', sec: 5, desc: '雨夜远景', camera: '远景', cast_ids: [] }] }, ver: 1 } });
     assert.strictEqual(sc.status, 200, 'V13-⑨ script_json 更新应 200，实际 ' + sc.status + ' ' + sc.text.slice(0, 200));
     assert.strictEqual(sc.json.project.script_ver, 2, 'V13-⑨ script_json 变更应 ver++（契约 v2.1 CAS 语义），实际 ' + sc.json.project.script_ver);
     const got = await S.api('GET', '/v1/mv/projects/' + p.id, { token: g.token });
@@ -463,7 +488,10 @@ describe('V13 MV 契约与账本（mock）', () => {
     const ok = await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: forged });
     assert.strictEqual(ok.status, 200, 'V13-⑭ 带伪造键的 PATCH 应剥键后放行 200（静默剥除），实际 ' + ok.status + ' ' + ok.text.slice(0, 200));
     const row = S.db.mvProject(pid).row;
-    assert.ok(!String(row.script_json || '').includes('ai_review'), 'V13-⑭ script_json.ai_review 必须被剥（防伪造机检通过），实际 ' + row.script_json);
+    const storedScript = JSON.parse(row.script_json || '{}');
+    assert.ok(!String(row.script_json || '').includes('伪造机检通过'), 'V13-⑭ 客户端伪造的 ai_review 必须被剥除，实际 ' + row.script_json);
+    assert.ok(storedScript.ai_review && storedScript.ai_review.script_hash && storedScript.ai_review.engine === '规则机检',
+      'V13-⑭ 手改剧本必须由服务端重跑机审并绑定内容 hash，实际 ' + row.script_json);
     assert.ok(!String(row.script_json || '').includes('timings'), 'V13-⑭ script_json.timings 必须被剥（仅 mv_align 可写），实际 ' + row.script_json);
     assert.strictEqual(Number(row.paused), 0, 'V13-⑭ PATCH 不得写 paused（仅护栏/人工恢复），实际 ' + row.paused);
     assert.strictEqual(Number(row.credits_cost), 0, 'V13-⑭ PATCH 不得写 credits_cost，实际 ' + row.credits_cost);
@@ -477,6 +505,27 @@ describe('V13 MV 契约与账本（mock）', () => {
       const noPatch = await S.api('PATCH', pth, { token: g.token, json: { sync_score: 1 } });
       assert.strictEqual(noPatch.status, 404, 'V13-⑭ 镜级不存在可写 sync_score 的端点（' + pth + '），实际 ' + noPatch.status);
     }
+  });
+
+  it('V13-⑭b 手改剧本重跑机审、超 16 镜拒绝、旧机审不得放行', async () => {
+    const g = await S.newGuest();
+    const { r } = await newProject(g);
+    const pid = r.json.project.id;
+    const shot = (seq) => ({ seq, kind: 'story', sec: 3, desc: '远景' + seq, camera: '远景', cast_ids: [] });
+    const patched = await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: { ver: 1, script_json: { shots: [shot(1)] } } });
+    assert.strictEqual(patched.status, 200, 'V13-⑭b 合法手改剧本应 200');
+    const reviewed = JSON.parse(S.db.mvProject(pid).row.script_json);
+    assert.ok(reviewed.ai_review && reviewed.ai_review.script_hash, 'V13-⑭b 手改后必须有服务端机审 hash');
+    const freshReview = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: 'deadbeef0000' } });
+    assert.notStrictEqual(freshReview.json.code, 'AI_REVIEW_STALE', 'V13-⑭b 物化稳定镜头 id 不得使新机审失效');
+    const tooMany = await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: { ver: 2, script_json: { shots: Array.from({ length: 17 }, (_, i) => shot(i + 1)) } } });
+    assert.strictEqual(tooMany.status, 422, 'V13-⑭b 17 镜必须拒绝，不能静默截断为 16 镜');
+    const tampered = JSON.parse(S.db.mvProject(pid).row.script_json);
+    tampered.shots[0].desc = '机审后绕过篡改';
+    dbWrite('UPDATE mv_projects SET script_json=? WHERE id=?', JSON.stringify(tampered), pid);
+    const blocked = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: 'deadbeef0000' } });
+    assert.strictEqual(blocked.status, 409, 'V13-⑭b 旧机检不得放行修改后的剧本');
+    assert.strictEqual(blocked.json.code, 'AI_REVIEW_STALE');
   });
 
   it('V13-⑮ WSS mv.progress（v2.2/v2.8.5）：boot/preview 触发广播且形状合规', async () => {
@@ -508,7 +557,7 @@ describe('V13 MV 契约与账本（mock）', () => {
   it('V13-⑯ PATCH 剧本同步物化（v2.15.1 批注）：改 desc→shoot motion 用新文案；成片镜不动；脚本移除的未成片行删行', async () => {
     const g = await S.newGuest();
     await S.credits(g.token); // shoot 40⚡ 需余额（游客 50 够，此处显式触发每日免费）
-    const { r } = await newProject(g);
+    const { r } = await newProject(g, { lyrics: '第一句歌词' });
     const pid = r.json.project.id;
     const s1 = S.seedMvShot(pid, { seq: 1, kind: 'story', status: 'draft' });
     S.seedMvShot(pid, { seq: 2, kind: 'story', status: 'draft' });
@@ -541,6 +590,123 @@ describe('V13 MV 契约与账本（mock）', () => {
       'V13-⑯ shoot payload shot.motion 必须用新剧本 desc（杜绝改词仍按旧 motion 拍），实际 ' + JSON.stringify(pl.shot));
     const led = S.db.ledgerRows(g.user.id);
     assert.strictEqual(led.rows.reduce((a, x) => a + x.delta, 0), (await S.credits(g.token)).balance, 'V13-⑯ 账本不变量破坏');
+  });
+
+  it('V13-⑱ boot 复用完整拍摄载荷：refs/lyric/first_frame 齐全；cast confirm 推进 scripting', async () => {
+    const g = await S.newGuest();
+    const { r } = await newProject(g, { lyrics: '第一句歌词\n第二句歌词' });
+    const pid = r.json.project.id;
+    await S.credits(g.token);
+    S.seedLedger(g.user.id, 500);
+    const detail0 = await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token });
+    const chId = detail0.json.characters[0].id;
+    const cc = await S.api('POST', '/v1/mv/projects/' + pid + '/cast/confirm', {
+      token: g.token, json: { cast_image_url: '2026-01/f_cast.png', frame_sel: [{ url: '2026-01/f_ref.png', sel: true }] },
+    });
+    assert.strictEqual(cc.status, 200, 'V13-⑱ cast confirm 应 200');
+    assert.strictEqual(S.db.mvProject(pid).row.status, 'scripting', 'V13-⑱ 角色确认后应推进 scripting');
+    const sid = S.seedMvShot(pid, { seq: 1, kind: 'singing', status: 'draft' });
+    S.setMvShot(sid, { lyric_from: 0, lyric_to: 1, storyboard_url: '2026-01/f_board.png', desc: '雨夜演唱' });
+    await toPreviewed(g, pid);
+    const estVer = (await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token })).json.project.est_ver;
+    const boot = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: estVer } });
+    assert.strictEqual(boot.status, 202, 'V13-⑱ boot 应 202，实际 ' + boot.status + ' ' + boot.text.slice(0, 200));
+    const pl = JSON.parse(S.mvJobRows(g.user.id, 'mv_shot').find((x) => x.id === boot.json.jobs[0]).payload);
+    assert.deepStrictEqual(pl.shot.refs, ['2026-01/f_ref.png'], 'V13-⑱ boot 必须带角色参考图');
+    assert.strictEqual(pl.shot.lyric, '第一句歌词', 'V13-⑱ boot 必须带对应歌词');
+    assert.ok(/\/f\/2026-01\/f_board\.png$/.test(pl.shot.first_frame), 'V13-⑱ boot 必须带首帧');
+    assert.strictEqual(pl.shot.singing, true);
+  });
+
+  it('V13-⑲ blocked/policy-high 机检在 boot 与 shoot 前统一 409，零派单零扣分', async () => {
+    const g = await S.newGuest();
+    const { pid, ids } = await fundedProject(g, { shots: 1 });
+    const sid = ids[0];
+    S.setMvProject(pid, {
+      status: 'previewed', est_ver: 'blocked_ver', est_json: '{"credits":40}', credits_cost: 0,
+      script_json: JSON.stringify({ shots: [{ seq: 1, kind: 'story', sec: 5, desc: '雨中镜头' }],
+        ai_review: { blocked: true, findings: [{ level: 'high', rule: 'policy', message: '高风险内容' }] } }),
+    });
+    const c0 = (await S.credits(g.token)).balance;
+    const boot = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: 'blocked_ver' } });
+    assert.strictEqual(boot.status, 409);
+    assert.strictEqual(boot.json.code, 'AI_REVIEW_BLOCKED');
+    const shoot = await S.api('POST', '/v1/mv/projects/' + pid + '/jobs', { token: g.token, json: { type: 'shoot', params: { shot_id: sid } } });
+    assert.strictEqual(shoot.status, 409);
+    assert.strictEqual(shoot.json.code, 'AI_REVIEW_BLOCKED');
+    assert.strictEqual(S.mvJobRows(g.user.id, 'mv_shot').length, 0, 'V13-⑲ 拦截不得派单');
+    assert.strictEqual((await S.credits(g.token)).balance, c0, 'V13-⑲ 拦截不得扣分');
+  });
+
+  it('V13-⑳ 终态失败落 failed，重拍恢复 shooting，取消项目不被完成回调覆盖', async () => {
+    const g = await S.newGuest();
+    const { pid, ids } = await fundedProject(g, { shots: 1 });
+    await toPreviewed(g, pid);
+    S.executor.failPlan = { type: 'mv_shot', code: 'RENDER_FAILED', message: '拍摄失败', times: 3 };
+    const estVer = (await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token })).json.project.est_ver;
+    const boot = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: estVer } });
+    assert.strictEqual(boot.status, 202);
+    const failed = await S.waitForJob(g.token, boot.json.jobs[0], { timeoutMs: 60000 });
+    assert.strictEqual(failed.status, 'failed');
+    assert.strictEqual(S.db.mvProject(pid).row.status, 'failed', 'V13-⑳ 无活跃任务且终态失败应落 failed');
+    S.executor.failPlan = null;
+    const retry = await S.api('POST', '/v1/mv/shots/' + ids[0] + '/jobs', { token: g.token, json: { type: 'reshoot', reason: '恢复拍摄' } });
+    assert.strictEqual(retry.status, 202, 'V13-⑳ failed 项目应允许显式重拍');
+    assert.strictEqual(S.db.mvProject(pid).row.status, 'shooting', 'V13-⑳ 重拍应恢复 shooting');
+    const cancel = await S.api('POST', '/v1/mv/projects/' + pid + '/cancel', { token: g.token, json: {} });
+    assert.strictEqual(cancel.status, 200);
+    const done = await S.waitForJob(g.token, retry.json.job_id, { timeoutMs: 60000 });
+    assert.strictEqual(done.status, 'done');
+    assert.strictEqual(S.db.mvProject(pid).row.status, 'canceled', 'V13-⑳ 取消不得被拍摄完成/失败对账覆盖');
+  });
+
+  it('V13-㉑ 剧本按稳定 ID 同步：重排不串写、新增物化、删除未成片、成片镜保持', async () => {
+    const g = await S.newGuest();
+    const { r } = await newProject(g);
+    const pid = r.json.project.id;
+    const shots = ['mvs_a', 'mvs_b', 'mvs_c'].map((id, i) => ({ id, seq: i + 1, kind: 'story', sec: 5, desc: id }));
+    const p1 = await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: { ver: 1, script_json: { shots } } });
+    assert.strictEqual(p1.status, 200);
+    S.setMvShot('mvs_a', { status: 'clipReady', desc: '成片文案' });
+    const reordered = [{ id: 'mvs_c', seq: 1, kind: 'story', sec: 5, desc: '新C' },
+      { id: 'mvs_a', seq: 2, kind: 'story', sec: 5, desc: '不得覆盖成片' },
+      { id: 'mvs_d', seq: 3, kind: 'story', sec: 5, desc: '新增D' }];
+    const p2 = await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: { ver: 2, script_json: { shots: reordered } } });
+    assert.strictEqual(p2.status, 200, 'V13-㉑ 二次 PATCH 应 200，实际 ' + p2.text.slice(0, 200));
+    const rows = S.db.mvShotsOf(pid).rows;
+    assert.ok(!rows.some((x) => x.id === 'mvs_b'), 'V13-㉑ 删除的未成片镜应删行');
+    assert.ok(rows.some((x) => x.id === 'mvs_d'), 'V13-㉑ 新增镜应物化');
+    assert.strictEqual(rows.find((x) => x.id === 'mvs_c').desc, '新C', 'V13-㉑ 调序后 desc 不得串写到别的 ID');
+    assert.strictEqual(rows.find((x) => x.id === 'mvs_a').desc, '成片文案', 'V13-㉑ 成片镜不得被剧本覆盖');
+    assert.strictEqual(new Set(rows.map((x) => Number(x.seq))).size, rows.length, 'V13-㉑ seq 不得重复');
+    const saved = JSON.parse(S.db.mvProject(pid).row.script_json);
+    assert.deepStrictEqual(saved.shots.map((x) => x.id), ['mvs_c', 'mvs_a', 'mvs_d']);
+  });
+
+  it('V13-㉒ 并发 shoot 串行预算护栏：仅一单成功，第二单 402 并暂停', async () => {
+    const g = await S.newGuest();
+    const { pid, ids } = await fundedProject(g, { shots: 2, grant: 50 });
+    S.setMvProject(pid, { status: 'scripting', budget_credits: 34, paused: 0, credits_cost: 0,
+      script_json: JSON.stringify({ shots: [{ seq: 1, kind: 'story', sec: 5, desc: '甲' }, { seq: 2, kind: 'story', sec: 5, desc: '乙' }] }) });
+    const req = ids.map((id) => S.api('POST', '/v1/mv/projects/' + pid + '/jobs', { token: g.token, json: { type: 'shoot', params: { shot_id: id } } }));
+    const rs = await Promise.all(req);
+    assert.deepStrictEqual(rs.map((x) => x.status).sort(), [202, 402], 'V13-㉒ 34 预算只允许一单 40，实际 ' + JSON.stringify(rs.map((x) => ({ s: x.status, t: x.text }))));
+    assert.strictEqual(S.mvJobRows(g.user.id, 'mv_shot').length, 1, 'V13-㉒ 并发只允许派一单');
+    assert.strictEqual(Number(S.db.mvProject(pid).row.paused), 1, 'V13-㉒ 超 120% 后必须自动暂停');
+    const led = S.db.ledgerRows(g.user.id);
+    assert.strictEqual(led.rows.reduce((a, x) => a + x.delta, 0), (await S.credits(g.token)).balance, 'V13-㉒ 账本不变量破坏');
+  });
+
+  it('V13-㉓ 伪造 system 补拍无执行器凭证必须 403，不得免费派单', async () => {
+    const g = await S.newGuest();
+    const { pid, ids } = await fundedProject(g, { shots: 1 });
+    const sid = ids[0];
+    const c0 = (await S.credits(g.token)).balance;
+    const r = await S.api('POST', '/v1/mv/shots/' + sid + '/jobs', { token: g.token, json: { type: 'reshoot', initiated_by: 'system' } });
+    assert.strictEqual(r.status, 403);
+    assert.strictEqual(r.json.code, 'FORBIDDEN');
+    assert.strictEqual(S.mvJobRows(g.user.id, 'mv_shot').length, 0);
+    assert.strictEqual((await S.credits(g.token)).balance, c0);
   });
 });
 

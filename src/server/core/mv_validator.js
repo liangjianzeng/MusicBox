@@ -2,6 +2,7 @@
 'use strict';
 const U = require('./util');
 const scriptPrompt = require('../prompts/mv_script');
+const MAX_SHOTS = 16;
 
 // findings=[{check, level:'warn', message}]；绝不抛错、绝不阻断流程（拍板权在人）
 function validate({ script_json, work, kind, characters }) {
@@ -51,4 +52,28 @@ function validate({ script_json, work, kind, characters }) {
   return findings;
 }
 
-module.exports = { validate };
+function assertShotShape(script_json, { work, kind, characters } = {}) {
+  const bad = (message) => { throw new U.ApiError('INVALID_LLM_OUTPUT', message, 422); };
+  if (!script_json || typeof script_json !== 'object' || !Array.isArray(script_json.shots)) bad('LLM 输出 shots 必须为数组');
+  const shots = script_json.shots;
+  if (!shots.length || shots.length > MAX_SHOTS) bad('LLM 输出镜头数须在 1–16 之间');
+  const castIds = new Set((characters || []).map((c) => c.id));
+  const lineCount = kind === 'vocal' ? scriptPrompt.lyricLines(work).length : 0;
+  const ids = new Set();
+  shots.forEach((s, i) => {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) bad('第 ' + (i + 1) + ' 镜必须为对象');
+    if (!Number.isInteger(s.seq) || s.seq !== i + 1) bad('第 ' + (i + 1) + ' 镜 seq 必须为从 1 开始的连续整数');
+    if (!['singing', 'story', 'broll'].includes(s.kind)) bad('第 ' + (i + 1) + ' 镜 kind 不合法');
+    if (typeof s.sec !== 'number' || !Number.isFinite(s.sec) || s.sec < 1 || s.sec > 30) bad('第 ' + (i + 1) + ' 镜 sec 须为 1–30 的数字');
+    if (typeof s.desc !== 'string' || !s.desc.trim()) bad('第 ' + (i + 1) + ' 镜 desc 不能为空');
+    if (s.cast_ids !== undefined && (!Array.isArray(s.cast_ids) || s.cast_ids.some((x) => typeof x !== 'string' || !castIds.has(x)) || new Set(s.cast_ids).size !== s.cast_ids.length)) bad('第 ' + (i + 1) + ' 镜 cast_ids 不合法');
+    if (s.id !== undefined && (typeof s.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(s.id) || ids.has(s.id))) bad('镜头稳定 id 不合法或重复');
+    if (s.id !== undefined) ids.add(s.id);
+    if (s.lyric_from !== undefined && s.lyric_from !== null && (!Number.isInteger(s.lyric_from) || s.lyric_from < 0 || s.lyric_from >= lineCount)) bad('第 ' + (i + 1) + ' 镜 lyric_from 越界');
+    if (s.lyric_to !== undefined && s.lyric_to !== null && (!Number.isInteger(s.lyric_to) || s.lyric_to < 1 || s.lyric_to > lineCount)) bad('第 ' + (i + 1) + ' 镜 lyric_to 越界');
+    if (s.kind === 'singing' && (!Number.isInteger(s.lyric_from) || !Number.isInteger(s.lyric_to) || s.lyric_to <= s.lyric_from)) bad('第 ' + (i + 1) + ' 演唱镜须含有效歌词窗口');
+  });
+  return script_json;
+}
+
+module.exports = { MAX_SHOTS, validate, assertShotShape };

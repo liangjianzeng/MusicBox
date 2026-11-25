@@ -304,6 +304,16 @@ WHERE client_msg_id IS NOT NULL;
 CREATE INDEX idx_chat_tickets_assistant_user ON chat_tickets(user_id,scope,created_at);
 `,
   },
+  {
+    // v13 · MV 助手票据关联会话与任务，支持预算预留/失败释放的精确账本
+    version: 13,
+    sql: `
+ALTER TABLE mv_tickets ADD COLUMN session_id TEXT;
+ALTER TABLE mv_tickets ADD COLUMN job_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_mv_tickets_session ON mv_tickets(session_id, status);
+CREATE INDEX IF NOT EXISTS idx_mv_tickets_job ON mv_tickets(job_id);
+`,
+  },
 ];
 
 function init() {

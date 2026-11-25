@@ -67,7 +67,8 @@ function loadTemplate(tmplId, entry) {
   const p = path.join(TEMPLATES_DIR, tmplId + '.json');
   if (!fs.existsSync(p)) throw err('COMFY_TMPL_MISSING', '固化模板不存在：' + p);
   const buf = fs.readFileSync(p);
-  if (sha16(buf) !== entry.tmpl_sha16) {
+  const normalized = Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+  if (sha16(normalized) !== entry.tmpl_sha16) {
     throw err('COMFY_TMPL_DRIFT', '模板 hash 与清单登记不符（' + tmplId + '）：禁止执行未登记的模板');
   }
   let wf;
@@ -222,7 +223,10 @@ async function submitComfyJob(opts) {
     let hist = null;
     try {
       hist = await httpJson(base, '/history/' + encodeURIComponent(promptId), null, 'GET', 8000, 'COMFY');
-    } catch (e) { continue; } // 观测类瞬时错误：下轮重试；硬错误（非网络）已由 err 上抛
+    } catch (e) {
+      if (e.failCode === 'COMFY_UNREACHABLE' || e.failCode === 'COMFY_TIMEOUT' || e.failCode === 'COMFY_HTTP') throw e;
+      continue;
+    }
     const rec = hist && hist[promptId];
     if (!rec) continue;
     const st = rec.status || {};

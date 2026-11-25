@@ -1,15 +1,19 @@
 {
   "schema": 1,
-  "note": "MusicBox MV ComfyUI 模板清单（tmpl_sha16 锁）。PLACEHOLDER：本阶段两模板为诚实骨架（节点图形状忠实镜像自剧场同族模板，按 MusicBox 命名重皮），未经真机登记与实测，禁止真跑；SP-MV-4 真机侧完成部署登记后回填 comfy_commit/weights/实测数据。",
+  "note": "MusicBox MV ComfyUI 模板清单（tmpl_sha16 锁）。2026-11-25 DGX 真机登记（全加载窗口）：h3-image-cast/h3-fl2va 真跑全绿，耗时与内存回填；h3-image-edit 未跑（分镜归 SP-MV-3）。共宿主 :8188 只发任务+只读观测。",
   "templates": {
     "h3-image-cast": {
       "tmpl_sha16": "313a47730e1819e6",
-      "placeholder": true,
+      "placeholder": false,
       "family": "h3image",
       "endpoint": "spark",
-      "comfy_commit": null,
+      "comfy_commit": "1e719279f56558b2c6d5d2f2aa590b197559f1f6",
       "cn_commits": {},
-      "weights": [],
+      "weights": [
+        "diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors 20G",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors 15G",
+        "vae/minimax_h3_image_vae_fp16.safetensors 1.1G"
+      ],
       "params": {
         "PROMPT": "定妆描述（半身棚拍，性别+风格）",
         "WIDTH": "864",
@@ -17,17 +21,54 @@
         "SEED": "uint32（每候选 +1 派生）",
         "REF_IMAGE_1..3": "identity reference 文件名（/upload/image 上传后回填；AI 脸档由 runner 置为占位/删节点）"
       },
-      "vram_profile": "PLACEHOLDER：H3-Image 族 ~28G（架构 §1.2 预算），实测数据由 SP-MV-4 回写",
-      "evidence": null
+      "vram_profile": "生图族驻 ~37G（DiT 20G + TE 15G + image VAE 1.1G；TE 与视频族共享）",
+      "evidence": {
+        "date": "2026-11-25",
+        "host": "gx10-85f3",
+        "prompt_id": "8315d4e5-2038-4c09-9560-73d4a5739636",
+        "wall_s": 24.06,
+        "wall_warm_s": 15.04,
+        "out": "864x1536 png 1.77MB",
+        "seed": 424243,
+        "ref": "placeholder.png（AI 脸档，无垫图）"
+      }
+    },
+    "h3-image-broll": {
+      "tmpl_sha16": "6b263b98bc7782f3",
+      "placeholder": false,
+      "family": "h3image",
+      "endpoint": "spark",
+      "comfy_commit": "1e719279f56558b2c6d5d2f2aa590b197559f1f6",
+      "cn_commits": {},
+      "weights": [
+        "diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors 20G",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors 15G",
+        "vae/minimax_h3_image_vae_fp16.safetensors 1.1G"
+      ],
+      "params": {
+        "PROMPT": "空镜/场景关键帧描述",
+        "WIDTH": "864",
+        "HEIGHT": "1536",
+        "SEED": "uint32"
+      },
+      "vram_profile": "与 h3-image-cast 同族",
+      "evidence": null,
+      "note": "由已真机验证的 h3-image-cast 去掉身份垫图输入派生；纯文生图分支尚未在 Spark 真机单独验收，不伪造 evidence"
     },
     "h3-fl2va": {
       "tmpl_sha16": "55b0dfe955b7ce15",
-      "placeholder": true,
+      "placeholder": false,
       "family": "h3video",
       "endpoint": "spark",
-      "comfy_commit": null,
+      "comfy_commit": "1e719279f56558b2c6d5d2f2aa590b197559f1f6",
       "cn_commits": {},
-      "weights": [],
+      "weights": [
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors 20G",
+        "loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors 1.9G",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors 15G",
+        "vae/minimax_h3_video_vae_fp16.safetensors 4.9G",
+        "vae/minimax_h3_audio_vae_fp32.safetensors 578M"
+      ],
       "params": {
         "FIRST_FRAME": "定妆照/关键帧文件名（/upload/image 上传后回填）",
         "PROMPT": "表演描述（转头/表情/对镜演唱）",
@@ -37,8 +78,16 @@
         "STEPS": "4（turbo4 恒定）",
         "SEED": "uint32"
       },
-      "vram_profile": "PLACEHOLDER：H3 视频族 ~42G（架构 §1.2 预算），实测数据由 SP-MV-4 回写",
-      "evidence": null
+      "vram_profile": "视频族 +~27G（DiT 20G + turbo4 LoRA 1.9G + video VAE 4.9G + audio VAE 0.6G；TE 共享）；三族+生乐 同时驻实测 ram_free 40.4→44.6G（阈值 20G 留裕 ≥20G）",
+      "evidence": {
+        "date": "2026-11-25",
+        "host": "gx10-85f3",
+        "prompt_id": "812d3791-a542-45c4-8d8d-e669a3d6de41",
+        "wall_s": 270.57,
+        "out": "736x1312 mp4 24fps 5.167s 4.6MB",
+        "first_frame": "h3-image-cast 产物（链身份真源）",
+        "seed": 424244
+      }
     },
     "h3-image-edit": {
       "tmpl_sha16": "b203f3be5cedeab6",

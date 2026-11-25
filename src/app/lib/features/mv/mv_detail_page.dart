@@ -7,7 +7,10 @@ import '../player/player_provider.dart';
 import 'mv_api_client.dart';
 import 'mv_models.dart';
 import 'mv_state.dart';
+import 'widgets/mv_common.dart';
+import 'widgets/mv_network_image.dart';
 import 'widgets/mv_task_chip.dart';
+import 'widgets/mv_theme.dart';
 import 'widgets/mv_video_player.dart';
 
 /// MV 成片详情：竖屏 9:16 播放器（封面海报兜底）+ 母 work 谱系卡（试听走
@@ -71,41 +74,20 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('MV 详情'),
+        title: Text('MV 详情'),
         actions: [
           IconButton(
-              onPressed: _load,
-              icon: const Icon(Icons.refresh),
-              tooltip: '刷新'),
+              onPressed: _load, icon: Icon(Icons.refresh), tooltip: '刷新'),
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? ListView(
+              padding: const EdgeInsets.all(16),
+              children: const [MvCardSkeleton(), MvCardSkeleton()],
+            )
           : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(28),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.movie_filter_outlined,
-                            size: 38, color: Colors.white24),
-                        const SizedBox(height: 10),
-                        Text(_error!,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: Colors.white54, fontSize: 13)),
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                            onPressed: _load,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('重试')),
-                      ],
-                    ),
-                  ),
-                )
+              ? MvErrorView(text: _error!, onRetry: _load)
               : _body(),
     );
   }
@@ -115,9 +97,7 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
     final project = MvProject.fromMap(m);
     final parentRaw = _raw?['parent_work'];
     final parent = parentRaw is Map ? Work.fromMap(parentRaw) : null;
-    final cast = (m['cast'] as List? ?? const [])
-        .whereType<Map>()
-        .toList();
+    final cast = (m['cast'] as List? ?? const []).whereType<Map>().toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -132,7 +112,7 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
             placeholderHint: '成片暂不可播（片源或服务异常，可下拉刷新重试）',
           ),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         Row(
           children: [
             Expanded(
@@ -140,25 +120,24 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
                 project.title.isEmpty ? '未命名 MV' : project.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 17, fontWeight: FontWeight.w800),
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
               ),
             ),
             MvProjectChip(status: project.status),
           ],
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: 4),
         Text(
           [
             mvKindLabel(project.kind),
-            if (project.durationSec > 0) _fmt(project.durationSec),
+            if (project.durationSec > 0) mvFormatDuration(project.durationSec),
             '已用 ${project.creditsCost} ⚡',
             if (project.creditsRefunded > 0) '已退 ${project.creditsRefunded} ⚡',
           ].join(' · '),
-          style: const TextStyle(fontSize: 11.5, color: Colors.white38),
+          style: TextStyle(fontSize: 11.5, color: context.mvTextMuted),
         ),
         if (cast.isNotEmpty) ...[
-          const SizedBox(height: 10),
+          SizedBox(height: 10),
           Row(
             children: [
               for (final c in cast.take(3))
@@ -172,26 +151,21 @@ class _MvDetailPageState extends ConsumerState<MvDetailPage> {
             ],
           ),
         ],
-        const SizedBox(height: 14),
+        SizedBox(height: 14),
         // 母 work 谱系卡（试听 = 既有 just_audio 播放器）
         _ParentWorkCard(parent: parent),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         // 音画报告入口（STUB → 「报告生成中」诚实空态）
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
             onPressed: () => MvReportPage.push(context, projectId: widget.mvId),
-            icon: const Icon(Icons.query_stats_outlined, size: 18),
-            label: const Text('音画报告'),
+            icon: Icon(Icons.query_stats_outlined, size: 18),
+            label: Text('音画报告'),
           ),
         ),
       ],
     );
-  }
-
-  static String _fmt(double sec) {
-    final s = sec.round();
-    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
   }
 }
 
@@ -202,32 +176,48 @@ class _CastThumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(999),
-          child: SizedBox(
-            width: 30,
-            height: 30,
-            child: (thumb ?? '').isNotEmpty
-                ? Image.network(thumb!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const ColoredBox(
-                        color: Colors.white10,
+    final hasThumb = (thumb ?? '').isNotEmpty;
+    return Semantics(
+      label: (name ?? '').isEmpty ? '主演定妆照' : '主演 $name 的定妆照',
+      button: hasThumb,
+      child: Row(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: hasThumb
+                ? () => showMvImagePreview(context,
+                    url: thumb!, title: name ?? '主演定妆照')
+                : null,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: SizedBox(
+                width: 30,
+                height: 30,
+                child: hasThumb
+                    ? MvNetworkImage(
+                        url: thumb!,
+                        cacheWidth: 96,
+                        semanticLabel: name ?? '主演定妆照')
+                    : ColoredBox(
+                        color: context.mvBorder,
                         child: Icon(Icons.person_outline,
-                            size: 16, color: Colors.white24)))
-                : const ColoredBox(
-                    color: Colors.white10,
-                    child: Icon(Icons.person_outline,
-                        size: 16, color: Colors.white24)),
+                            size: 16, color: context.mvTextMuted)),
+              ),
+            ),
           ),
-        ),
-        if ((name ?? '').isNotEmpty) ...[
-          const SizedBox(width: 4),
-          Text(name!,
-              style: const TextStyle(fontSize: 11, color: Colors.white54)),
+          if ((name ?? '').isNotEmpty) ...[
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 72),
+              child: Text(name!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      TextStyle(fontSize: 11, color: context.mvTextSecondary)),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -243,9 +233,9 @@ class _ParentWorkCard extends ConsumerWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .03),
+        color: context.mvSurfaceRaised.withValues(alpha: .03),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: context.mvBorder),
       ),
       child: Row(
         children: [
@@ -259,24 +249,22 @@ class _ParentWorkCard extends ConsumerWidget {
                 Theme.of(context).colorScheme.tertiary.withValues(alpha: .35),
               ]),
             ),
-            child: const Center(
-                child: Icon(Icons.music_note, size: 18, color: Colors.white)),
+            child: Center(
+                child: Icon(Icons.music_note,
+                    size: 18, color: context.mvTextPrimary)),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  w == null
-                      ? '母作品已不存在'
-                      : (w.title.isEmpty ? '未命名作品' : w.title),
+                  w == null ? '母作品已不存在' : (w.title.isEmpty ? '未命名作品' : w.title),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 13.5, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
                 ),
-                const SizedBox(height: 2),
+                SizedBox(height: 2),
                 Text(
                   w == null
                       ? '谱系关联的原始歌曲已被删除（成片不受影响）'
@@ -285,19 +273,18 @@ class _ParentWorkCard extends ConsumerWidget {
                           if (w.genres.isNotEmpty) w.genres.take(2).join('/'),
                           if ((w.bpm ?? 0) > 0) '${w.bpm} BPM',
                         ].join(' · '),
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.white38),
+                  style: TextStyle(fontSize: 11, color: context.mvTextMuted),
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 6),
+          SizedBox(width: 6),
           TextButton.icon(
             onPressed: (w != null && (w.audioUrl ?? '').isNotEmpty)
                 ? () => ref.read(playerProvider.notifier).playQueue([w], 0)
                 : null,
-            icon: const Icon(Icons.play_arrow_rounded, size: 18),
-            label: const Text('试听', style: TextStyle(fontSize: 12)),
+            icon: Icon(Icons.play_arrow_rounded, size: 18),
+            label: Text('试听', style: TextStyle(fontSize: 12)),
           ),
         ],
       ),
@@ -362,21 +349,21 @@ class _MvReportPageState extends ConsumerState<MvReportPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('音画报告')),
+      appBar: AppBar(title: Text('音画报告')),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: CircularProgressIndicator())
           : _error != null
-              ? _Empty(
+              ? MvEmptyView(
                   icon: Icons.cloud_off_outlined,
                   text: _error!,
                   action: OutlinedButton.icon(
                       onPressed: _load,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重试')),
+                      icon: Icon(Icons.refresh),
+                      label: Text('重试')),
                 )
               : (_report != null && _report!.hasRealData)
                   ? _RealReport(report: _report!)
-                  : const _Empty(
+                  : MvEmptyView(
                       icon: Icons.pending_actions_outlined,
                       text: '报告生成中。\n'
                           '对齐精度、口型评分、字幕健康度等由拍摄/口型流水线产出后聚合，'
@@ -397,37 +384,32 @@ class _RealReport extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
-        _ReportCard(
-            title: '歌词对齐',
-            rows: [
-              ('对齐句数', (a['aligned_lines'] as num?)?.toInt().toString() ?? '0'),
-              ('平均误差', '${((a['mean_abs_err_ms'] as num?)?.toDouble() ?? 0).round()} ms'),
-              ('±150ms 内占比',
-                  '${(((a['within_150ms_ratio'] as num?)?.toDouble() ?? 0) * 100).round()}%'),
-            ]),
-        const SizedBox(height: 10),
-        _ReportCard(
-            title: '口型评分分布',
-            rows: [
-              ('样本镜数', (s['count'] as num?)?.toInt().toString() ?? '0'),
-              (
-                '均值',
-                ((s['mean'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)
-              ),
-              ('低于阈值', '${(s['below_threshold'] as num?)?.toInt() ?? 0} 镜'),
-            ]),
-        const SizedBox(height: 10),
+        _ReportCard(title: '歌词对齐', rows: [
+          ('对齐句数', (a['aligned_lines'] as num?)?.toInt().toString() ?? '0'),
+          (
+            '平均误差',
+            '${((a['mean_abs_err_ms'] as num?)?.toDouble() ?? 0).round()} ms'
+          ),
+          (
+            '±150ms 内占比',
+            '${(((a['within_150ms_ratio'] as num?)?.toDouble() ?? 0) * 100).round()}%'
+          ),
+        ]),
+        SizedBox(height: 10),
+        _ReportCard(title: '口型评分分布', rows: [
+          ('样本镜数', (s['count'] as num?)?.toInt().toString() ?? '0'),
+          ('均值', ((s['mean'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)),
+          ('低于阈值', '${(s['below_threshold'] as num?)?.toInt() ?? 0} 镜'),
+        ]),
+        SizedBox(height: 10),
         _ReportCard(
             title: '乐句点命中',
             rows: [('命中率', '${(report.phraseHit * 100).round()}%')]),
         if (report.degradedShots.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          _ReportCard(
-              title: '降级镜清单（明示）',
-              rows: [
-                for (final d in report.degradedShots)
-                  ('镜头', mvHuman(d)),
-              ]),
+          SizedBox(height: 10),
+          _ReportCard(title: '降级镜清单（明示）', rows: [
+            for (final d in report.degradedShots) ('镜头', mvHuman(d)),
+          ]),
         ],
       ],
     );
@@ -444,60 +426,31 @@ class _ReportCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .03),
+        color: context.mvSurfaceRaised.withValues(alpha: .03),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: context.mvBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(title,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w700, fontSize: 13.5)),
-          const SizedBox(height: 8),
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
+          SizedBox(height: 8),
           ...rows.map((r) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(
                   children: [
                     Expanded(
                         child: Text(r.$1,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.white54))),
+                            style: TextStyle(
+                                fontSize: 12, color: context.mvTextSecondary))),
                     Text(r.$2,
-                        style: const TextStyle(
-                            fontSize: 12.5, color: Colors.white70)),
+                        style: TextStyle(
+                            fontSize: 12.5, color: context.mvTextSecondary)),
                   ],
                 ),
               )),
         ],
-      ),
-    );
-  }
-}
-
-class _Empty extends StatelessWidget {
-  const _Empty({required this.icon, required this.text, this.action});
-  final IconData icon;
-  final String text;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 40, color: Colors.white24),
-            const SizedBox(height: 12),
-            Text(text,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: Colors.white38, fontSize: 12.5, height: 1.6)),
-            if (action != null) ...[const SizedBox(height: 14), action!],
-          ],
-        ),
       ),
     );
   }

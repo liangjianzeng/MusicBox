@@ -385,6 +385,9 @@ function notifyJob(job, status) {
   try {
     const events = [];
     const tickets = store.tx(() => {
+      if (String(job.type || '').startsWith('mv_') && status === 'failed') {
+        require('../l2mv/governance').releaseTicketReservationByJob(job.id);
+      }
       const rows = store.all("SELECT * FROM chat_tickets WHERE scope='assistant' AND user_id=? AND job_id=? ORDER BY rowid DESC LIMIT 10", job.user_id, job.id);
       for (const t of rows) {
         addEvent(events, job.user_id, 'assistant.task', { session_id: t.session_id, ticket_id: t.id, job_id: job.id, status, progress: job.progress || 0, task: taskShape(job) });

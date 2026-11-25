@@ -76,8 +76,7 @@ class MvApiClient {
       if (brief != null && brief.trim().isNotEmpty) 'brief': brief.trim(),
       'character': character,
     };
-    final d = await _call(
-        () => _api.http.post('/v1/mv/projects', data: body));
+    final d = await _call(() => _api.http.post('/v1/mv/projects', data: body));
     return (d as Map?) ?? const {};
   }
 
@@ -115,13 +114,12 @@ class MvApiClient {
     required String castImageUrl,
     required List<Map<String, dynamic>> frameSel,
   }) async {
-    final d = await _call(() => _api.http.post(
-        '/v1/mv/projects/$projectId/cast/confirm',
-        data: {
-          'character_id': characterId,
-          'cast_image_url': castImageUrl,
-          'frame_sel': frameSel,
-        }));
+    final d = await _call(
+        () => _api.http.post('/v1/mv/projects/$projectId/cast/confirm', data: {
+              'character_id': characterId,
+              'cast_image_url': castImageUrl,
+              'frame_sel': frameSel,
+            }));
     return (d as Map?) ?? const {};
   }
 
@@ -155,8 +153,8 @@ class MvApiClient {
   /// POST /v1/mv/projects/:id/preview → 202 {job_id, credits_charged, idempotent}
   /// 每项目首次免费，重出 5⚡（D9）；前置=已有镜头（服务端硬门）。
   Future<Map> requestPreview(String projectId) async {
-    final d = await _call(() => _api.http.post(
-        '/v1/mv/projects/$projectId/preview'));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/projects/$projectId/preview'));
     return (d as Map?) ?? const {};
   }
 
@@ -178,12 +176,12 @@ class MvApiClient {
     String? reason,
     String initiatedBy = 'user',
   }) async {
-    final d = await _call(() => _api.http.post('/v1/mv/shots/$shotId/jobs',
-        data: {
-          'type': type,
-          if (reason != null && reason.isNotEmpty) 'reason': reason,
-          'initiated_by': initiatedBy,
-        }));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/shots/$shotId/jobs', data: {
+              'type': type,
+              if (reason != null && reason.isNotEmpty) 'reason': reason,
+              'initiated_by': initiatedBy,
+            }));
     return (d as Map?) ?? const {};
   }
 
@@ -198,17 +196,17 @@ class MvApiClient {
   /// POST /v1/mv/projects/:id/suggest/apply {suggest_id, ver}
   /// → 200 {project} | 409 STALE（上层 refetch+retry-once）| 404（建议失效）
   Future<Map> applySuggest(String projectId, String suggestId, int ver) async {
-    final d = await _call(() => _api.http.post(
-        '/v1/mv/projects/$projectId/suggest/apply',
-        data: {'suggest_id': suggestId, 'ver': ver}),
+    final d = await _call(
+        () => _api.http.post('/v1/mv/projects/$projectId/suggest/apply',
+            data: {'suggest_id': suggestId, 'ver': ver}),
         pendingOnNotFound: false);
     return (d as Map?) ?? const {};
   }
 
   /// POST /v1/mv/projects/:id/cancel → 200 {refunded}（未拍镜全额退，账本核算）
   Future<int> cancelProject(String projectId) async {
-    final d = await _call(
-        () => _api.http.post('/v1/mv/projects/$projectId/cancel'));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/projects/$projectId/cancel'));
     final m = (d as Map?) ?? const {};
     final r = m['refunded'];
     return r is int ? r : (r is num ? r.toInt() : int.tryParse('$r') ?? 0);
@@ -223,7 +221,8 @@ class MvApiClient {
 
   /// GET /v1/mv/projects/:id/report → STUB（stub:true）诚实标注；404 如实返回
   Future<Map> report(String projectId) async {
-    final d = await _call(() => _api.http.get('/v1/mv/projects/$projectId/report'),
+    final d = await _call(
+        () => _api.http.get('/v1/mv/projects/$projectId/report'),
         pendingOnNotFound: false);
     return (d as Map?) ?? const {};
   }
@@ -231,8 +230,8 @@ class MvApiClient {
   /// POST /v1/mv/projects/:id/tone → 200 {tone_suggest:{options}, assist:{mode}}
   /// （契约 v2.22：基调建议，system free，只读不改剧本；LLM 离线 server 词典兜底）
   Future<Map> tone(String projectId) async {
-    final d = await _call(
-        () => _api.http.post('/v1/mv/projects/$projectId/tone'));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/projects/$projectId/tone'));
     return (d as Map?) ?? const {};
   }
 
@@ -246,8 +245,8 @@ class MvApiClient {
     final fd = FormData();
     fd.files.add(MapEntry(
         'file', await MultipartFile.fromFile(filePath, filename: name)));
-    final d = await _call(
-        () => _api.http.post('/v1/mv/image/precheck', data: fd));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/image/precheck', data: fd));
     return (d as Map?) ?? const {};
   }
 
@@ -260,13 +259,13 @@ class MvApiClient {
     required String text,
     List<Map<String, dynamic>> chips = const [],
   }) async {
-    final d = await _call(() => _api.http.post('/v1/mv/assistant/messages',
-        data: {
-          if (sessionId != null && sessionId.isNotEmpty)
-            'session_id': sessionId,
-          'text': text,
-          if (chips.isNotEmpty) 'chips': chips,
-        }));
+    final d =
+        await _call(() => _api.http.post('/v1/mv/assistant/messages', data: {
+              if (sessionId != null && sessionId.isNotEmpty)
+                'session_id': sessionId,
+              'text': text,
+              if (chips.isNotEmpty) 'chips': chips,
+            }));
     return (d as Map?) ?? const {};
   }
 
@@ -275,8 +274,7 @@ class MvApiClient {
   Future<Map> confirmTicket(String ticketId,
       {String? ver, String? hash}) async {
     final d = await _call(
-        () => _api.http.post('/v1/mv/tickets/$ticketId/confirm',
-            data: {
+        () => _api.http.post('/v1/mv/tickets/$ticketId/confirm', data: {
               if (ver != null) 'ver': ver,
               if (hash != null) 'hash': hash,
             }),
@@ -291,7 +289,8 @@ class MvApiClient {
   }
 
   /// GET /v1/mvs?mine=1&cursor → {items:[mv], next_cursor}
-  Future<(List<Map>, String?)> listMvs({bool mine = true, String? cursor}) async {
+  Future<(List<Map>, String?)> listMvs(
+      {bool mine = true, String? cursor}) async {
     final d = await _call(() => _api.http.get('/v1/mvs', queryParameters: {
           if (mine) 'mine': '1',
           if (cursor != null && cursor.isNotEmpty) 'cursor': cursor,

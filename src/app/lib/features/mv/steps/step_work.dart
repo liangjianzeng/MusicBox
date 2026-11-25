@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../shared/widgets/ai_badge.dart';
 import '../mv_models.dart';
 import '../mv_state.dart';
+import '../widgets/mv_common.dart';
+import '../widgets/mv_theme.dart';
 
 /// 步①选曲：从曲库「我的作品」里挑一首已完成的歌（有音轨）。
 /// 卡片展示 标题 / mood / 流派 / 时长 /（歌唱曲 vs 纯音乐）。
@@ -35,26 +37,20 @@ class _StepWorkState extends ConsumerState<StepWork> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       children: [
-        const _StepHint(
-            text: '已制曲是成片唯一音轨真源——选一首满意的歌，MV 为它配画面。'),
-        const SizedBox(height: 10),
+        const _StepHint(text: '已制曲是成片唯一音轨真源——选一首满意的歌，MV 为它配画面。'),
+        SizedBox(height: 10),
         if (cands.loading && cands.items.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(
-                child: SizedBox(
-                    width: 26,
-                    height: 26,
-                    child: CircularProgressIndicator(strokeWidth: 2.5))),
-          )
+          const MvListSkeleton(count: 3, compact: true)
         else if (cands.error != null)
-          _RetryRow(text: cands.error!, onRetry: () => ref.read(mvCandidatesProvider.notifier).load())
+          _RetryRow(
+              text: cands.error!,
+              onRetry: () => ref.read(mvCandidatesProvider.notifier).load())
         else if (cands.items.isEmpty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(
               child: Text('曲库还没有已完成的歌，先去「创建」做一首',
-                  style: TextStyle(color: Colors.white38)),
+                  style: TextStyle(color: context.mvTextMuted)),
             ),
           )
         else
@@ -74,11 +70,11 @@ class _StepWorkState extends ConsumerState<StepWork> {
                             .colorScheme
                             .primaryContainer
                             .withValues(alpha: .28)
-                        : Colors.white.withValues(alpha: .03),
+                        : context.mvSurfaceRaised.withValues(alpha: .03),
                     border: Border.all(
                         color: sel
                             ? Theme.of(context).colorScheme.primary
-                            : Colors.white10),
+                            : context.mvBorder),
                   ),
                   child: Row(
                     children: [
@@ -93,27 +89,27 @@ class _StepWorkState extends ConsumerState<StepWork> {
                                       w.title.isEmpty ? '未命名作品' : w.title,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           fontWeight: FontWeight.w700)),
                                 ),
-                                const SizedBox(width: 6),
+                                SizedBox(width: 6),
                                 if (w.aiLabel) const AiBadge(small: true),
                               ],
                             ),
-                            const SizedBox(height: 4),
+                            SizedBox(height: 4),
                             Text(
                               [
-                                mvKindLabel(w.lyrics != null &&
-                                        w.lyrics!.isNotEmpty
-                                    ? 'vocal'
-                                    : 'instrumental'),
+                                mvKindLabel(
+                                    w.lyrics != null && w.lyrics!.isNotEmpty
+                                        ? 'vocal'
+                                        : 'instrumental'),
                                 if ((w.mood ?? '').isNotEmpty) w.mood!,
                                 if (w.genres.isNotEmpty)
                                   w.genres.take(2).join('/'),
-                                _fmt(w.durationSec),
+                                mvFormatDuration(w.durationSec),
                               ].join(' · '),
-                              style: const TextStyle(
-                                  fontSize: 11.5, color: Colors.white38),
+                              style: TextStyle(
+                                  fontSize: 11.5, color: context.mvTextMuted),
                             ),
                           ],
                         ),
@@ -125,7 +121,7 @@ class _StepWorkState extends ConsumerState<StepWork> {
                         size: 22,
                         color: sel
                             ? Theme.of(context).colorScheme.primary
-                            : Colors.white24,
+                            : context.mvTextMuted,
                       ),
                     ],
                   ),
@@ -133,9 +129,9 @@ class _StepWorkState extends ConsumerState<StepWork> {
               ),
             );
           }),
-        const SizedBox(height: 14),
+        SizedBox(height: 14),
         const _StepHint(text: '一句话创意（可选，AI 编剧会参考）'),
-        const SizedBox(height: 6),
+        SizedBox(height: 6),
         TextField(
           maxLines: 2,
           maxLength: 80,
@@ -144,17 +140,11 @@ class _StepWorkState extends ConsumerState<StepWork> {
             hintText: '比如：雨夜霓虹，主角边走边唱',
             isDense: true,
             counterText: '',
-            border:
-                OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       ],
     );
-  }
-
-  String _fmt(double sec) {
-    final s = sec.round();
-    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
   }
 }
 
@@ -165,7 +155,8 @@ class _StepHint extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(text,
-        style: const TextStyle(fontSize: 12, color: Colors.white38, height: 1.4));
+        style:
+            TextStyle(fontSize: 12, color: context.mvTextMuted, height: 1.4));
   }
 }
 
@@ -180,8 +171,8 @@ class _RetryRow extends StatelessWidget {
       children: [
         Expanded(
             child: Text(text,
-                style: const TextStyle(fontSize: 12, color: Colors.orangeAccent))),
-        TextButton(onPressed: onRetry, child: const Text('重试')),
+                style: TextStyle(fontSize: 12, color: context.mvWarning))),
+        TextButton(onPressed: onRetry, child: Text('重试')),
       ],
     );
   }

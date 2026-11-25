@@ -5,6 +5,7 @@ import '../../core/api_client.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/primary_button.dart';
 import 'creation_state.dart';
+import 'creation_ui.dart';
 import 'credit_guard.dart';
 import 'intent_flow_page.dart';
 import 'progress_page.dart';
@@ -13,7 +14,7 @@ import 'style_picker.dart';
 import 'transcript_confirm_page.dart';
 import 'voice_capture.dart';
 
-/// 简约级「灵感拍立得」：大按钮按住说话(≤60s) / 拍一张 / 一句话 → intent 流
+/// 简约级「灵感拍立得」：底部输入坞 + 语音/拍照/一句话 → intent 流
 class ShellEasy extends ConsumerStatefulWidget {
   const ShellEasy({super.key, this.keyboardOpen});
 
@@ -68,7 +69,7 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
       if (!mounted) return;
       if (exit?.kind == kConfirmTyped && exit!.text.isNotEmpty) {
         _setText(exit.text);
-        _toast('已填进「一句话」，可以直接改');
+        _toast('已填进灵感框，可以直接改');
       } else if (exit?.kind == kConfirmRedo) {
         _toast('好，再按住说一次');
       }
@@ -142,124 +143,176 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
     ref.listen(creationProvider, (previous, next) {
       if (_text.text != next.prompt) _setText(next.prompt);
     });
-    final scheme = Theme.of(context).colorScheme;
     final keyboardOpen =
         widget.keyboardOpen ?? MediaQuery.viewInsetsOf(context).bottom > 0;
     final shortScreen = MediaQuery.sizeOf(context).height < 640;
     return Column(
       children: [
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
-            children: [
-              const SizedBox(height: 8),
-              const Text('说出你的灵感，即刻成曲',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 6),
-              const Text('按住说话 · 拍一张 · 打一句话，AI 帮你写成歌',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white38, fontSize: 13)),
-              const SizedBox(height: 20),
-              InspirationChips(
-                samples: const ['雨夜咖啡馆的爵士', '公路旅行，City Pop', '治愈女声，木吉他'],
-                onPick: (v) {
-                  if (!_busy) _setText(v);
-                },
+          child: CustomScrollView(
+            key: const ValueKey('creation-easy-scroll'),
+            slivers: [
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    24,
+                    shortScreen ? 4 : 12,
+                    24,
+                    shortScreen ? 12 : 22,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (!shortScreen) ...[
+                        const Row(
+                          children: [
+                            Icon(Icons.auto_awesome_rounded,
+                                size: 14, color: CreationPalette.violetBright),
+                            SizedBox(width: 7),
+                            Text(
+                              'AI MUSIC STUDIO',
+                              style: TextStyle(
+                                color: CreationPalette.violetBright,
+                                fontSize: 10,
+                                height: 1,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      ShaderMask(
+                        blendMode: BlendMode.srcIn,
+                        shaderCallback: (bounds) => const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            CreationPalette.text,
+                            CreationPalette.violetBright,
+                          ],
+                        ).createShader(bounds),
+                        child: Text(
+                          shortScreen ? '让灵感成歌' : '让灵感，\n即刻成歌',
+                          textAlign:
+                              shortScreen ? TextAlign.center : TextAlign.left,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: shortScreen ? 26 : 34,
+                            height: 1.12,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -1,
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: shortScreen ? 8 : 12),
+                      if (!shortScreen)
+                        const Text(
+                          '说一句、拍一张，或写下你脑海里的画面。\n剩下的，交给 MusicBox。',
+                          style: TextStyle(
+                            color: CreationPalette.muted,
+                            fontSize: 13,
+                            height: 1.55,
+                          ),
+                        ),
+                      SizedBox(height: shortScreen ? 14 : 30),
+                      if (!shortScreen)
+                        const Row(
+                          children: [
+                            Text(
+                              '从这些灵感开始',
+                              style: TextStyle(
+                                color: CreationPalette.text,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            Spacer(),
+                            Text(
+                              '点一下填入',
+                              style: TextStyle(
+                                color: CreationPalette.faint,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      if (!shortScreen) const SizedBox(height: 10),
+                      if (!shortScreen)
+                        InspirationChips(
+                          samples: const [
+                            '雨夜爵士',
+                            '公路 City Pop',
+                            '治愈木吉他',
+                          ],
+                          onPick: (v) {
+                            if (!_busy) _setText(v);
+                          },
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
         ),
-        Container(
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerLow,
-            border: Border(top: BorderSide(color: scheme.outlineVariant)),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: _text,
-                    minLines: 1,
-                    maxLines: shortScreen ? 2 : 3,
-                    textInputAction: TextInputAction.send,
-                    onChanged: (v) =>
-                        ref.read(creationProvider.notifier).setPrompt(v),
-                    onSubmitted: (_) => _onText(),
-                    decoration: InputDecoration(
-                      hintText: shortScreen ? '或打一句话' : '或打一句话，如“雨天咖啡馆的爵士”',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  if (!keyboardOpen) ...[
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              HoldToTalkButton(
-                                compact: true,
-                                enabled: !_busy,
-                                onResult: _onVoice,
-                              ),
-                              if (!shortScreen) ...[
-                                const SizedBox(height: 6),
-                                const Text('按住说话',
-                                    style: TextStyle(
-                                        fontSize: 12, color: Colors.white70)),
-                              ],
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: _busy ? null : _onPhoto,
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: Size(0, shortScreen ? 64 : 72),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 8),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16)),
-                            ),
-                            child: const Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.photo_camera_rounded),
-                                SizedBox(height: 6),
-                                Text('拍一张', textAlign: TextAlign.center),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  const SizedBox(height: 10),
-                  PrimaryButton(
-                    text: '生成 3 首 · 约 45 积分',
-                    big: true,
-                    icon: Icons.auto_awesome,
-                    loading: _busy,
-                    onPressed: _busy ? null : _onText,
-                  ),
-                  if (!keyboardOpen && !shortScreen)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 6),
-                      child: Text('失败自动返还积分',
-                          style:
-                              TextStyle(color: Colors.white38, fontSize: 11)),
-                    ),
-                ],
+        CreationDock(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _text,
+                minLines: 1,
+                maxLines: shortScreen ? 2 : 3,
+                textInputAction: TextInputAction.send,
+                style: const TextStyle(
+                  color: CreationPalette.text,
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+                onChanged: (v) =>
+                    ref.read(creationProvider.notifier).setPrompt(v),
+                onSubmitted: (_) => _onText(),
+                decoration: creationFieldDecoration(
+                  hint: shortScreen ? '输入灵感' : '输入灵感，或直接按住说话',
+                ),
               ),
-            ),
+              if (!keyboardOpen) ...[
+                SizedBox(height: shortScreen ? 9 : 12),
+                CreationInputActions(
+                  compact: shortScreen,
+                  voice: HoldToTalkButton(
+                    compact: true,
+                    enabled: !_busy,
+                    onResult: _onVoice,
+                  ),
+                  onPhoto: _busy ? null : _onPhoto,
+                ),
+                SizedBox(height: shortScreen ? 9 : 12),
+              ],
+              PrimaryButton(
+                text: '生成 3 首 · 45 积分',
+                big: true,
+                gradient: true,
+                icon: Icons.auto_awesome_rounded,
+                loading: _busy,
+                onPressed: _busy ? null : _onText,
+              ),
+              if (!keyboardOpen && !shortScreen)
+                const Padding(
+                  padding: EdgeInsets.only(top: 7),
+                  child: Text(
+                    '失败自动返还积分',
+                    style: TextStyle(
+                      color: CreationPalette.faint,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ],

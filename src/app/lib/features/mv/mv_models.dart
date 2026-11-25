@@ -32,7 +32,13 @@ final List<RegExp> _mvBannedAscii = [
   ),
 ];
 const List<String> _mvBannedAsciiRepl = [
-  '重拍', '复刻编号', '导演阐述', '开机拍摄', '口型校准', '口型校准', '签名档',
+  '重拍',
+  '复刻编号',
+  '导演阐述',
+  '开机拍摄',
+  '口型校准',
+  '口型校准',
+  '签名档',
   '自部署·高品质',
 ];
 const Map<String, String> _mvBannedCjk = {
@@ -54,13 +60,27 @@ String mvHuman(String? raw) {
 /// 项目状态机（架构 §5）：drafting→casting→scripting→previewed→shooting→
 /// composing→ready；任何阶段可 canceled；failed 单列
 const kMvProjectStatuses = [
-  'drafting', 'casting', 'scripting', 'previewed',
-  'shooting', 'composing', 'ready', 'failed', 'canceled',
+  'drafting',
+  'casting',
+  'scripting',
+  'previewed',
+  'shooting',
+  'composing',
+  'ready',
+  'failed',
+  'canceled',
 ];
 
-/// 镜头状态机：draft|boardReady|clipReady|synced|locked|stale
+/// 镜头状态机：draft|queued|boardReady|clipReady|synced|locked|stale
+/// queued 是执行器未挂/等待派单时服务端实际会回传的状态。
 const kMvShotStatuses = [
-  'draft', 'boardReady', 'clipReady', 'synced', 'locked', 'stale',
+  'draft',
+  'queued',
+  'boardReady',
+  'clipReady',
+  'synced',
+  'locked',
+  'stale',
 ];
 
 /// 用户面「人话」状态（契约 §0/§5.4 语言纪律）
@@ -90,14 +110,20 @@ String mvProjectStatusLabel(String status) {
 }
 
 /// 进行中的项目状态（列表里显示「进度中」）
-bool mvProjectInProgress(String status) =>
-    const {'drafting', 'casting', 'scripting', 'previewed', 'shooting', 'composing'}
-        .contains(status);
+bool mvProjectInProgress(String status) => const {
+      'drafting',
+      'casting',
+      'scripting',
+      'previewed',
+      'shooting',
+      'composing'
+    }.contains(status);
 
 String mvShotStatusLabel(String status) {
   switch (status) {
     case 'draft':
-      return '筹备';
+    case 'queued':
+      return '排队中';
     case 'boardReady':
       return '画面就绪';
     case 'clipReady':
@@ -117,7 +143,8 @@ String mvKindLabel(String kind) => kind == 'instrumental' ? '纯音乐' : '歌�
 
 /// 报价快照（契约 v2.8.3：est_json；est_ver=hash12 做开机 CAS）
 class MvEstRow {
-  MvEstRow({required this.item, this.unit = '', this.count = 0, this.credits = 0});
+  MvEstRow(
+      {required this.item, this.unit = '', this.count = 0, this.credits = 0});
   final String item; // 拍摄/口型/歌词对齐/成片合成
   final String unit;
   final int count;
@@ -221,9 +248,17 @@ class MvProject {
   /// 状态序（架构 §5 状态机）：boot 前置 status≥previewed 的客户端门禁
   int get statusRank {
     const order = [
-      'drafting', 'casting', 'scripting', 'previewed',
-      'shooting', 'composing', 'ready',
+      'drafting',
+      'casting',
+      'scripting',
+      'previewed',
+      'shooting',
+      'composing',
+      'ready',
     ];
+    // 与 server stageRank 对齐：failed 保留拍摄阶段的能力，允许按原报价
+    // boot 或从具体镜头重拍恢复，不能把它当成尚未开始的项目。
+    if (status == 'failed') return order.indexOf('shooting');
     return order.indexOf(status);
   }
 
@@ -439,6 +474,8 @@ class MvShot {
 
   /// 回传 script_json 单镜条目的规范化形状（PATCH 白名单字段）
   Map<String, dynamic> toScriptShot() => {
+        // 服务端按稳定 id 同步镜行；调序/删镜后不能再按 seq 或数组下标回绑。
+        'id': id,
         'seq': seq,
         'kind': kind,
         'sec': sec,
@@ -479,7 +516,8 @@ class MvShot {
   factory MvShot.fromMap(Map m) {
     List<String> flags = const [];
     final raw = m['degraded'] ?? m['flags'];
-    if (raw is List) flags = raw.map((e) => '$e').where((e) => e.isNotEmpty).toList();
+    if (raw is List)
+      flags = raw.map((e) => '$e').where((e) => e.isNotEmpty).toList();
     return MvShot(
       id: '${m['id'] ?? ''}',
       projectId: '${m['project_id'] ?? ''}',
@@ -560,14 +598,17 @@ class MvReport {
         alignReport: (m['align_report'] as Map?) ?? const {},
         syncDist: (m['sync_dist'] as Map?) ?? const {},
         phraseHit: _asDouble(m['phrase_hit']),
-        degradedShots: (m['degraded_shots'] as List? ?? const []).map((e) {
-          if (e is Map) {
-            final seq = e['seq'];
-            final lbl = mvHuman('${e['label'] ?? ''}');
-            return seq == null ? lbl : '第${_asInt(seq)}镜 · $lbl';
-          }
-          return mvHuman('$e');
-        }).where((e) => e.isNotEmpty).toList(),
+        degradedShots: (m['degraded_shots'] as List? ?? const [])
+            .map((e) {
+              if (e is Map) {
+                final seq = e['seq'];
+                final lbl = mvHuman('${e['label'] ?? ''}');
+                return seq == null ? lbl : '第${_asInt(seq)}镜 · $lbl';
+              }
+              return mvHuman('$e');
+            })
+            .where((e) => e.isNotEmpty)
+            .toList(),
       );
 }
 
@@ -591,15 +632,20 @@ class MvTicket {
   final String? hash;
   final String? ver;
 
-  factory MvTicket.fromMap(Map m) => MvTicket(
-        id: '${m['id'] ?? ''}',
-        action: '${m['action'] ?? ''}',
-        status: '${m['status'] ?? 'pending'}',
-        estCredits: _asInt(m['est_credits']),
-        estMinutes: _asInt(m['est_minutes']),
-        hash: m['hash']?.toString(),
-        ver: m['ver']?.toString(),
-      );
+  factory MvTicket.fromMap(Map m) {
+    // 助手发票响应使用 ticket_id + est.{credits,minutes}，且故意不下发
+    // ver/hash；GET detail 的 pending tickets 才携带这两个确认凭据。
+    final est = m['est'] is Map ? m['est'] as Map : const {};
+    return MvTicket(
+      id: '${m['ticket_id'] ?? m['id'] ?? ''}',
+      action: '${m['action'] ?? ''}',
+      status: '${m['status'] ?? 'pending'}',
+      estCredits: _asInt(m['est_credits'] ?? est['credits']),
+      estMinutes: _asInt(m['est_minutes'] ?? est['minutes']),
+      hash: m['hash']?.toString(),
+      ver: m['ver']?.toString(),
+    );
+  }
 }
 
 /// 卡审单条结论（契约 v2.21 detail.ai_review.findings / llm_findings）
@@ -644,8 +690,7 @@ class MvAiReview {
   final bool present; // server 是否下发了 ai_review 段
 
   bool get hasFindings => findings.isNotEmpty || llmFindings.isNotEmpty;
-  bool get llmUsed =>
-      llmFindings.isNotEmpty || (engine ?? '').contains('LLM');
+  bool get llmUsed => llmFindings.isNotEmpty || (engine ?? '').contains('LLM');
 
   factory MvAiReview.fromMap(Map? m) {
     if (m == null) return MvAiReview();
@@ -694,15 +739,25 @@ class MvProjectDetail {
   /// 只读卡审结论（契约 v2.21 detail.ai_review；null=未下发）
   final MvAiReview? aiReview;
 
-  MvProjectDetail copyWith({List<MvShot>? shots}) => MvProjectDetail(
-        project: project,
-        characters: characters,
+  MvProjectDetail copyWith({
+    MvProject? project,
+    List<MvCharacter>? characters,
+    List<MvShot>? shots,
+    List<MvTicket>? tickets,
+    bool? assistantEnabled,
+    bool? assistantChat,
+    String? assistantModeHint,
+    MvAiReview? aiReview,
+  }) =>
+      MvProjectDetail(
+        project: project ?? this.project,
+        characters: characters ?? this.characters,
         shots: shots ?? this.shots,
-        tickets: tickets,
-        assistantEnabled: assistantEnabled,
-        assistantChat: assistantChat,
-        assistantModeHint: assistantModeHint,
-        aiReview: aiReview,
+        tickets: tickets ?? this.tickets,
+        assistantEnabled: assistantEnabled ?? this.assistantEnabled,
+        assistantChat: assistantChat ?? this.assistantChat,
+        assistantModeHint: assistantModeHint ?? this.assistantModeHint,
+        aiReview: aiReview ?? this.aiReview,
       );
 
   factory MvProjectDetail.fromMap(Map m) => MvProjectDetail(
@@ -732,7 +787,8 @@ class MvProjectDetail {
       return a['enabled'] == true || _asInt(a['enabled']) == 1;
     }
     if (m['assistant_enabled'] != null) {
-      return m['assistant_enabled'] == true || _asInt(m['assistant_enabled']) == 1;
+      return m['assistant_enabled'] == true ||
+          _asInt(m['assistant_enabled']) == 1;
     }
     return null;
   }
@@ -742,4 +798,25 @@ class MvProjectDetail {
     if (a == null) return false;
     return a['chat_enabled'] == true || _asInt(a['chat_enabled']) == 1;
   }
+}
+
+/// 单镜动作报价只读项目详情里的服务端报价快照，不猜价、不回退客户端常数。
+/// reshoot 对应「拍摄」行，resync 对应「口型」行；旧包/纯音乐缺行时返回 null，
+/// 由 UI 明示「以确认卡为准」。
+int? mvShotActionQuote(MvProjectDetail detail, String action) {
+  final String item;
+  switch (action) {
+    case 'reshoot':
+      item = '拍摄';
+      break;
+    case 'resync':
+      item = '口型';
+      break;
+    default:
+      return null;
+  }
+  for (final row in detail.project.est?.breakdown ?? const <MvEstRow>[]) {
+    if (row.item == item) return row.credits;
+  }
+  return null;
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../features/create/style_options.dart';
+import 'tag_chip.dart';
 
 /// 常用心情预设（与服务端词典同源，见 style_options.dart / 契约 v3.2）
 /// 以前这里硬编 12 个、服务端词典另有一份 24 个，选「激昂/未来感」这类词
@@ -34,23 +35,23 @@ class MoodChips extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Wrap(
-      spacing: 8,
-      runSpacing: 6,
+      spacing: 7,
+      runSpacing: 7,
       children: options.map((o) {
         final isSel = selected.contains(o);
         final isRec = recommended.contains(o);
-        return ChoiceChip(
+        return TagChip(
           label: Text(isRec && !isSel ? '$o ★' : o),
           selected: isSel,
-          onSelected: (v) {
+          onTap: () {
             if (single) {
-              onChanged(v ? [o] : const []);
+              onChanged(isSel ? const [] : [o]);
             } else {
               final next = [...selected];
-              if (v) {
-                next.add(o);
-              } else {
+              if (isSel) {
                 next.remove(o);
+              } else {
+                next.add(o);
               }
               onChanged(next);
             }

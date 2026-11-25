@@ -173,6 +173,9 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
       assert.strictEqual(r1.json.meta.mode, 'rule', 'V16-④ 灰度关→meta.mode 必须如实 rule');
       assert.strictEqual(r1.json.ticket.est.credits, 40, 'V16-④ 票面必须注明估价 40⚡（v2.14），实际 ' + JSON.stringify(r1.json.ticket.est));
       const ticketId = r1.json.ticket.ticket_id;
+      assert.ok(r1.json.ticket.ver && r1.json.ticket.hash && r1.json.ticket.id === ticketId, 'V16-④ 助手回执必须带完整可确认票面（id/ver/hash）');
+      const issuedCtx = JSON.parse(S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', r1.json.session_id)[0].ctx_json);
+      assert.strictEqual(issuedCtx.assistant_ticket_reserved[ticketId], 40, 'V16-④ 签票必须预留 40⚡ 预算');
       const evt = await ws.waitFor((e) => e.type === 'mv.ticket' && e.ticket_id === ticketId, 8000);
       assert.ok(evt && evt.project_id === pid && evt.est && evt.est.credits === 40, 'V16-④ WSS mv.ticket 形状（v2.14.2），实际 ' + JSON.stringify(evt));
       // GET detail pending 清单（确认面板数据源）
@@ -194,6 +197,8 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
       const c3 = await S.api('POST', '/v1/mv/tickets/' + ticketId + '/confirm', { token: g.token, json: { ver: trow.ver, hash: trow.hash } });
       assert.strictEqual(c3.status, 409, 'V16-④ 过期票应 409 TICKET_UNUSABLE，实际 ' + c3.status);
       assert.strictEqual(c3.json.code, 'TICKET_UNUSABLE', 'V16-④ code 应 TICKET_UNUSABLE（v2.17），实际 ' + JSON.stringify(c3.json));
+      const expiredCtx = JSON.parse(S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', r1.json.session_id)[0].ctx_json);
+      assert.strictEqual(expiredCtx.assistant_ticket_reserved, undefined, 'V16-④ 过期票必须释放预算预留');
       // 重签 → 五连全过 → 执行（40⚡ 走唯一扣费点 chargeThenEnqueue）
       const bal0 = (await S.credits(g.token)).balance;
       const r2 = await asst(S, g, { text: '重拍这一镜，因为动作不像', chips: chipsOf(pid, [shotId]) });
@@ -226,6 +231,8 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
       const dn = await S.api('POST', '/v1/mv/tickets/' + r3.json.ticket.ticket_id + '/deny', { token: g.token, json: {} });
       assert.strictEqual(dn.status, 200, 'V16-④ deny 应 200，实际 ' + dn.status + ' ' + dn.text.slice(0, 150));
       assert.strictEqual(dn.json.ok, true, 'V16-④ deny 回执 {ok:true}');
+      const deniedCtx = JSON.parse(S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', r3.json.session_id)[0].ctx_json);
+      assert.strictEqual(deniedCtx.assistant_ticket_reserved, undefined, 'V16-④ 拒绝票必须释放预算预留');
       const c7 = await S.api('POST', '/v1/mv/tickets/' + r3.json.ticket.ticket_id + '/confirm', { token: g.token, json: { ver: t3.ver, hash: t3.hash } });
       assert.strictEqual(c7.status, 409, 'V16-④ denied 后 confirm 必须拒，实际 ' + c7.status);
     } finally { ws.close(); }
@@ -260,6 +267,53 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
     const r3 = await asst(S, g, { text: '现在进度如何', chips: chipsOf(pid, [shotId]) });
     assert.strictEqual(r3.status, 200, 'V16-⑤ 新开会话不受旧 broken 会话影响');
     assert.notStrictEqual(r3.json.session_id, sessId);
+  });
+
+  it('V16-⑩ 票据任务失败：预算占用释放、项目净花费与退款账实相符', async () => {
+    const g = await S.newGuest();
+    await S.credits(g.token);
+    S.seedLedger(g.user.id, 500);
+    const pid = await mkProject(S, g);
+    const shotId = S.seedMvShot(pid, { seq: 1, kind: 'story', status: 'clipReady' });
+    S.executor.failPlan = { type: 'mv_shot', times: 3, code: 'TEST_FAIL', message: '验收计划失败' };
+    try {
+      const issued = await asst(S, g, { text: '重拍这一镜，因为画面穿帮', chips: chipsOf(pid, [shotId]) });
+      const detail = await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token });
+      const ticket = detail.json.tickets.find((t) => t.id === issued.json.ticket.ticket_id);
+      const confirmed = await S.api('POST', '/v1/mv/tickets/' + ticket.id + '/confirm', { token: g.token, json: { ver: ticket.ver, hash: ticket.hash } });
+      assert.strictEqual(confirmed.status, 200, 'V16-⑩ 前置：确认票应成功派单');
+      const failed = await S.waitForJob(g.token, confirmed.json.job_id, { timeoutMs: 60000 });
+      assert.strictEqual(failed.status, 'failed', 'V16-⑩ 三次计划失败后任务应终态 failed');
+      const ctx = JSON.parse(S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', issued.json.session_id)[0].ctx_json);
+      assert.strictEqual(ctx.assistant_ticket_committed, undefined, 'V16-⑩ 失败任务必须释放助手预算占用');
+      const project = S.db.mvProject(pid).row;
+      assert.strictEqual(Number(project.credits_cost), 0, 'V16-⑩ 失败退款后项目净花费必须归零');
+      assert.strictEqual(Number(project.credits_refunded), 40, 'V16-⑩ 项目退款计数必须为 40');
+    } finally { S.executor.failPlan = null; }
+  });
+
+  it('V16-⑪ 同会话并发签票不越过 120% 预算，取消项目释放全部预留', async () => {
+    const g = await S.newGuest();
+    await S.credits(g.token);
+    S.seedLedger(g.user.id, 500);
+    const pid = await mkProject(S, g);
+    const shotId = S.seedMvShot(pid, { seq: 1, kind: 'story', status: 'clipReady' });
+    await S.api('PATCH', '/v1/mv/projects/' + pid, { token: g.token, json: { budget_credits: 100, ver: 1 } });
+    const first = await asst(S, g, { text: '重拍这一镜，因为光线不对', chips: chipsOf(pid, [shotId]) });
+    const sessionId = first.json.session_id;
+    const rest = await Promise.all([0, 1, 2].map(() => asst(S, g, { text: '重拍这一镜，因为构图不对', chips: chipsOf(pid, [shotId]), session_id: sessionId })));
+    const issued = rest.filter((r) => r.json.ticket);
+    assert.strictEqual(issued.length, 2, 'V16-⑪ 100⚡ 预算最多同时预留 3 张 40⚡ 票，第 4 张必须熔断');
+    assert.ok(rest.some((r) => r.json.meta && r.json.meta.fused), 'V16-⑪ 并发越界必须如实熔断');
+    const before = S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', sessionId)[0];
+    const reserved = Object.keys(JSON.parse(before.ctx_json).assistant_ticket_reserved || {});
+    assert.strictEqual(reserved.length, 3, 'V16-⑪ 并发签票预算预留必须精确为三张');
+    const canceled = await S.api('POST', '/v1/mv/projects/' + pid + '/cancel', { token: g.token, json: {} });
+    assert.strictEqual(canceled.status, 200, 'V16-⑪ 取消项目应 200');
+    const after = S.db.all('SELECT ctx_json FROM mv_chat_sessions WHERE id=?', sessionId)[0];
+    assert.strictEqual(JSON.parse(after.ctx_json).assistant_ticket_reserved, undefined, 'V16-⑪ 取消项目必须释放全部待确认预算');
+    const denied = S.db.all('SELECT status FROM mv_tickets WHERE project_id=?', pid);
+    assert.ok(denied.every((row) => row.status === 'denied'), 'V16-⑪ 取消后项目待确认票必须全部失效');
   });
 
   // —— (f) LLM 离线降级（ADR-MV-9）：NOT_READY 快速 / 规则模式如实横幅 / 主流程零阻塞 ——
@@ -349,7 +403,7 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
     const pid = await mkProject(S, g);
     const shotId = S.seedMvShot(pid, { seq: 1, kind: 'story', status: 'clipReady' });
     const c0 = (await S.credits(g.token)).balance;
-    const sys = await S.api('POST', '/v1/mv/shots/' + shotId + '/jobs', { token: g.token, json: { type: 'reshoot', initiated_by: 'system', reason: 'SyncNet未达标' } });
+    const sys = await S.api('POST', '/v1/mv/shots/' + shotId + '/jobs', { token: g.token, executorToken: H.EXECUTOR_TOKEN, json: { type: 'reshoot', initiated_by: 'system', reason: 'SyncNet未达标' } });
     assert.strictEqual(sys.status, 202, 'V16-⑧ system reshoot 应 202，实际 ' + sys.status + ' ' + sys.text.slice(0, 200));
     assert.strictEqual(sys.json.credits_charged, 0, 'V16-⑧ 系统补拍恒免费（credits_charged=0）');
     assert.strictEqual((await S.credits(g.token)).balance, c0, 'V16-⑧ 系统补拍不得扣任何分');

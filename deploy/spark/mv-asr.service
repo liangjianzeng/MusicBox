@@ -1,6 +1,6 @@
-# mv-asr（Spark 草案）—— SenseVoice 时间戳对齐转写 :8391（2026-11-24）
-# 草案纪律：本阶段禁止 systemctl enable/run（funasr venv 属 SP-MV-2，宿主协调 S4/S6）。
-# CPU 常驻 ~2G；仅回环监听。一期 :8191 同机服务零改动，本单元为 MV 时间戳扩展独立进程。
+# mv-asr（Spark 运行单元）—— SenseVoice 时间戳对齐转写 :8391（2026-11-25）
+# 已实现 FunASR 懒加载适配；启用前需安装 venv/权重，并经宿主协调 S4/S6。
+# 仅回环监听。一期 :8191 同机服务零改动，本单元为 MV 时间戳扩展独立进程。
 [Unit]
 Description=MusicBox MV ASR Service (SenseVoice timestamps, :8391)
 After=network-online.target

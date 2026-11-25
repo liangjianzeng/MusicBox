@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shared/widgets/tag_chip.dart';
+import 'creation_ui.dart';
 import 'style_options.dart';
 
 /// 风格选择器：把原来那个说不清的「标签（逗号分隔）：如 city pop, retro, synth」
@@ -122,37 +124,37 @@ class _Group extends StatelessWidget {
                 style: const TextStyle(
                     fontWeight: FontWeight.w700,
                     fontSize: 13,
-                    color: Colors.white70)),
+                    color: CreationPalette.muted)),
             if (picked > 0)
               Text('$picked/$max',
-                  style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                  style: const TextStyle(
+                      fontSize: 11, color: CreationPalette.violetBright)),
           ],
         ),
         const SizedBox(height: 6),
         Wrap(
-          spacing: 6,
-          runSpacing: 6,
+          spacing: 7,
+          runSpacing: 7,
           children: options.map((o) {
             final sel = StylePicker._has(selected, o.wire);
-            // 满了就不再让人点：不静默丢弃、不假装选中
             final disabled = !sel && full;
             final showEn = o.en != null && o.en!.isNotEmpty && o.en != o.zh;
-            return ChoiceChip(
+            return TagChip(
               label: showEn
                   ? Text.rich(TextSpan(children: [
                       TextSpan(text: o.zh),
                       TextSpan(
-                          text: ' ${o.en}',
-                          style: const TextStyle(
-                              fontSize: 10, color: Colors.white38)),
+                        text: ' ${o.en}',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: CreationPalette.faint,
+                        ),
+                      ),
                     ]))
                   : Text(o.zh),
-              labelStyle: TextStyle(
-                  fontSize: 13,
-                  fontWeight: sel ? FontWeight.w700 : FontWeight.w400),
               selected: sel,
-              visualDensity: VisualDensity.compact,
-              onSelected: disabled ? null : (v) => onToggle(o.wire, v),
+              enabled: !disabled,
+              onTap: () => onToggle(o.wire, !sel),
             );
           }).toList(),
         ),
@@ -186,17 +188,16 @@ class FreeTagField extends StatelessWidget {
               style: const TextStyle(
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
-                  color: Colors.white70)),
+                  color: CreationPalette.muted)),
         ),
         TextField(
           controller: controller,
           onChanged: onChanged,
-          decoration: const InputDecoration(
-            isDense: true,
-            hintText: '用逗号分开，如：城市流行、说唱感、童声合唱',
-            helperText: '上面没列到的风格，中文英文都能填（词典里有的会自动翻成模型词）',
-            helperMaxLines: 2,
-            border: OutlineInputBorder(),
+          style: const TextStyle(color: CreationPalette.text),
+          decoration: creationFieldDecoration(
+            hint: '用逗号分开，如：城市流行、说唱感、童声合唱',
+            helper: '上面没列到的风格，中文英文都能填（词典里有的会自动翻成模型词）',
+            dense: true,
           ),
         ),
       ],
@@ -217,18 +218,70 @@ class InspirationChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      children: samples
-          .map((s) => ActionChip(
-                label: Text(s, style: const TextStyle(fontSize: 12)),
-                visualDensity: VisualDensity.compact,
-                avatar: const Icon(Icons.bolt_rounded,
-                    size: 14, color: Colors.white38),
-                onPressed: () => onPick(s),
-              ))
-          .toList(),
+    return SizedBox(
+      height: 82,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        padding: EdgeInsets.zero,
+        itemCount: samples.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final sample = samples[index];
+          return SizedBox(
+            width: 166,
+            child: Material(
+              color: CreationPalette.raised,
+              borderRadius: BorderRadius.circular(18),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: () => onPick(sample),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: CreationPalette.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            '0${index + 1}',
+                            style: const TextStyle(
+                              color: CreationPalette.violetBright,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                          const Spacer(),
+                          const Icon(Icons.north_east_rounded,
+                              size: 15, color: CreationPalette.faint),
+                        ],
+                      ),
+                      Text(
+                        sample,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: CreationPalette.text,
+                          fontSize: 14,
+                          height: 1.25,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }

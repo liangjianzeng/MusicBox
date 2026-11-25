@@ -5,6 +5,7 @@ import 'package:musicbox/core/config.dart';
 import 'package:musicbox/core/speech/asr_engine.dart';
 import 'package:musicbox/core/state.dart';
 import 'package:musicbox/features/create/create_page.dart';
+import 'package:musicbox/features/create/creation_ui.dart';
 import 'package:musicbox/features/create/transcript_confirm_page.dart';
 import 'package:musicbox/features/create/voice_capture.dart';
 import 'package:musicbox/shared/widgets/primary_button.dart';
@@ -89,6 +90,31 @@ void _expectVisible(WidgetTester tester, Finder finder, Size viewport) {
 }
 
 void main() {
+  testWidgets('三档切换始终显示对应图标', (tester) async {
+    await _pump(
+      tester,
+      size: const Size(390, 844),
+      child: const CreatePage(),
+    );
+
+    Finder tierIcon(IconData icon) => find.descendant(
+          of: find.byType(CreationTierTabs),
+          matching: find.byIcon(icon),
+        );
+
+    expect(tierIcon(Icons.auto_awesome_rounded), findsOneWidget);
+    expect(tierIcon(Icons.tune_rounded), findsOneWidget);
+    expect(tierIcon(Icons.equalizer_rounded), findsOneWidget);
+
+    await tester.tap(find.text('深度'));
+    await tester.pumpAndSettle();
+
+    expect(tierIcon(Icons.auto_awesome_rounded), findsOneWidget);
+    expect(tierIcon(Icons.tune_rounded), findsOneWidget);
+    expect(tierIcon(Icons.equalizer_rounded), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('简约档语音与生成动作位于屏幕下半部', (tester) async {
     const viewport = Size(390, 844);
     await _pump(tester, size: viewport, child: const CreatePage());

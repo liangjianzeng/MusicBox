@@ -5,16 +5,17 @@ import '../../core/api_client.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/primary_button.dart';
+import '../../shared/widgets/tag_chip.dart';
 import 'credit_guard.dart';
 import 'creation_state.dart';
+import 'creation_ui.dart';
 import 'intent_flow_page.dart';
 import 'progress_page.dart';
 import 'shelf_store.dart';
 import 'transcript_confirm_page.dart';
 import 'voice_capture.dart';
 
-/// 标准级：意图卡 + 全部澄清题（选项 chips，推荐高亮，可跳过）
-/// + mood/流派/人声/时长 轻参数
+/// 标准级：意图卡 + 轻参数（心情/流派/人声/时长）+ 底部语音输入坞
 class ShellStandard extends ConsumerStatefulWidget {
   const ShellStandard({super.key, this.keyboardOpen});
 
@@ -72,7 +73,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
         ref.read(creationProvider.notifier).setIntent(exit.text);
       } else if (exit?.kind == kConfirmTyped && exit!.text.isNotEmpty) {
         _setPrompt(exit.text);
-        _toast('已填进「一句话」，可以直接改');
+        _toast('已填进灵感框，可以直接改');
       } else if (exit?.kind == kConfirmRedo) {
         _toast('好，再按住说一次');
       }
@@ -157,28 +158,46 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
     });
     final st = ref.watch(creationProvider);
     final notifier = ref.read(creationProvider.notifier);
-    final scheme = Theme.of(context).colorScheme;
     final keyboardOpen =
         widget.keyboardOpen ?? MediaQuery.viewInsetsOf(context).bottom > 0;
+    final shortScreen = MediaQuery.sizeOf(context).height < 640;
     return Column(
       children: [
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            key: const ValueKey('creation-standard-scroll'),
+            padding: const EdgeInsets.fromLTRB(20, 6, 20, 28),
             children: [
-              TextField(
-                controller: _prompt,
-                maxLines: 2,
-                minLines: 1,
-                onChanged: notifier.setPrompt,
-                decoration: const InputDecoration(
-                  hintText: '一句话描述想要的歌（可选，意图卡会自动预填）',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+              Container(
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                decoration: BoxDecoration(
+                  color: CreationPalette.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: CreationPalette.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const CreationSectionLabel('灵感描述', trailing: '可选'),
+                    TextField(
+                      controller: _prompt,
+                      maxLines: 3,
+                      minLines: 1,
+                      style: const TextStyle(
+                        color: CreationPalette.text,
+                        fontSize: 14,
+                        height: 1.45,
+                      ),
+                      onChanged: notifier.setPrompt,
+                      decoration: creationFieldDecoration(
+                        hint: '比如：雨夜公路、复古合成器、温柔女声…',
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 14),
               if (st.intentId != null) ...[
+                const SizedBox(height: 16),
                 IntentFlowPanel(
                   intentId: st.intentId!,
                   easy: false,
@@ -186,24 +205,24 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                       context, jobId,
                       brief: brief, plannedCount: 3, onRetry: retry),
                 ),
-                const Divider(height: 32),
               ],
-              const _Label('心情'),
+              const SizedBox(height: 22),
+              const CreationSectionLabel('心情', trailing: '可多选'),
               MoodChips(
                 options: kMoodOptions,
                 selected: st.mood,
                 onChanged: notifier.setMood,
               ),
-              const SizedBox(height: 14),
-              const _Label('流派'),
+              const SizedBox(height: 22),
+              const CreationSectionLabel('流派', trailing: '单选'),
               MoodChips(
                 options: kGenreOptions,
                 selected: st.genre == null ? const [] : [st.genre!],
                 single: true,
                 onChanged: (v) => notifier.setGenre(v.isEmpty ? null : v.first),
               ),
-              const SizedBox(height: 14),
-              const _Label('人声'),
+              const SizedBox(height: 22),
+              const CreationSectionLabel('人声'),
               MoodChips(
                 options: const ['人声演唱', '纯音乐'],
                 selected: [st.instrumental ? '纯音乐' : '人声演唱'],
@@ -211,109 +230,113 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                 onChanged: (v) =>
                     notifier.setInstrumental(v.isNotEmpty && v.first == '纯音乐'),
               ),
-              const SizedBox(height: 14),
-              const _Label('时长（秒）'),
-              Wrap(
-                spacing: 6,
-                children: [30, 45, 60, 90, 120]
-                    .map((s) => ChoiceChip(
-                          label: Text('${s}s'),
-                          selected: st.sec == s,
-                          onSelected: (_) => notifier.setSec(s),
-                        ))
-                    .toList(),
-              ),
-              Slider(
-                value: st.sec.toDouble().clamp(15, 240),
-                min: 15,
-                max: 240,
-                divisions: 45,
-                label: '${st.sec}s',
-                onChanged: (v) => notifier.setSec(v.round()),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerLow,
-            border: Border(top: BorderSide(color: scheme.outlineVariant)),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (!keyboardOpen) ...[
+              const SizedBox(height: 22),
+              Container(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                decoration: BoxDecoration(
+                  color: CreationPalette.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: CreationPalette.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Row(
                       children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _busy ? null : _onPhoto,
-                            icon: const Icon(Icons.photo_camera_rounded,
-                                size: 18),
-                            label: const Text('拍一张'),
+                        const Text(
+                          '时长',
+                          style: TextStyle(
+                            color: CreationPalette.text,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              HoldToTalkButton(
-                                compact: true,
-                                enabled: !_busy,
-                                onResult: _onVoice,
-                              ),
-                              const SizedBox(width: 6),
-                              const Flexible(
-                                child: Text('按住说话',
-                                    style: TextStyle(
-                                        fontSize: 12, color: Colors.white70)),
-                              ),
-                            ],
+                        const Spacer(),
+                        Text(
+                          '${st.sec}s',
+                          style: const TextStyle(
+                            color: CreationPalette.violetBright,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
+                    SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        activeTrackColor: CreationPalette.violet,
+                        inactiveTrackColor: Colors.white.withValues(alpha: .08),
+                        thumbColor: CreationPalette.violetBright,
+                        overlayColor:
+                            CreationPalette.violet.withValues(alpha: .12),
+                        trackHeight: 3,
+                      ),
+                      child: Slider(
+                        value: st.sec.toDouble().clamp(15, 240),
+                        min: 15,
+                        max: 240,
+                        divisions: 45,
+                        label: '${st.sec}s',
+                        onChanged: (v) => notifier.setSec(v.round()),
+                      ),
+                    ),
+                    Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: [30, 45, 60, 90, 120].map((s) {
+                        final selected = st.sec == s;
+                        return TagChip(
+                          label: Text('${s}s'),
+                          selected: selected,
+                          onTap: () => notifier.setSec(s),
+                        );
+                      }).toList(),
+                    ),
                   ],
-                  if (st.intentId == null)
-                    PrimaryButton(
-                      text: '生成 3 首候选 · 约 45 积分',
-                      big: true,
-                      icon: Icons.auto_awesome,
-                      loading: _busy,
-                      onPressed: _busy ? null : _generateFromParams,
-                    )
-                  else
-                    const Text('在上方灵感卡确认参数后生成',
-                        style: TextStyle(color: Colors.white38, fontSize: 12)),
-                ],
+                ),
               ),
-            ),
+            ],
+          ),
+        ),
+        CreationDock(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!keyboardOpen) ...[
+                CreationInputActions(
+                  compact: shortScreen,
+                  voice: HoldToTalkButton(
+                    compact: true,
+                    enabled: !_busy,
+                    onResult: _onVoice,
+                  ),
+                  onPhoto: _busy ? null : _onPhoto,
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (st.intentId == null)
+                PrimaryButton(
+                  text: '生成 3 首 · 45 积分',
+                  big: true,
+                  gradient: true,
+                  icon: Icons.auto_awesome_rounded,
+                  loading: _busy,
+                  onPressed: _busy ? null : _generateFromParams,
+                )
+              else
+                Text(
+                  shortScreen ? '在上方灵感卡确认参数' : '在上方灵感卡确认参数后生成',
+                  style: const TextStyle(
+                    color: CreationPalette.faint,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+            ],
           ),
         ),
       ],
-    );
-  }
-}
-
-class _Label extends StatelessWidget {
-  const _Label(this.text);
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(text,
-          style: const TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-              color: Colors.white70)),
     );
   }
 }

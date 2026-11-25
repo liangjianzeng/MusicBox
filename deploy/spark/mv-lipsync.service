@@ -1,6 +1,6 @@
-# mv-lipsync-svc（Spark 草案）—— EchoMimicV3-Flash 口型重绘 :8390（2026-11-24）
-# 草案纪律：本阶段禁止 systemctl enable/run（权重/venv 属 SP-MV-1/N2-2，宿主协调 S4/S5/S6）。
-# 懒加载 + 空闲 10min 释放（架构 §1.2）；83xx 段仅回环监听，不对宿主外网暴露。
+# mv-lipsync（Spark 运行单元）—— EchoMimicV3-Flash 兼容口型重绘 :8390（2026-11-25）
+# 已实现外部运行时适配；启用前需配置 MB_LIPSYNC_COMMAND 并完成 venv/权重与宿主协调。
+# 单推理锁；83xx 段仅回环监听，不对宿主外网暴露。
 [Unit]
 Description=MusicBox MV Lipsync Service (EchoMimicV3-Flash, :8390)
 After=network-online.target

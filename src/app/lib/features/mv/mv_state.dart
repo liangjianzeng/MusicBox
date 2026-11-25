@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -196,7 +198,7 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
           if (state.work != null) 'name': state.work!.title,
         },
       );
-      final project = MvProject.fromMap(m);
+      final project = MvProject.fromMap((m['project'] as Map?) ?? m);
       if (project.id.isEmpty) {
         throw ApiException(code: 'INTERNAL', message: '项目创建异常，请重试');
       }
@@ -288,11 +290,14 @@ class MvDetailState {
   final String? error;
 
   MvDetailState copyWith(
-          {MvProjectDetail? detail, bool? loading, String? error}) =>
+          {MvProjectDetail? detail,
+          bool? loading,
+          String? error,
+          bool clearError = false}) =>
       MvDetailState(
           detail: detail ?? this.detail,
           loading: loading ?? this.loading,
-          error: error ?? this.error);
+          error: clearError ? null : (error ?? this.error));
 }
 
 /// 开机（boot）结果分类：UI 按 code 分支呈现诚实对话
@@ -306,6 +311,83 @@ class MvBootOutcome {
   bool get ok => code == 'OK';
 }
 
+const _mvEditConflict = '剧本已被其他人修改，且与本次编辑冲突；请刷新后重试';
+
+typedef _MvShotContent = ({String kind, double sec, String? desc, String? camera});
+
+_MvShotContent _mvShotContent(MvShot s) =>
+    (kind: s.kind, sec: s.sec, desc: s.desc, camera: s.camera);
+
+/// 把用户的一次镜卡编辑 rebase 到 CAS 拉回的最新剧本。
+/// 只覆盖用户实际改过的字段；并发新增镜保留，同一字段同时被修改时明确冲突，
+/// 绝不把旧的整份 script_json 重新盖回服务端。
+({List<MvShot>? shots, String? error}) rebaseMvShotEdits({
+  required List<MvShot> base,
+  required List<MvShot> edited,
+  required List<MvShot> fresh,
+}) {
+  final editedIds = edited.map((s) => s.id).toList();
+  if (editedIds.any((id) => id.isEmpty) ||
+      editedIds.toSet().length != editedIds.length) {
+    return (shots: null, error: _mvEditConflict);
+  }
+  final baseById = {for (final s in base) s.id: s};
+  final editedById = {for (final s in edited) s.id: s};
+  final freshById = {for (final s in fresh) s.id: s};
+  final merged = <MvShot>[];
+
+  for (final e in edited) {
+    final b = baseById[e.id];
+    if (b == null) {
+      // 当前编辑页一般不新增镜；若同 id 已被并发端新增，不能拿本地旧定义覆盖。
+      if (freshById.containsKey(e.id)) {
+        return (shots: null, error: _mvEditConflict);
+      }
+      merged.add(e);
+      continue;
+    }
+    final server = freshById[e.id];
+    if (server == null) {
+      // 服务端已删：用户没改内容就接受删除；改了则不能把旧镜凭空恢复。
+      if (_mvShotContent(b) != _mvShotContent(e)) {
+        return (shots: null, error: _mvEditConflict);
+      }
+      continue;
+    }
+    final bc = _mvShotContent(b);
+    final ec = _mvShotContent(e);
+    final sc = _mvShotContent(server);
+    if ((bc.kind != ec.kind && sc.kind != bc.kind && ec.kind != sc.kind) ||
+        (bc.sec != ec.sec && sc.sec != bc.sec && ec.sec != sc.sec) ||
+        (bc.desc != ec.desc &&
+            sc.desc != bc.desc &&
+            ec.desc != sc.desc) ||
+        (bc.camera != ec.camera &&
+            sc.camera != bc.camera &&
+            ec.camera != sc.camera)) {
+      return (shots: null, error: _mvEditConflict);
+    }
+    merged.add(server.copyWith(
+      kind: bc.kind != ec.kind ? ec.kind : null,
+      sec: bc.sec != ec.sec ? ec.sec : null,
+      desc: bc.desc != ec.desc ? ec.desc : null,
+      camera: bc.camera != ec.camera ? ec.camera : null,
+    ));
+  }
+
+  for (final s in fresh) {
+    if (!baseById.containsKey(s.id) && !editedById.containsKey(s.id)) {
+      merged.add(s); // CAS 期间其他端新增的镜头，按最新顺序追加保留
+    }
+  }
+  return (
+    shots: [
+      for (var i = 0; i < merged.length; i++) merged[i].copyWith(seq: i + 1),
+    ],
+    error: null,
+  );
+}
+
 class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
   MvProjectDetailNotifier(this._ref, this.projectId)
       : super(const MvDetailState());
@@ -314,16 +396,134 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
 
   MvApiClient get _api => _ref.read(mvApiClientProvider);
 
-  /// 静默刷新（轮询用：失败保留旧数据，不打断 UI）
-  Future<void> refresh({bool quiet = false}) async {
-    if (!quiet) state = state.copyWith(loading: true);
+  int _requestSeq = 0;
+  Future<void>? _inFlight;
+  bool _refreshQueued = false;
+
+  // 本地镜卡编辑覆盖层：请求发出即乐观呈现；服务端确认前，轮询/WSS
+  // 的旧快照只能合并运行态，不能把用户更新的词、景别或顺序覆盖回去。
+  int _editRevision = 0;
+  bool _pendingEdit = false;
+
+  /// 同一 project 的在飞请求合并；轮询与 WSS 同时到达只发一次 REST，
+  /// 并在本次完成后补一次最新刷新。每次响应带序号，旧响应一律丢弃。
+  Future<void> refresh({bool quiet = false}) {
+    if (!quiet) state = state.copyWith(loading: true, clearError: true);
+    final active = _inFlight;
+    if (active != null) {
+      _refreshQueued = true;
+      return active;
+    }
+    return _startRefresh(quiet: quiet);
+  }
+
+  Future<void> _startRefresh({required bool quiet}) {
+    final seq = ++_requestSeq;
+    final flight = Completer<void>();
+    _inFlight = flight.future;
+    unawaited(_performRefresh(seq, quiet, flight));
+    return flight.future;
+  }
+
+  Future<void> _performRefresh(
+      int seq, bool quiet, Completer<void> flight) async {
     try {
       final m = await _api.project(projectId);
-      state = MvDetailState(detail: MvProjectDetail.fromMap(m));
+      if (!mounted || seq != _requestSeq) return;
+      _applyRemote(MvProjectDetail.fromMap(m));
     } on ApiException catch (e) {
+      if (!mounted || seq != _requestSeq) return;
       if (!quiet || state.detail == null) {
         state = state.copyWith(loading: false, error: mvFriendlyError(e));
       }
+    } catch (_) {
+      if (!mounted || seq != _requestSeq) return;
+      if (!quiet || state.detail == null) {
+        state = state.copyWith(loading: false, error: '加载失败，请重试');
+      }
+    } finally {
+      if (!flight.isCompleted) flight.complete();
+      _inFlight = null;
+      final queued = _refreshQueued;
+      _refreshQueued = false;
+      if (queued && mounted) {
+        scheduleMicrotask(() {
+          if (mounted) unawaited(_startRefresh(quiet: true));
+        });
+      }
+    }
+  }
+
+  void _applyRemote(MvProjectDetail remote) {
+    final current = state.detail;
+    if (_pendingEdit && current != null) {
+      // PATCH 尚未成功：旧快照只合并运行态，不能覆盖用户编辑。
+      final remoteById = {for (final shot in remote.shots) shot.id: shot};
+      final merged = <MvShot>[
+        for (final local in current.shots)
+          if (remoteById[local.id] case final server?)
+            server.copyWith(
+              seq: local.seq,
+              kind: local.kind,
+              sec: local.sec,
+              desc: local.desc,
+              camera: local.camera,
+            )
+          else
+            local,
+      ];
+      state = MvDetailState(
+        detail: current.copyWith(
+          project: current.project.scriptVer >= remote.project.scriptVer
+              ? current.project
+              : remote.project,
+          shots: merged,
+        ),
+      );
+      return;
+    }
+    state = MvDetailState(detail: remote);
+  }
+
+  /// CAS 失配时需要强制取一次最新真源；序号递增会让先前轮询响应失效。
+  Future<MvProjectDetail?> _fetchForCas() async {
+    final seq = ++_requestSeq;
+    final m = await _api.project(projectId);
+    if (!mounted || seq != _requestSeq) return null;
+    final fresh = MvProjectDetail.fromMap(m);
+    _applyRemote(fresh);
+    return fresh;
+  }
+
+  /// 确认前水合服务端确认凭据。助手发票响应刻意不含 ver/hash，必须读
+  /// GET detail 的 pending tickets；查不到或仍缺字段都明确失败，不伪造。
+  Future<({MvTicket? ticket, String? error})> _hydrateTicket(
+      MvTicket ticket) async {
+    if ((ticket.ver ?? '').isNotEmpty && (ticket.hash ?? '').isNotEmpty) {
+      return (ticket: ticket, error: null);
+    }
+    try {
+      final detail = MvProjectDetail.fromMap(await _api.project(projectId));
+      final pending = detail.tickets.where(
+          (t) => t.id == ticket.id && t.status == 'pending');
+      if (pending.isEmpty) {
+        return (
+          ticket: null,
+          error: '这张票已失效（过期或已处理），未执行任何操作',
+        );
+      }
+      final hydrated = pending.single;
+      if ((hydrated.ver ?? '').isEmpty || (hydrated.hash ?? '').isEmpty) {
+        return (
+          ticket: null,
+          error: '确认票凭据不完整，请刷新后重试；未执行任何操作',
+        );
+      }
+      return (ticket: hydrated, error: null);
+    } on ApiException catch (e) {
+      return (ticket: null, error: mvFriendlyError(e));
+    } catch (_) {
+      return (ticket: null, error: '确认票加载失败，请刷新后重试');
     }
   }
 
@@ -352,64 +552,130 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     }
   }
 
-  /// ver CAS 通用：409 STALE → refetch 取新 ver 重试一次，二次失败如实返回
-  Future<String?> _casPatch(Future<void> Function(int ver) call) async {
+  /// ver CAS 通用：409 STALE → 取新 ver 重试一次，二次失败如实返回。
+  /// 镜卡编辑额外提供 rebase 回调，避免把陈旧全量 payload 覆盖到新版本。
+  Future<({String? err, int? usedVer})> _casPatch(
+    Future<void> Function(int ver) call, {
+    void Function(int freshVer)? onFreshVersion,
+    Future<String?> Function(MvProjectDetail fresh)? rebuildOnStale,
+  }) async {
     final ver = state.detail?.project.scriptVer ?? 1;
     try {
       await call(ver);
-      return null;
+      return (err: null, usedVer: ver);
     } on ApiException catch (e) {
-      if (e.code != 'STALE') return mvFriendlyError(e);
+      if (e.code != 'STALE') return (err: mvFriendlyError(e), usedVer: null);
       try {
-        final m = await _api.project(projectId);
-        final fresh = MvProjectDetail.fromMap(m);
-        state = MvDetailState(detail: fresh);
-        await call(fresh.project.scriptVer);
-        return null;
+        final fresh = await _fetchForCas();
+        if (fresh == null) return (err: '项目状态已变化，请重试', usedVer: null);
+        final nextVer = fresh.project.scriptVer;
+        final rebuildError = await rebuildOnStale?.call(fresh);
+        if (rebuildError != null) return (err: rebuildError, usedVer: null);
+        onFreshVersion?.call(nextVer);
+        await call(nextVer);
+        return (err: null, usedVer: nextVer);
       } on ApiException catch (e2) {
-        return mvFriendlyError(e2);
+        return (err: mvFriendlyError(e2), usedVer: null);
+      } catch (_) {
+        return (err: '项目状态已变化，请刷新后重试', usedVer: null);
       }
     }
   }
 
   /// 镜卡编辑（步④长按：改词/删镜/调序/景别）→ PATCH script_json（ver CAS）。
-  /// 成功后按编辑结果乐观合并本地镜卡（脚本已持久化；服务端镜表回读对齐前
-  /// 以用户刚保存的内容呈现，绝不清空）。
+  /// 请求发出即乐观合并；失败回滚本地编辑，轮询始终不能覆盖更新的本地版本。
   Future<String?> editScript(List<MvShot> edited) async {
     if (edited.isEmpty) return '至少保留一个镜头';
-    final scriptJson = <String, dynamic>{
+    if (_pendingEdit) return '上一处修改还在保存，请稍候';
+    final old = state.detail;
+    if (old == null) return '剧本数据尚未加载';
+    var scriptJson = <String, dynamic>{
       'shots': edited.map((s) => s.toScriptShot()).toList(),
     };
-    final err = await _casPatch((ver) =>
-        _api.patchProject(projectId, ver: ver, scriptJson: scriptJson));
-    if (err != null) return err;
-    final old = state.detail;
-    if (old != null) {
-      final byId = {for (final s in old.shots) s.id: s};
-      final merged = <MvShot>[];
-      for (final e in edited) {
-        final base = byId[e.id];
-        merged.add(base == null
-            ? e
-            : base.copyWith(
-                seq: e.seq,
-                kind: e.kind,
-                sec: e.sec,
-                desc: e.desc,
-                camera: e.camera));
-      }
-      final verBump = old.project.copyWithScriptVer(old.project.scriptVer + 1);
-      state = MvDetailState(
-          detail: MvProjectDetail(
-              project: verBump,
-              characters: old.characters,
-              shots: merged,
-              tickets: old.tickets,
-              assistantEnabled: old.assistantEnabled,
-              assistantChat: old.assistantChat,
-              assistantModeHint: old.assistantModeHint,
-              aiReview: old.aiReview));
+    var rollbackShots = old.shots;
+    var rollbackProject = old.project;
+    final revision = ++_editRevision;
+    _pendingEdit = true;
+
+    final byId = {for (final s in old.shots) s.id: s};
+    final merged = <MvShot>[];
+    for (final e in edited) {
+      final base = byId[e.id];
+      merged.add(base == null
+          ? e
+          : base.copyWith(
+              seq: e.seq,
+              kind: e.kind,
+              sec: e.sec,
+              desc: e.desc,
+              camera: e.camera));
     }
+    state = state.copyWith(
+      detail: old.copyWith(shots: merged),
+      loading: false,
+      clearError: true,
+    );
+
+    Map? patchResponse;
+    final (:err, :usedVer) = await _casPatch(
+      (ver) async {
+        patchResponse =
+            await _api.patchProject(projectId, ver: ver, scriptJson: scriptJson);
+      },
+      rebuildOnStale: (fresh) async {
+        // 即使 rebase 冲突，回滚也应落在刚拉取的新鲜剧本，而不是旧快照。
+        rollbackShots = fresh.shots;
+        rollbackProject = fresh.project;
+        final rebased = rebaseMvShotEdits(
+          base: old.shots,
+          edited: edited,
+          fresh: fresh.shots,
+        );
+        final shots = rebased.shots;
+        if (rebased.error != null || shots == null) {
+          return rebased.error ?? _mvEditConflict;
+        }
+        scriptJson = <String, dynamic>{
+          'shots': shots.map((s) => s.toScriptShot()).toList(),
+        };
+        if (mounted && revision == _editRevision) {
+          state = state.copyWith(
+            detail: state.detail?.copyWith(
+              project: fresh.project,
+              shots: shots,
+            ),
+          );
+        }
+        return null;
+      },
+    );
+    if (!mounted) return err;
+    if (err != null) {
+      if (revision == _editRevision) {
+        _pendingEdit = false;
+        final current = state.detail;
+        state = state.copyWith(
+          detail: current?.copyWith(
+            project: rollbackProject,
+            shots: rollbackShots,
+          ),
+        );
+      }
+      return err;
+    }
+    if (revision != _editRevision || usedVer == null) return err;
+    // PATCH 已成功即结束覆盖层；随后 GET 刷新失败也不能把编辑永久锁死。
+    _pendingEdit = false;
+    final responseProject = patchResponse?['project'];
+    final serverVer = responseProject is Map
+        ? MvProject.fromMap(responseProject).scriptVer
+        : usedVer + 1;
+    state = state.copyWith(
+      detail: state.detail?.copyWith(
+        project: state.detail!.project.copyWithScriptVer(serverVer),
+      ),
+    );
+    await refresh(quiet: true);
     return null;
   }
 
@@ -470,10 +736,10 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
 
   /// 采纳建议（suggest/apply，ver CAS + STALE retry-once）
   Future<String?> applySuggest(MvSuggest s) async {
-    final err =
+    final result =
         await _casPatch((ver) => _api.applySuggest(projectId, s.id, ver));
-    if (err == null) await refresh(quiet: true);
-    return err;
+    if (result.err == null) await refresh(quiet: true);
+    return result.err;
   }
 
   /// 项目取消：返回退款积分（未拍镜全额退，账本核算如实呈现）
@@ -487,12 +753,25 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     }
   }
 
-  /// 确认票拍板（通告板与助手共用）：批准 true / 拒绝 false；404 如实呈现
+  /// 确认票拍板（通告板与助手共用）：批准 true / 拒绝 false。
+  /// 批准前若发票响应缺 ver/hash，先从 GET detail 水合；任何失败都明确返回。
   Future<String?> resolveTicket(String ticketId, bool approve,
       {String? ver, String? hash}) async {
+    if (ticketId.trim().isEmpty) return '确认票信息不完整，未执行任何操作';
     try {
       if (approve) {
-        await _api.confirmTicket(ticketId, ver: ver, hash: hash);
+        final hydrated = await _hydrateTicket(MvTicket(
+          id: ticketId,
+          action: '',
+          status: 'pending',
+          ver: ver,
+          hash: hash,
+        ));
+        if (hydrated.error != null || hydrated.ticket == null) {
+          return hydrated.error ?? '确认票加载失败，未执行任何操作';
+        }
+        final t = hydrated.ticket!;
+        await _api.confirmTicket(t.id, ver: t.ver, hash: t.hash);
       } else {
         await _api.denyTicket(ticketId);
       }
@@ -501,15 +780,17 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     } on ApiException catch (e) {
       if (e.code == 'NOT_FOUND') return '这张票已失效（过期或已处理），未执行任何操作';
       return mvFriendlyError(e);
+    } catch (_) {
+      return '确认票处理失败，请刷新后重试';
     }
   }
 
   /// 人工调高预算（v2.11：paused 唯一恢复通道，ver CAS）
   Future<String?> raiseBudget(int newBudget) async {
-    final err = await _casPatch((ver) =>
+    final result = await _casPatch((ver) =>
         _api.patchProject(projectId, ver: ver, budgetCredits: newBudget));
-    if (err == null) await refresh(quiet: true);
-    return err;
+    if (result.err == null) await refresh(quiet: true);
+    return result.err;
   }
 }
 
@@ -593,7 +874,8 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       state = state.copyWith(messages: [...state.messages, m]);
 
   /// 发送对话消息：MV_NOT_READY / chat-off → 规则模式 + 诚实横幅
-  Future<void> send(String text, {List<Map<String, dynamic>>? chips}) async {
+  Future<void> send(String text,
+      {List<Map<String, dynamic>> chips = const []}) async {
     final t = text.trim();
     if (t.isEmpty || state.sending) return;
     _push(MvChatMsg(role: 'user', text: t));
@@ -602,10 +884,11 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       final r = await _api.assistantMessages(
         sessionId: state.sessionId,
         text: t,
-        chips: chips ??
-            [
-              {'type': 'project', 'id': projectId},
-            ],
+        chips: chips.isEmpty
+            ? [
+                {'type': 'project', 'id': projectId},
+              ]
+            : chips,
       );
       final sid = r['session_id']?.toString();
       if (sid != null && sid.isNotEmpty) {
@@ -717,17 +1000,50 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
     }
   }
 
-  /// 运动改写（契约 v2.22「动作不对」重拍通道）：server 侧改写运动描述（LLM/词典）
+  /// 运动改写（契约 v2.22「动作不对」重拍通道）：只走助手确认票，
+  /// 批准后服务端才执行运动改写与重拍；这里绝不直接扣费派单。
   Future<void> quickMotion(String? shotId) async {
     if (state.sending) return;
     if (shotId == null || shotId.isEmpty) {
       _push(MvChatMsg(role: 'sys', text: '运动改写针对具体某镜：请在镜头清单里长按这镜，选「运动改写」。'));
       return;
     }
-    await send('请重拍这镜，原因：动作不对', chips: [
-      {'type': 'project', 'id': projectId},
-      {'type': 'shot', 'id': shotId},
-    ]);
+    _push(MvChatMsg(role: 'user', text: '【运动改写】'));
+    state = state.copyWith(sending: true, clearError: true);
+    try {
+      final r = await _api.assistantMessages(
+        sessionId: state.sessionId,
+        text: '请重拍这一镜，因为动作不对',
+        chips: [
+          {'type': 'project', 'id': projectId},
+          {'type': 'shot', 'id': shotId},
+        ],
+      );
+      final sid = r['session_id']?.toString();
+      state = state.copyWith(
+        sending: false,
+        sessionId: sid == null || sid.isEmpty ? null : sid,
+      );
+      final ticket = r['ticket'] as Map?;
+      if (ticket == null) {
+        _push(MvChatMsg(
+            role: 'ai',
+            text: mvHuman((r['clarify'] ?? r['reply'] ?? '').toString().trim()
+                .isEmpty
+                ? '这次没有生成确认票，未执行重拍；请刷新后重试'
+                : (r['clarify'] ?? r['reply']).toString())));
+        return;
+      }
+      _push(MvChatMsg(
+        role: 'ai',
+        text: '运动改写确认票已发出，批准后剧组才会执行。'
+            '若服务端幂等命中，本次返回 0 ⚡，不会重复扣分。',
+        ticket: MvTicket.fromMap(ticket),
+      ));
+    } on ApiException catch (e) {
+      state = state.copyWith(sending: false);
+      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
+    }
   }
 
   /// 采纳挂起的建议草稿（ver CAS：失配如实提示后重试，不静默）
@@ -769,33 +1085,58 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
     return MvProjectDetail.fromMap(m).project.scriptVer;
   }
 
-  /// 确认票拍板（批准）：TTL/一票一次由服务端硬门，404 如实呈现
+  /// 确认票拍板（批准）：TTL/一票一次由服务端硬门；缺凭据时先水合，
+  /// 加载/确认失败均明确呈现并恢复按钮，绝不静默返回。
   Future<void> approveTicket(MvChatMsg msg) async {
     final t = msg.ticket;
-    if (t == null || t.id.isEmpty || t.status != 'pending') return;
+    if (t == null || t.id.trim().isEmpty) {
+      _push(MvChatMsg(role: 'sys', text: '确认票信息不完整，未执行任何操作。'));
+      return;
+    }
+    if (t.status != 'pending') {
+      _push(MvChatMsg(role: 'sys', text: '这张票已处理或失效，未执行任何操作。'));
+      return;
+    }
+    if (msg.ticketHandled) {
+      _push(MvChatMsg(role: 'sys', text: '这张票正在处理，请稍候。'));
+      return;
+    }
     _replaceTicket(msg, msg.copyWith(ticketHandled: true));
-    try {
-      await _api.confirmTicket(t.id, ver: t.ver, hash: t.hash);
+    final err = await _ref
+        .read(mvProjectDetailProvider(projectId).notifier)
+        .resolveTicket(t.id, true, ver: t.ver, hash: t.hash);
+    if (err == null) {
       _push(MvChatMsg(role: 'sys', text: '票已批准，剧组开始执行。'));
-    } on ApiException catch (e) {
-      _push(MvChatMsg(
-          role: 'sys',
-          text: e.code == 'NOT_FOUND'
-              ? '这张票已失效（过期或已处理），未执行任何操作。'
-              : mvFriendlyError(e)));
+    } else {
+      _setTicketHandled(t.id, false);
+      _push(MvChatMsg(role: 'sys', text: '批准失败：$err'));
     }
   }
 
-  /// 确认票拒绝
+  /// 确认票拒绝：失败明确呈现并允许重试。
   Future<void> denyTicket(MvChatMsg msg) async {
     final t = msg.ticket;
-    if (t == null || t.id.isEmpty || t.status != 'pending') return;
+    if (t == null || t.id.trim().isEmpty) {
+      _push(MvChatMsg(role: 'sys', text: '确认票信息不完整，未执行任何操作。'));
+      return;
+    }
+    if (t.status != 'pending') {
+      _push(MvChatMsg(role: 'sys', text: '这张票已处理或失效，未执行任何操作。'));
+      return;
+    }
+    if (msg.ticketHandled) {
+      _push(MvChatMsg(role: 'sys', text: '这张票正在处理，请稍候。'));
+      return;
+    }
     _replaceTicket(msg, msg.copyWith(ticketHandled: true));
-    try {
-      await _api.denyTicket(t.id);
+    final err = await _ref
+        .read(mvProjectDetailProvider(projectId).notifier)
+        .resolveTicket(t.id, false);
+    if (err == null) {
       _push(MvChatMsg(role: 'sys', text: '已拒绝这张票，未执行任何操作。'));
-    } on ApiException catch (e) {
-      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
+    } else {
+      _setTicketHandled(t.id, false);
+      _push(MvChatMsg(role: 'sys', text: '拒绝失败：$err'));
     }
   }
 
@@ -804,6 +1145,13 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
     final i = list.indexOf(old);
     if (i >= 0) list[i] = next;
     state = state.copyWith(messages: list);
+  }
+
+  void _setTicketHandled(String ticketId, bool handled) {
+    state = state.copyWith(messages: [
+      for (final m in state.messages)
+        if (m.ticket?.id == ticketId) m.copyWith(ticketHandled: handled) else m,
+    ]);
   }
 }
 

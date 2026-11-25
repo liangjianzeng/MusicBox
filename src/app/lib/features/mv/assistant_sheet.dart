@@ -4,10 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/speech/asr_engine.dart';
 import '../../core/speech/speech_service.dart';
 import '../../core/speech/speech_settings.dart';
-import '../../shared/widgets/speech_model_download.dart';
 import '../player/player_provider.dart';
 import 'mv_models.dart';
 import 'mv_state.dart';
+import 'widgets/mv_theme.dart';
 
 /// 制片助手 bottom-sheet（mv-plan §5.2 / 架构 §2，N2 灰度 D11）。
 /// 治理纪律：
@@ -33,7 +33,7 @@ Future<void> showMvAssistant(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF17181F),
+    backgroundColor: context.mvColors.surface,
     shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
     builder: (_) => MvAssistantSheet(
@@ -82,12 +82,13 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
   StreamingAsrSession? _asr;
   SpeechService? _svc; // dispose 里要用，先抓住，避免在 dispose 里读 provider
   bool _listening = false;
-  bool _preparing = false;
   bool _speaking = false;
   String? _talkError;
+  int _talkGeneration = 0;
 
   @override
   void dispose() {
+    _talkGeneration++;
     _asr?.cancel();
     _svc?.stopSpeak();
     _input.dispose();
@@ -102,37 +103,28 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
       );
 
   Future<void> _startTalk() async {
-    if (_listening || _preparing) return;
+    if (_listening) return;
+    final generation = ++_talkGeneration;
     final svc = ref.read(speechServiceProvider);
     _svc = svc;
     setState(() {
-      _preparing = true;
+      _listening = true;
       _talkError = null;
     });
     try {
-      final resolved = await svc.resolveEngine();
-      if (!mounted) return;
-      if (resolved.modelMissing) {
-        final preparation = await prepareSpeechModel(
-          context,
-          model: svc.selectedAsrModel,
-          allowServerFallback: false,
-        );
-        if (!mounted) return;
-        setState(() => _preparing = false);
-        if (preparation == SpeechModelPreparation.canceled) return;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('模型已就位，再按住说话')));
+      final s = await svc.createSession();
+      if (!mounted || generation != _talkGeneration) {
+        // 页面可能已关闭，或用户已松手/取消；迟到的会话必须归还麦克风资源，
+        // 不能擅自再次 start。
+        await s?.cancel();
         return;
       }
-      final s = await svc.createSession();
       if (s == null) {
-        if (mounted) {
-          setState(() {
-            _preparing = false;
-            _talkError = '语音输入用的是本机识别，请在「我的 · 语音能力」选择即时或精听，或直接用打字';
-          });
-        }
+        // 档位是服务端：助手对话没有服务端听写这条路，给明确出路而不是空转
+        setState(() {
+          _listening = false;
+          _talkError = '语音输入用的是本机识别，请先到「我的 · 语音能力」下载模型，或直接用打字';
+        });
         return;
       }
       _asr = s;
@@ -140,15 +132,9 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
         if (mounted) _input.text = t;
       });
       await s.start();
-      if (!mounted) return;
-      setState(() {
-        _preparing = false;
-        _listening = true;
-      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _preparing = false;
         _listening = false;
         _talkError = '听不了：$e';
       });
@@ -156,6 +142,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
   }
 
   Future<void> _stopTalk() async {
+    _talkGeneration++;
     final s = _asr;
     _asr = null;
     if (s == null) {
@@ -244,20 +231,21 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                 padding: const EdgeInsets.fromLTRB(16, 12, 12, 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.smart_toy_outlined,
-                        size: 18, color: Colors.teal),
-                    const SizedBox(width: 6),
-                    const Text('制片助手',
+                    Icon(Icons.smart_toy_outlined,
+                        size: 18, color: context.mvInfo),
+                    SizedBox(width: 6),
+                    Text('制片助手',
                         style: TextStyle(
                             fontWeight: FontWeight.w800, fontSize: 15)),
-                    const SizedBox(width: 8),
+                    SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color:
-                            (widget.chatEnabled ? Colors.teal : Colors.blueGrey)
-                                .withValues(alpha: 0.18),
+                        color: (widget.chatEnabled
+                                ? context.mvInfo
+                                : context.mvTextMuted)
+                            .withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
@@ -265,8 +253,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                         style: TextStyle(
                             fontSize: 10,
                             color: widget.chatEnabled
-                                ? Colors.teal
-                                : Colors.blueGrey,
+                                ? context.mvInfo
+                                : context.mvTextMuted,
                             fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -280,7 +268,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                         onDetach: () => setState(() => _attachProject = false),
                       ),
                     if (widget.shotLabel != null && _attachShot) ...[
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       _ContextChip(
                         icon: Icons.movie_outlined,
                         label: widget.shotLabel!,
@@ -290,9 +278,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                     if (!_attachProject && widget.shotLabel == null)
                       TextButton.icon(
                         onPressed: () => setState(() => _attachProject = true),
-                        icon: const Icon(Icons.push_pin_outlined, size: 14),
-                        label:
-                            const Text('挂回项目', style: TextStyle(fontSize: 11)),
+                        icon: Icon(Icons.push_pin_outlined, size: 14),
+                        label: Text('挂回项目', style: TextStyle(fontSize: 11)),
                       ),
                   ],
                 ),
@@ -304,15 +291,15 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.amber.withValues(alpha: .07),
+                    color: context.mvWarning.withValues(alpha: .07),
                     borderRadius: BorderRadius.circular(10),
-                    border:
-                        Border.all(color: Colors.amber.withValues(alpha: .3)),
+                    border: Border.all(
+                        color: context.mvWarning.withValues(alpha: .3)),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
                       Icon(Icons.info_outline,
-                          size: 14, color: Colors.amberAccent),
+                          size: 14, color: context.mvWarning),
                       SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -320,7 +307,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                             '可用下方快捷指令，主流程不受影响。',
                             style: TextStyle(
                                 fontSize: 11,
-                                color: Colors.amberAccent,
+                                color: context.mvWarning,
                                 height: 1.35)),
                       ),
                     ],
@@ -329,14 +316,16 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
               // 消息列表
               Flexible(
                 child: st.messages.isEmpty
-                    ? const Padding(
+                    ? Padding(
                         padding: EdgeInsets.symmetric(vertical: 26),
                         child: Text(
                           '有什么要剧组办的，说一声。\n查进度、问报价、让编剧改改都行 —— '
                           '花钱的动作一律先给你确认票，拍板权在你。',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                              fontSize: 12, color: Colors.white24, height: 1.6),
+                              fontSize: 12,
+                              color: context.mvTextMuted,
+                              height: 1.6),
                         ),
                       )
                     : ListView.builder(
@@ -355,7 +344,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                       ),
               ),
               if (st.sending)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.symmetric(vertical: 4),
                   child: SizedBox(
                       width: 18,
@@ -414,25 +403,17 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                           shape: BoxShape.circle,
                           color: _listening
                               ? Theme.of(context).colorScheme.errorContainer
-                              : Colors.white.withValues(alpha: .08),
+                              : context.mvSurfaceRaised.withValues(alpha: .08),
                         ),
-                        child: _preparing
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(
-                                _listening
-                                    ? Icons.graphic_eq_rounded
-                                    : Icons.mic_rounded,
-                                size: 20,
-                                color: Colors.white,
-                              ),
+                        child: Icon(
+                            _listening
+                                ? Icons.graphic_eq_rounded
+                                : Icons.mic_rounded,
+                            size: 20,
+                            color: context.mvTextPrimary),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    SizedBox(width: 8),
                     Expanded(
                       child: TextField(
                         controller: _input,
@@ -441,9 +422,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                         textInputAction: TextInputAction.send,
                         onSubmitted: (_) => _send(),
                         decoration: InputDecoration(
-                          hintText: _preparing
-                              ? '正在准备语音模型…'
-                              : (_listening ? '我在听…' : '和助手说…（它只引路，拍板在你）'),
+                          hintText: _listening ? '我在听…' : '和助手说…（它只引路，拍板在你）',
                           isDense: true,
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 10),
@@ -453,7 +432,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    SizedBox(width: 8),
                     IconButton(
                       tooltip: ref.watch(speechSettingsProvider).autoSpeak
                           ? '回复自动朗读：开'
@@ -468,13 +447,13 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                               : Icons.volume_off_rounded,
                           size: 20),
                     ),
-                    const SizedBox(width: 4),
+                    SizedBox(width: 4),
                     FilledButton(
                       onPressed: st.sending ? null : _send,
                       style: FilledButton.styleFrom(
                           minimumSize: const Size(44, 40),
                           padding: EdgeInsets.zero),
-                      child: const Icon(Icons.send, size: 18),
+                      child: Icon(Icons.send, size: 18),
                     ),
                   ],
                 ),
@@ -502,25 +481,24 @@ class _ContextChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: Colors.teal.withValues(alpha: .12),
+          color: context.mvInfo.withValues(alpha: .12),
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: Colors.teal.withValues(alpha: .4)),
+          border: Border.all(color: context.mvInfo.withValues(alpha: .4)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 12, color: Colors.tealAccent),
-            const SizedBox(width: 4),
+            Icon(icon, size: 12, color: context.mvInfo),
+            SizedBox(width: 4),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 130),
               child: Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 10.5, color: Colors.tealAccent)),
+                  style: TextStyle(fontSize: 10.5, color: context.mvInfo)),
             ),
-            const SizedBox(width: 3),
-            const Icon(Icons.close, size: 11, color: Colors.tealAccent),
+            SizedBox(width: 3),
+            Icon(Icons.close, size: 11, color: context.mvInfo),
           ],
         ),
       ),
@@ -536,7 +514,7 @@ class _QuickChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ActionChip(
-      label: Text(label, style: const TextStyle(fontSize: 11.5)),
+      label: Text(label, style: TextStyle(fontSize: 11.5)),
       visualDensity: VisualDensity.compact,
       onPressed: onTap,
     );
@@ -559,8 +537,8 @@ class _Bubble extends StatelessWidget {
         child: Center(
           child: Text(mvHuman(msg.text),
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 11, color: Colors.white30, height: 1.4)),
+              style: TextStyle(
+                  fontSize: 11, color: context.mvTextMuted, height: 1.4)),
         ),
       );
     }
@@ -575,7 +553,7 @@ class _Bubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: me
               ? Theme.of(context).colorScheme.primary.withValues(alpha: .28)
-              : Colors.white.withValues(alpha: .06),
+              : context.mvSurfaceRaised.withValues(alpha: .06),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
@@ -583,20 +561,20 @@ class _Bubble extends StatelessWidget {
               me ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             Text(mvHuman(msg.text),
-                style: const TextStyle(
-                    fontSize: 13, color: Colors.white, height: 1.45)),
+                style: TextStyle(
+                    fontSize: 13, color: context.mvTextPrimary, height: 1.45)),
             if (onSpeak != null)
               Padding(
                 padding: const EdgeInsets.only(top: 1),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
                   onTap: () => onSpeak!(mvHuman(msg.text)),
-                  child: const Tooltip(
+                  child: Tooltip(
                     message: '念给我听',
                     child: Padding(
                       padding: EdgeInsets.all(3),
                       child: Icon(Icons.volume_up_rounded,
-                          size: 15, color: Colors.white38),
+                          size: 15, color: context.mvTextMuted),
                     ),
                   ),
                 ),
@@ -612,7 +590,7 @@ class _Bubble extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4)),
-                  child: const Text('采纳这版', style: TextStyle(fontSize: 11.5)),
+                  child: Text('采纳这版', style: TextStyle(fontSize: 11.5)),
                 ),
               ),
             // 确认票（批准/拒绝；一票一次防重复）
@@ -623,24 +601,24 @@ class _Bubble extends StatelessWidget {
                   padding: const EdgeInsets.all(10),
                   width: 240,
                   decoration: BoxDecoration(
-                    color: Colors.amber.withValues(alpha: .06),
+                    color: context.mvWarning.withValues(alpha: .06),
                     borderRadius: BorderRadius.circular(10),
-                    border:
-                        Border.all(color: Colors.amber.withValues(alpha: .35)),
+                    border: Border.all(
+                        color: context.mvWarning.withValues(alpha: .35)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('确认票 · ${mvHuman(msg.ticket!.action)}',
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 12, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 2),
+                      SizedBox(height: 2),
                       Text(
                           '约 ${msg.ticket!.estCredits} ⚡ · '
                           '${msg.ticket!.estMinutes} 分钟 · 60 秒内有效',
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.white54)),
-                      const SizedBox(height: 6),
+                          style: TextStyle(
+                              fontSize: 11, color: context.mvTextSecondary)),
+                      SizedBox(height: 6),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
@@ -652,11 +630,12 @@ class _Bubble extends StatelessWidget {
                                 visualDensity: VisualDensity.compact,
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 10)),
-                            child: const Text('拒绝',
+                            child: Text('拒绝',
                                 style: TextStyle(
-                                    fontSize: 12, color: Colors.white54)),
+                                    fontSize: 12,
+                                    color: context.mvTextSecondary)),
                           ),
-                          const SizedBox(width: 6),
+                          SizedBox(width: 6),
                           FilledButton(
                             onPressed: msg.ticketHandled
                                 ? null
@@ -666,7 +645,7 @@ class _Bubble extends StatelessWidget {
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 12)),
                             child: Text(msg.ticketHandled ? '已处理' : '批准',
-                                style: const TextStyle(fontSize: 12)),
+                                style: TextStyle(fontSize: 12)),
                           ),
                         ],
                       ),

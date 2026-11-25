@@ -65,7 +65,7 @@ function ruleInterpret(text, ent) {
 function projectStatusReply(project) {
   const shots = store.all('SELECT id,status FROM mv_shots WHERE project_id=? ORDER BY seq ASC', project.id);
   const done = shots.filter((s) => ['clipReady', 'synced', 'locked'].includes(s.status)).length;
-  const stage = { casting: '定妆选角', scripting: '剧本分镜', previewed: '样片报价', shooting: '拍摄中', composing: '合成中', ready: '成片完成' }[project.status] || project.status || '准备中';
+  const stage = { casting: '定妆选角', scripting: '剧本分镜', previewed: '样片报价', shooting: '拍摄中', composing: '合成中', ready: '成片完成', failed: '拍摄失败，可重拍恢复' }[project.status] || project.status || '准备中';
   return '当前阶段：' + lex.sanitize(String(stage)) + '；镜头 ' + done + '/' + shots.length + ' 已出片。' + (project.paused ? '预算护栏已触发，需人工调高预算后继续。' : '有需要随时让我引路，拍板权在你。');
 }
 
@@ -80,13 +80,13 @@ function resolveEntities(user, chipsIn) {
     if (type === 'project') {
       if (ent.project) continue;
       const p = store.get('SELECT * FROM mv_projects WHERE id=?', id);
-      if (p && p.user_id === user.id && !['canceled', 'failed'].includes(p.status)) ent.project = p;
+      if (p && p.user_id === user.id && p.status !== 'canceled') ent.project = p;
       else ent.rejectedChips++;
     } else if (type === 'shot') {
       const sh = store.get('SELECT * FROM mv_shots WHERE id=?', id);
       if (!sh) { ent.rejectedChips++; continue; }
       const p = ent.project && ent.project.id === sh.project_id ? ent.project : store.get('SELECT * FROM mv_projects WHERE id=?', sh.project_id);
-      if (!p || p.user_id !== user.id || ['canceled', 'failed'].includes(p.status)) { ent.rejectedChips++; continue; }
+      if (!p || p.user_id !== user.id || p.status === 'canceled') { ent.rejectedChips++; continue; }
       ent.project = ent.project || p;
       if (sh.project_id === ent.project.id && !ent.ownedShotIds.has(sh.id)) {
         ent.ownedShotIds.add(sh.id);
@@ -177,7 +177,7 @@ async function handleMessages(ctx) {
 
   // ⑤ 租户注入：实体只认 chips 的服务端校验结果，LLM 给的 id 一律不信任（契约 v2.13.1）
   const args = Object.assign({}, plan.args || {});
-  if (plan.tool === 'mv.shot_reorder') args.order = ent.orderedShotIds.slice();
+  if (plan.tool === 'mv.shot_reorder') args.order = Array.isArray(plan.args && plan.args.order) ? plan.args.order : ent.orderedShotIds.slice();
   if (plan.tool === 'mv.shot_delete' || plan.tool === 'mv.shot_reshoot') args.shot_id = ent.lastShotId;
   if (plan.tool === 'mv.script_suggest_edit') args.instruction = text.slice(0, 200); // 指令取用户原话（LLM args 不信任）
   if ((plan.tool === 'mv.shot_delete' || plan.tool === 'mv.shot_reshoot') && !ent.lastShotId) {
@@ -204,20 +204,33 @@ async function handleMessages(ctx) {
   }
   // 昂贵动作：先过助手侧预算双熔断（v2.14.1），再签确认票（票面必带估价）+ WSS mv.ticket
   const est = def.est(g.args);
-  const fuse = gov.fuseCheck(session, project, est.credits);
-  if (fuse.broken) {
+  const ticketResult = store.tx(() => {
+    const freshSession = gov.getSession(session.id);
+    const freshProject = store.get('SELECT * FROM mv_projects WHERE id=?', project.id);
+    if (!freshSession || !freshProject) throw new U.ApiError('NOT_FOUND', '会话或项目不存在');
+    if (freshSession.status === 'broken') return { fused: true };
+    const fuse = gov.fuseCheck(freshSession, freshProject, est.credits);
+    if (fuse.broken) return { fused: true };
+    const issued = gov.issueTicket(user, freshProject, plan.tool, g.args, est, freshSession.id);
+    gov.reserveSessionCost(freshSession, est.credits, issued.id);
+    return { ticket: issued };
+  });
+  if (ticketResult.fused) {
     const reply = tidyReply('这部片子的花费已超报价 120%，为守住预算我已经暂停本次会话。请恢复项目预算或新开会话再继续。');
     store.log('mv.assistant.message', Object.assign({}, audit, { action: 'fused' }));
     return { status: 200, body: { session_id: session.id, reply, meta: { mode, intent: plan.intent, fused: true } } };
   }
-  const ticket = gov.issueTicket(user, project, plan.tool, g.args, est);
+  const ticket = ticketResult.ticket;
   const describe = {
     'mv.script_suggest_edit': '让编剧按你的诉求改一版（采纳前不动现行剧本）',
     'mv.shot_reorder': '重排镜头顺序',
     'mv.shot_delete': '删除该镜头',
     'mv.shot_reshoot': '重拍该镜头',
   }[plan.tool] || plan.tool;
-  const estNote = (ticket.est_credits > 0 ? '预估 ' + ticket.est_credits + '⚡、' : '不扣积分、') + '约 ' + ticket.est_minutes + ' 分钟';
+  let estNote = ticket.est_credits > 0
+    ? (['mv.shot_reorder', 'mv.shot_delete'].includes(plan.tool) ? '本次不扣积分，后续制作预计 ' + ticket.est_credits + '⚡、' : '预估 ' + ticket.est_credits + '⚡、')
+    : '不扣积分、';
+  estNote += '约 ' + ticket.est_minutes + ' 分钟';
   const reply = tidyReply('需要您批准：' + describe + '（' + estNote + '）。确认后我就替剧组办妥。');
   store.log('mv.assistant.message', Object.assign({}, audit, { action: 'ticket', ticket_id: ticket.id }));
   return {
@@ -225,7 +238,12 @@ async function handleMessages(ctx) {
     body: {
       session_id: session.id,
       reply,
-      ticket: { ticket_id: ticket.id, project_id: ticket.project_id, action: ticket.action, est: { credits: ticket.est_credits, minutes: ticket.est_minutes } },
+      ticket: {
+        ticket_id: ticket.id, id: ticket.id, project_id: ticket.project_id, action: ticket.action,
+        est: { credits: ticket.est_credits, minutes: ticket.est_minutes },
+        est_credits: ticket.est_credits, est_minutes: ticket.est_minutes,
+        ver: ticket.ver, hash: ticket.hash, status: ticket.status,
+      },
       meta: { mode, intent: plan.intent },
     },
   };

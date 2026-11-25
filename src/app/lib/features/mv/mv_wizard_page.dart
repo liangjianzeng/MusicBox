@@ -9,6 +9,8 @@ import 'steps/step_cast.dart';
 import 'steps/step_look.dart';
 import 'steps/step_script.dart';
 import 'steps/step_work.dart';
+import 'widgets/mv_common.dart';
+import 'widgets/mv_theme.dart';
 
 /// 六步向导壳：进度芯片 ①②③④⑤⑥ + 回退 + 步进。
 /// 状态持久化：MvWizardNotifier（本地 StateNotifier，family 按 workId 缓存）——
@@ -95,83 +97,91 @@ class _MvWizardPageState extends ConsumerState<MvWizardPage> {
     final assistantOn =
         (detail?.assistantEnabled ?? false) || kMvAssistantEnabled;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('新 MV')),
-      floatingActionButton: (assistantOn && project != null)
-          ? FloatingActionButton.small(
-              heroTag: 'mv_wizard_assistant',
-              tooltip: '制片助手',
-              onPressed: () => showMvAssistant(context,
-                  projectId: project.id,
-                  projectTitle: project.title.isEmpty ? '新 MV' : project.title,
-                  chatEnabled: detail?.assistantChat ?? false,
-                  modeHint: detail?.assistantModeHint),
-              child: const Icon(Icons.smart_toy_outlined, size: 20),
-            )
-          : null,
-      body: Column(
-        children: [
-          _StepBar(step: step, onTap: (i) {
-            // 允许回退任意已到达步骤；前进仅当门禁通过
-            if (i < step) {
-              n.goTo(i);
-            } else if (i == step + 1 && nextBlocked == null) {
-              n.goTo(i);
-            }
-          }),
-          Expanded(
-            child: switch (step) {
-              0 => StepWork(workId: widget.workId),
-              1 => StepCast(workId: widget.workId),
-              2 => StepLook(workId: widget.workId),
-              3 => StepScript(workId: widget.workId),
-              4 => StepBoot(workId: widget.workId),
-              5 => _FinalStep(workId: widget.workId),
-              _ => const SizedBox.shrink(),
-            },
-          ),
-          // 底栏：回退 + 前进
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-              child: Row(
-                children: [
-                  if (step > 0)
-                    OutlinedButton.icon(
-                      onPressed: state.submitting
-                          ? null
-                          : () => n.goTo(step - 1),
-                      icon: const Icon(Icons.chevron_left, size: 18),
-                      label: const Text('上一步'),
-                    ),
-                  const Spacer(),
-                  if (step < 5)
-                    FilledButton.icon(
-                      onPressed: nextBlocked != null || state.submitting
-                          ? null
-                          : () => n.goTo(step + 1),
-                      icon: state.submitting
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.chevron_right, size: 18),
-                      label: Text(state.submitting ? '提交中' : '下一步'),
-                    )
-                  else if (state.project != null)
-                    FilledButton.icon(
-                      onPressed: () => MvProgressPage.push(
-                          context, projectId: state.project!.id),
-                      icon: const Icon(Icons.local_movies_outlined, size: 18),
-                      label: const Text('查看进度'),
-                    ),
-                ],
+    return MvLeaveGuard(
+      busy: state.submitting,
+      message: '主演资料仍在提交中。离开不会取消已创建的项目或后台任务，'
+          '但可能看不到本次回执；草稿会保留在本机。确定离开吗？',
+      child: Scaffold(
+        appBar: AppBar(title: const Text('新 MV')),
+        floatingActionButton: (assistantOn && project != null)
+            ? FloatingActionButton.small(
+                heroTag: 'mv_wizard_assistant',
+                tooltip: '制片助手',
+                onPressed: () => showMvAssistant(context,
+                    projectId: project.id,
+                    projectTitle:
+                        project.title.isEmpty ? '新 MV' : project.title,
+                    chatEnabled: detail?.assistantChat ?? false,
+                    modeHint: detail?.assistantModeHint),
+                child: const Icon(Icons.smart_toy_outlined, size: 20),
+              )
+            : null,
+        body: Column(
+          children: [
+            _StepBar(
+                step: step,
+                onTap: (i) {
+                  // 允许回退任意已到达步骤；前进仅当门禁通过
+                  if (state.submitting) return;
+                  if (i < step) {
+                    n.goTo(i);
+                  } else if (i == step + 1 && nextBlocked == null) {
+                    n.goTo(i);
+                  }
+                }),
+            Expanded(
+              child: switch (step) {
+                0 => StepWork(workId: widget.workId),
+                1 => StepCast(workId: widget.workId),
+                2 => StepLook(workId: widget.workId),
+                3 => StepScript(workId: widget.workId),
+                4 => StepBoot(workId: widget.workId),
+                5 => _FinalStep(workId: widget.workId),
+                _ => const SizedBox.shrink(),
+              },
+            ),
+            // 底栏：回退 + 前进
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                child: Row(
+                  children: [
+                    if (step > 0)
+                      OutlinedButton.icon(
+                        onPressed:
+                            state.submitting ? null : () => n.goTo(step - 1),
+                        icon: const Icon(Icons.chevron_left, size: 18),
+                        label: const Text('上一步'),
+                      ),
+                    const Spacer(),
+                    if (step < 5)
+                      FilledButton.icon(
+                        onPressed: nextBlocked != null || state.submitting
+                            ? null
+                            : () => n.goTo(step + 1),
+                        icon: state.submitting
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.chevron_right, size: 18),
+                        label: Text(state.submitting ? '提交中' : '下一步'),
+                      )
+                    else if (state.project != null)
+                      FilledButton.icon(
+                        onPressed: () => MvProgressPage.push(context,
+                            projectId: state.project!.id),
+                        icon: const Icon(Icons.local_movies_outlined, size: 18),
+                        label: const Text('查看进度'),
+                      ),
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -200,12 +210,12 @@ class _StepBar extends StatelessWidget {
               ? scheme.primary
               : cur
                   ? scheme.primaryContainer
-                  : Colors.white12;
+                  : context.mvSurfaceRaised;
           final fg = done
-              ? Colors.white
+              ? scheme.onPrimary
               : cur
                   ? scheme.onPrimaryContainer
-                  : Colors.white38;
+                  : context.mvTextSecondary;
           return InkWell(
             borderRadius: BorderRadius.circular(999),
             onTap: () => onTap(i),
@@ -215,9 +225,8 @@ class _StepBar extends StatelessWidget {
               decoration: BoxDecoration(
                 color: color,
                 borderRadius: BorderRadius.circular(999),
-                border: cur
-                    ? Border.all(color: scheme.primary, width: 1.5)
-                    : null,
+                border:
+                    cur ? Border.all(color: scheme.primary, width: 1.5) : null,
               ),
               child: Row(
                 children: [
@@ -231,7 +240,7 @@ class _StepBar extends StatelessWidget {
                       style: TextStyle(fontSize: 12, color: fg)),
                   if (done) const SizedBox(width: 3),
                   if (done)
-                    const Icon(Icons.check, size: 12, color: Colors.white),
+                    Icon(Icons.check, size: 12, color: scheme.onPrimary),
                 ],
               ),
             ),
@@ -257,15 +266,15 @@ class _FinalStep extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.movie_filter_outlined,
-                size: 42, color: Colors.white24),
+            Icon(Icons.movie_filter_outlined,
+                size: 42, color: context.mvTextMuted),
             const SizedBox(height: 12),
             Text(
               p == null ? '先完成前面的确认门' : '开机后进入异步制作',
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
-                  color: Colors.white70),
+                  color: context.mvTextSecondary),
             ),
             const SizedBox(height: 8),
             Text(
@@ -274,14 +283,13 @@ class _FinalStep extends ConsumerWidget {
                   : '拍摄 / 对口型 / 合成为分钟级异步工程，可离开 App，'
                       '完成后由通知拉回验收（一期通知栈复用）。',
               textAlign: TextAlign.center,
-              style:
-                  const TextStyle(fontSize: 12.5, color: Colors.white38, height: 1.5),
+              style: TextStyle(
+                  fontSize: 12.5, color: context.mvTextMuted, height: 1.5),
             ),
             const SizedBox(height: 14),
             if (p != null)
               FilledButton.icon(
-                onPressed: () =>
-                    MvProgressPage.push(context, projectId: p.id),
+                onPressed: () => MvProgressPage.push(context, projectId: p.id),
                 icon: const Icon(Icons.dashboard_outlined, size: 18),
                 label: const Text('剧组通告板（进度）'),
               ),

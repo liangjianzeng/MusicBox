@@ -1,58 +1,138 @@
-# MusicBox MV 口型重绘 worker —— FastAPI :8390 脚手架（2026-11-24，SP-MV-1 接线）
-# 职责：接收执行器切窗后的「演唱镜视频 + 指定音频段」，用 EchoMimicV3-Flash 重绘口型，
-#       内置 SyncNet 自检返回 sync_score（质量门阈值由服务端判定，低于阈值执行器/服务端补样）。
-# 诚实声明：本文件为**骨架交付件**——不装 torch、不拉权重、不推理；真机接线属 SP-MV-1/N2-2
-#       （DGX Spark 侧，uv venv + ModelScope/hf-mirror 权重 → var/models，懒加载/空闲 10min 释放）。
-# 依赖（Spark 侧安装，勿在本阶段执行）：
-#   uv venv var/venv-lipsync && uv pip install fastapi uvicorn torch(≥aarch64 cu12x) echomimic-weights...
-#   （见 deploy/spark/mv-lipsync.service 与 docs/musicbox-phase2-construction-plan.md §2.1 S4/S5）
-# 启动（真机）：uvicorn app:app --host 127.0.0.1 --port 8390
+import json
 import os
+import subprocess
+import tempfile
+import threading
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 PORT = int(os.environ.get("MB_LIPSYNC_PORT", "8390"))
-WEIGHTS_DIR = os.environ.get("MB_LIPSYNC_MODELS", "/opt/musicbox/var/models")
-IDLE_RELEASE_SEC = 600  # 一期 ACE-Step 纪律：懒加载 + 空闲 10min 释放
+ROOTS = [Path(p).resolve() for p in os.environ.get(
+    "MB_LIPSYNC_ROOTS", "/opt/musicbox/var,E:/Work/MusicBox/var"
+).split(",") if p.strip()]
+TIMEOUT_SEC = int(os.environ.get("MB_LIPSYNC_TIMEOUT_SEC", "1800"))
+MAX_INPUT_BYTES = int(os.environ.get("MB_LIPSYNC_MAX_INPUT_BYTES", str(300 * 1024 * 1024)))
 
-app = FastAPI(title="musicbox-mv-lipsync", version="0.1.0-scaffold")
-_engine = None  # EchoMimicV3-Flash 推理管线（懒加载；本阶段保持 None）
+app = FastAPI(title="musicbox-mv-lipsync", version="1.0.0")
+_lock = threading.Lock()
 
 
-def _weights_ready() -> bool:
-    return os.path.isdir(WEIGHTS_DIR) and any(os.scandir(WEIGHTS_DIR))
+def _command_env(name):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("%s 必须是 JSON 数组" % name) from exc
+    if not isinstance(value, list) or not value or not all(isinstance(x, str) for x in value):
+        raise RuntimeError("%s 必须是非空字符串数组" % name)
+    return value
 
 
-def _load_engine():
-    """真引擎接线点（SP-MV-1）：torch/EchoMimic 延迟导入，绝不模块级加载。"""
-    global _engine
-    if _engine is None:
-        raise HTTPException(status_code=503, detail="ENGINE_NOT_READY: 权重/引擎未接线（SP-MV-1 交付项）")
-    return _engine
+def runtime_configured():
+    try:
+        return _command_env("MB_LIPSYNC_COMMAND") is not None
+    except RuntimeError:
+        return False
+
+
+def local_file(value: str, max_bytes=MAX_INPUT_BYTES) -> Path:
+    path = Path(value).resolve()
+    if not any(path == root or root in path.parents for root in ROOTS):
+        raise HTTPException(status_code=403, detail="文件路径不在允许目录")
+    if not path.is_file():
+        raise HTTPException(status_code=400, detail="输入文件不存在")
+    if path.stat().st_size > max_bytes:
+        raise HTTPException(status_code=400, detail="输入文件过大")
+    return path
+
+
+def output_file(value: str) -> Path:
+    path = Path(value).resolve()
+    if not any(path == root or root in path.parents for root in ROOTS):
+        raise HTTPException(status_code=403, detail="输出路径不在允许目录")
+    if path.suffix.lower() not in {".mp4", ".mov", ".webm"}:
+        raise HTTPException(status_code=400, detail="输出必须是视频文件")
+    return path
+
+
+def render_command(template, video, audio, output, text, score_file):
+    values = {"video": str(video), "audio": str(audio), "output": str(output),
+              "text": text, "score_file": str(score_file)}
+    return [part.format(**values) for part in template]
+
+
+def parse_score(path: Path):
+    try:
+        value = float(path.read_text(encoding="utf-8").strip().splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return value if 0.0 <= value <= 1.0 else None
 
 
 class LipsyncReq(BaseModel):
-    video: str          # 执行器本机绝对路径（与 worker 同机）
-    audio: str          # 切窗音频段（wav，含 ±0.2s 上下文余量，执行器负责切）
-    text: str = ""      # 可选唱词（引擎条件增强用）
+    video: str
+    audio: str
+    text: str = ""
 
 
 @app.get("/health")
 def health():
-    # 执行器 LIPSYNC_UNREACHABLE 判定端点：必须秒级返回，不触发模型加载
-    return {"ok": True, "engine": "echomimic_v3_flash", "weights_ready": _weights_ready(), "loaded": _engine is not None, "scaffold": True}
+    return {"ok": True, "engine": "echomimic_v3_flash", "configured": runtime_configured(),
+            "loaded": False, "scaffold": False}
 
 
 @app.post("/lipsync")
 def lipsync(req: LipsyncReq):
-    # 契约（架构 §4.1）：POST /lipsync {video, audio} → {file, sync_score}
-    for k in ("video", "audio"):
-        v = getattr(req, k)
-        if not v or not os.path.isfile(v):
-            raise HTTPException(status_code=400, detail="PARAM_MISSING: %s" % k)
-    eng = _load_engine()  # 骨架阶段恒 503（诚实失败，绝不假成功）
-    raise HTTPException(status_code=501, detail="NOT_IMPLEMENTED: SP-MV-1 接线后启用（eng=%r）" % (eng,))
+    template = _command_env("MB_LIPSYNC_COMMAND")
+    if template is None:
+        raise HTTPException(status_code=503, detail="ENGINE_NOT_READY: 未配置口型推理命令")
+    video = local_file(req.video)
+    audio = local_file(req.audio, 20 * 1024 * 1024)
+    root = ROOTS[0]
+    with tempfile.TemporaryDirectory(prefix="mv-lipsync-", dir=root) as temp:
+        output = output_file(str(Path(temp) / "synced.mp4"))
+        score_file = Path(temp) / "sync_score.txt"
+        score_template = _command_env("MB_LIPSYNC_SYNC_COMMAND")
+        try:
+            args = render_command(template, video, audio, output, req.text[:2000], score_file)
+            with _lock:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT_SEC,
+                                        check=False, shell=False)
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail="口型推理失败: %s" % (result.stderr or result.stdout)[-500:])
+            if not output.is_file() or output.stat().st_size < 1024:
+                raise HTTPException(status_code=500, detail="口型推理未产出有效视频")
+            with output.open("rb") as produced:
+                header = produced.read(12)
+            if not (header[4:8] == b"ftyp" or header[:4] == b"\x1aE\xdf\xa3"):
+                raise HTTPException(status_code=500, detail="口型推理产物不是有效视频容器")
+            fd, name = tempfile.mkstemp(prefix="lipsync-", suffix=".mp4", dir=root)
+            os.close(fd)
+            target = Path(name)
+            try:
+                output.replace(target)
+                if score_template:
+                    sync_args = render_command(score_template, target, audio, target, req.text[:2000], score_file)
+                    with _lock:
+                        checked = subprocess.run(sync_args, capture_output=True, text=True, timeout=300,
+                                                 check=False, shell=False)
+                    if checked.returncode != 0:
+                        target.unlink(missing_ok=True)
+                        raise HTTPException(status_code=500, detail="口型质量评分失败")
+                return {"file": str(target), "sync_score": parse_score(score_file), "worker": "external-runtime"}
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail="口型推理超时") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="口型服务异常: %s" % type(exc).__name__) from exc
 
 
 if __name__ == "__main__":

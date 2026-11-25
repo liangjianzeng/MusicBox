@@ -3,6 +3,7 @@
 const config = require('../config');
 const store = require('../core/store');
 const U = require('../core/util');
+const AC = require('../core/appconfig');
 
 const MV = config.mv;
 const OVER_RATIO = 1.2; // 超预算 120% → 暂停（S10）
@@ -38,14 +39,15 @@ function manualRaise(project, newBudget) {
 
 // 报价快照（契约 v2.8.3）：shots×档位×config.mv.est 常数（架构 §8 单一真源）；est_ver=hash12 供 boot CAS
 function estimate(project, shots) {
+  const price = AC.credits().mv || MV.credits;
   const est = MV.est;
   const shotCount = (shots || []).length;
   const singing = (shots || []).filter((s) => s.kind === 'singing').length;
   const lipsync = (project && project.kind === 'vocal') ? singing : 0;
-  const breakdown = [{ item: '拍摄', unit: MV.credits.shot, count: shotCount, credits: shotCount * MV.credits.shot }];
-  if (lipsync > 0) breakdown.push({ item: '口型', unit: MV.credits.lipsync, count: lipsync, credits: lipsync * MV.credits.lipsync });
-  if (project && project.kind === 'vocal') breakdown.push({ item: '歌词对齐', unit: MV.credits.align, count: 1, credits: MV.credits.align });
-  breakdown.push({ item: '成片合成', unit: MV.credits.compose, count: 1, credits: MV.credits.compose });
+  const breakdown = [{ item: '拍摄', unit: price.shot, count: shotCount, credits: shotCount * price.shot }];
+  if (lipsync > 0) breakdown.push({ item: '口型', unit: price.lipsync, count: lipsync, credits: lipsync * price.lipsync });
+  if (project && project.kind === 'vocal') breakdown.push({ item: '歌词对齐', unit: price.align, count: 1, credits: price.align });
+  breakdown.push({ item: '成片合成', unit: price.compose, count: 1, credits: price.compose });
   const credits = breakdown.reduce((a, r) => a + r.credits, 0);
   const minutes = Math.max(1, Math.round(shotCount * est.video / 60 + lipsync * est.lipsync / 60 + (project && project.kind === 'vocal' ? est.align / 60 : 0) + est.compose / 60 + 5));
   return { shots: shotCount, singing, lipsync, breakdown, credits, minutes, at: U.nowIso() };
