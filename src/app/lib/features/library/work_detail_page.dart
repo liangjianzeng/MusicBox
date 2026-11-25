@@ -9,6 +9,9 @@ import '../../core/share_channel.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/ai_badge.dart';
 import '../../shared/widgets/waveform_canvas.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_state.dart';
+import '../assistant/assistant_surface.dart';
 import '../create/credit_guard.dart';
 import '../create/music_assistant_sheet.dart';
 import '../create/progress_page.dart';
@@ -17,7 +20,7 @@ import '../mv/mv_wizard_page.dart';
 import '../player/player_provider.dart';
 import 'dsp_page.dart';
 
-/// 作品详情：播放+peaks 波形 / 星级 / 元数据编辑 / 谱系父链+children / 
+/// 作品详情：播放+peaks 波形 / 星级 / 元数据编辑 / 谱系父链+children /
 /// seed-pack 分享 / dsp 入口 / 导出下载 / 谱系动作
 class WorkDetailPage extends ConsumerStatefulWidget {
   const WorkDetailPage({super.key, required this.workId});
@@ -36,18 +39,53 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
   bool _loading = true;
 
   ApiClient get _api => ref.read(apiClientProvider);
+  AssistantContext? _previousAssistantContext;
 
   @override
   void initState() {
     super.initState();
+    _previousAssistantContext = ref.read(assistantContextProvider);
     _load();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncAssistantContext();
+    });
+  }
+
+  bool get _ownsAssistantContext {
+    final current = ref.read(assistantContextProvider);
+    return current.surface == 'library' &&
+        current.refs.length == 1 &&
+        current.refs.single.type == 'work' &&
+        current.refs.single.id == widget.workId;
+  }
+
+  void _syncAssistantContext() {
+    if (!mounted) return;
+    ref.read(assistantContextProvider.notifier).state = AssistantContext(
+      surface: 'library',
+      refs: [AssistantRef('work', widget.workId)],
+      title: _work?.title ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    if (_ownsAssistantContext) {
+      ref.read(assistantContextProvider.notifier).state =
+          _previousAssistantContext ??
+              const AssistantContext(surface: 'library');
+    }
+    super.dispose();
   }
 
   Future<void> _load() async {
     // 先读缓存，网络失败不白屏
     try {
       final c = await ref.read(localDbProvider).cachedWork(widget.workId);
-      if (mounted && _detail == null) setState(() => _cached = c);
+      if (mounted && _detail == null) {
+        setState(() => _cached = c);
+        if (_ownsAssistantContext) _syncAssistantContext();
+      }
     } catch (_) {}
     try {
       final d = await _api.work(widget.workId);
@@ -56,6 +94,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
         _detail = d;
         _error = null;
       });
+      if (_ownsAssistantContext) _syncAssistantContext();
       await ref.read(localDbProvider).cacheWork(d.work);
       if (d.work.waveformUrl != null) {
         final p = await _api.fetchPeaks(d.work.waveformUrl!);
@@ -117,32 +156,34 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlg) => AlertDialog(
           title: const Text('编辑信息'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                  controller: titleC,
-                  decoration: const InputDecoration(labelText: '标题')),
-              const SizedBox(height: 10),
-              TextField(
-                  controller: moodC,
-                  decoration: const InputDecoration(labelText: '心情（逗号分隔）')),
-              const SizedBox(height: 10),
-              TextField(
-                  controller: genresC,
-                  decoration: const InputDecoration(labelText: '流派（逗号分隔）')),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Text('公开广场：'),
-                  Switch(
-                    value: visibility == 'public',
-                    onChanged: (v) => setDlg(
-                        () => visibility = v ? 'public' : 'private'),
-                  ),
-                ],
-              ),
-            ],
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                    controller: titleC,
+                    decoration: const InputDecoration(labelText: '标题')),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: moodC,
+                    decoration: const InputDecoration(labelText: '心情（逗号分隔）')),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: genresC,
+                    decoration: const InputDecoration(labelText: '流派（逗号分隔）')),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text('公开广场：'),
+                    Switch(
+                      value: visibility == 'public',
+                      onChanged: (v) =>
+                          setDlg(() => visibility = v ? 'public' : 'private'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -260,11 +301,11 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
         ),
       ),
     );
+    if (!mounted) return;
     switch (picked) {
       case 'mv':
         if (!mounted) break;
-        MvWizardPage.push(context,
-            workId: widget.workId, initialStep: 1);
+        MvWizardPage.push(context, workId: widget.workId, initialStep: 1);
         break;
       case 'extend':
         _extend();
@@ -276,8 +317,13 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
         _variation();
         break;
       case 'dsp':
-        Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => DspPage(workId: widget.workId)));
+        final route = ModalRoute.of(context);
+        Navigator.of(context)
+            .push(MaterialPageRoute(
+                builder: (_) => DspPage(workId: widget.workId)))
+            .then((_) {
+          if (mounted && route?.isCurrent == true) _syncAssistantContext();
+        });
         break;
       case 'download':
         _download();
@@ -295,6 +341,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
     if (!await ensureCredits(context, ref, kCreditExtendCover, action: '延长')) {
       return;
     }
+    if (!mounted) return;
     final c = TextEditingController(text: '30');
     final sec = await showDialog<int>(
       context: context,
@@ -305,7 +352,8 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
             keyboardType: TextInputType.number,
             decoration: const InputDecoration(suffixText: '秒')),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
               onPressed: () =>
                   Navigator.pop(ctx, int.tryParse(c.text.trim()) ?? 30),
@@ -321,8 +369,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
         context,
         jobId,
         title: '延长中',
-        brief:
-            TaskBrief(action: '延长', sourceLabel: '曲库作品', sec: sec, count: 1),
+        brief: TaskBrief(action: '延长', sourceLabel: '曲库作品', sec: sec, count: 1),
         plannedCount: 1,
         onRetry: () async {
           try {
@@ -360,12 +407,44 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
             .toList(),
       ),
     );
-    if (pid == null) return;
+    if (pid == null || !mounted) return;
+    final persona = personas.firstWhere((p) => p.id == pid);
+    final workTitle = _work?.title ?? '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认翻唱'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('作品名：${workTitle.isEmpty ? '未命名作品' : workTitle}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Text('人格名：${persona.name}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              const Text('预计积分：$kCreditExtendCover'),
+              const SizedBox(height: 8),
+              const Text('生成数量：1 首'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('确认翻唱')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     try {
       final jobId = await _api.cover(widget.workId, pid);
       if (!mounted) return;
-      final pname =
-          personas.where((p) => p.id == pid).map((p) => p.name).toList();
       ProgressPage.push(
         context,
         jobId,
@@ -373,7 +452,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
         brief: TaskBrief(
             action: '翻唱',
             sourceLabel: '曲库作品',
-            personaName: pname.isEmpty ? null : pname.first,
+            personaName: persona.name,
             count: 1),
         plannedCount: 1,
         onRetry: () async {
@@ -393,29 +472,31 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
     if (!await ensureCredits(context, ref, kCreditAdjust, action: '实验台')) {
       return;
     }
+    if (!mounted) return;
     final bpmC = TextEditingController();
     final tagsC = TextEditingController();
     final delta = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('控制变量实验台'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-                controller: bpmC,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                    labelText: 'BPM（留空不改）')),
-            const SizedBox(height: 10),
-            TextField(
-                controller: tagsC,
-                decoration:
-                    const InputDecoration(labelText: '标签（留空不改）')),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                  controller: bpmC,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'BPM（留空不改）')),
+              const SizedBox(height: 10),
+              TextField(
+                  controller: tagsC,
+                  decoration: const InputDecoration(labelText: '标签（留空不改）')),
+            ],
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
             onPressed: () {
               final d = <String, dynamic>{};
@@ -489,9 +570,12 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('从本作生成人格'),
-        content: TextField(controller: c, decoration: const InputDecoration(labelText: '人格名称')),
+        content: TextField(
+            controller: c,
+            decoration: const InputDecoration(labelText: '人格名称')),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, c.text.trim()),
               child: const Text('生成')),
@@ -519,7 +603,8 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
             maxLines: 3,
             decoration: const InputDecoration(labelText: '原因')),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, c.text.trim()),
               child: const Text('提交')),
@@ -594,8 +679,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                           Expanded(
                             child: Text(w.title.isEmpty ? '未命名作品' : w.title,
                                 style: const TextStyle(
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w800)),
+                                    fontSize: 22, fontWeight: FontWeight.w800)),
                           ),
                           if (w.aiLabel) const AiBadge(),
                         ],
@@ -637,10 +721,8 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                             label: const Text('Seed Pack 分享'),
                           ),
                           OutlinedButton.icon(
-                            onPressed: () => MvWizardPage.push(
-                                context,
-                                workId: widget.workId,
-                                initialStep: 1),
+                            onPressed: () => MvWizardPage.push(context,
+                                workId: widget.workId, initialStep: 1),
                             icon: const Icon(Icons.movie_creation_outlined,
                                 size: 18),
                             label: const Text('用这首拍 MV'),
@@ -648,19 +730,41 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                         ],
                       ),
                       const SizedBox(height: 16),
+                      const AssistantSuggestionCard(
+                        title: '解释这首作品',
+                        prompt: '请基于当前作品上下文，解释这首作品的创作思路、情绪和音乐特点',
+                        icon: Icons.lightbulb_outline,
+                      ),
+                      const AssistantSuggestionCard(
+                        title: '帮我微调',
+                        prompt: '请基于当前作品上下文，给我一些微调建议；涉及修改或扣费时先给我确认票',
+                        icon: Icons.tune_outlined,
+                      ),
                       // 星级
-                      Row(
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Text('我的评分：',
                               style: TextStyle(color: Colors.white70)),
                           ...List.generate(5, (i) {
                             final v = (w.rating ?? 0) > i;
-                            return InkWell(
-                              onTap: () => _rate(i + 1),
-                              child: Icon(
-                                v ? Icons.star_rounded : Icons.star_outline_rounded,
-                                color: Colors.amber,
-                                size: 26,
+                            return SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: InkWell(
+                                onTap: () => _rate(i + 1),
+                                customBorder: const CircleBorder(),
+                                child: Center(
+                                  child: Icon(
+                                    v
+                                        ? Icons.star_rounded
+                                        : Icons.star_outline_rounded,
+                                    color: Colors.amber,
+                                    size: 26,
+                                  ),
+                                ),
                               ),
                             );
                           }),
@@ -678,31 +782,31 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                         runSpacing: 6,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          ...(_detail?.parents ?? const <Work>[]).map((p) => Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Chip(
-                                    label: Text(
-                                        '${p.title.isEmpty ? '源作品' : p.title} · ${p.lineageKind}',
-                                        style: const TextStyle(fontSize: 12)),
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                  const Icon(Icons.chevron_right,
-                                      size: 16, color: Colors.white30),
-                                ],
-                              )),
+                          ...(_detail?.parents ?? const <Work>[])
+                              .map((p) => Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Chip(
+                                        label: Text(
+                                            '${p.title.isEmpty ? '源作品' : p.title} · ${p.lineageKind}',
+                                            style:
+                                                const TextStyle(fontSize: 12)),
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                      const Icon(Icons.chevron_right,
+                                          size: 16, color: Colors.white30),
+                                    ],
+                                  )),
                           Chip(
                             label: Text('本作（深度 ${w.depth} · ${w.lineageKind}）',
                                 style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600)),
+                                    fontSize: 12, fontWeight: FontWeight.w600)),
                             visualDensity: VisualDensity.compact,
                           ),
                           if ((_detail?.childrenCount ?? 0) > 0)
                             Text('衍生 ${_detail!.childrenCount} 首',
                                 style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.white38)),
+                                    fontSize: 12, color: Colors.white38)),
                         ],
                       ),
                       const Divider(height: 32),

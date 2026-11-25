@@ -11,8 +11,10 @@ import '../../core/api_client.dart';
 import '../../core/speech/asr_engine.dart';
 import '../../core/speech/sherpa_asr.dart';
 import '../../core/speech/speech_service.dart';
+import '../../core/speech/speech_settings.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/consent.dart';
+import '../../shared/widgets/speech_model_download.dart';
 import 'creation_state.dart';
 import 'transcript_confirm_page.dart';
 
@@ -27,30 +29,41 @@ class HoldToTalkButton extends ConsumerStatefulWidget {
     required this.onResult,
     this.maxSeconds = 60,
     this.compact = false,
+    this.enabled = true,
   });
 
   /// 松开后回传本次采集结果（WAV + 端侧识别文本 + 换档说明）
   final ValueChanged<VoiceCaptureResult> onResult;
   final int maxSeconds;
   final bool compact;
+  final bool enabled;
 
   @override
   ConsumerState<HoldToTalkButton> createState() => _HoldToTalkButtonState();
 }
 
+enum _CapturePhase { idle, preparing, recording, stopping }
+
 class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
   final AudioRecorder _rec = AudioRecorder();
   Timer? _tick;
-  bool _recording = false;
-  bool _busy = false;
+  _CapturePhase _phase = _CapturePhase.idle;
+  int _pressToken = 0;
   int _elapsed = 0;
   String? _path;
   String? _live; // 端侧实时转写（回显用）
   StreamingAsrSession? _session;
   ResolvedEngine? _resolved;
+  bool _serverOnce = false;
+
+  bool get _recording => _phase == _CapturePhase.recording;
+  bool get _busy =>
+      _phase == _CapturePhase.preparing || _phase == _CapturePhase.stopping;
+  bool _isCurrent(int token) => mounted && token == _pressToken;
 
   @override
   void dispose() {
+    _pressToken++;
     _tick?.cancel();
     unawaited(_session?.cancel());
     _rec.dispose();
@@ -63,41 +76,70 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
   }
 
   Future<void> _start() async {
-    if (_recording || _busy) return;
-    if (!await ensureBiometricConsent(context, ref)) return;
+    if (_phase != _CapturePhase.idle) return;
+    final token = ++_pressToken;
     setState(() {
-      _busy = true;
+      _phase = _CapturePhase.preparing;
       _live = null;
       _elapsed = 0;
     });
     try {
+      if (!await ensureBiometricConsent(context, ref)) return;
+      if (!_isCurrent(token)) return;
       final svc = ref.read(speechServiceProvider);
-      var resolved = await svc.resolveEngine();
+      final settings = ref.read(speechSettingsProvider);
+      var resolved = _serverOnce
+          ? const ResolvedEngine(AsrEngineKind.server, reason: '本次改由服务端识别')
+          : await svc.resolveEngine();
+      if (!mounted) return;
+      if (!_isCurrent(token)) return;
+      _serverOnce = false;
+      if (resolved.modelMissing && settings.asrEngine != AsrEngineKind.server) {
+        final preparation = await prepareSpeechModel(
+          context,
+          model: svc.selectedAsrModel,
+          allowServerFallback: settings.fallbackToServer,
+        );
+        if (!_isCurrent(token)) return;
+        _serverOnce = preparation == SpeechModelPreparation.serverFallback;
+        _toast(preparation == SpeechModelPreparation.ready
+            ? '模型已就位，再按住说话'
+            : '下次将使用服务端识别，再按住说话');
+        return;
+      }
       _resolved = resolved;
       final dir = await getTemporaryDirectory();
+      if (!_isCurrent(token)) return;
       final stamp = DateTime.now().millisecondsSinceEpoch;
       if (resolved.onDevice) {
         final wav = p.join(dir.path, 'voice_$stamp.wav');
         final s = await svc.createSession(saveWavPath: wav);
+        if (!_isCurrent(token)) {
+          await s?.cancel();
+          return;
+        }
         if (s == null) {
-          // 解析说端侧可用、建会话却失败：如实降级，不假装
           _resolved = const ResolvedEngine(AsrEngineKind.server,
               reason: '本机识别没起来，这次走服务端');
         } else {
           _session = s;
           s.partialText.listen((t) {
-            if (mounted) setState(() => _live = t);
+            if (_isCurrent(token)) setState(() => _live = t);
           });
           await s.start();
+          if (!_isCurrent(token)) {
+            await _cleanup();
+            return;
+          }
           _path = wav;
         }
       }
       if (_session == null) {
-        // 服务端档：直录 m4a
         if (!await _rec.hasPermission()) {
           _toast('没有麦克风权限，请在系统设置中允许录音');
           return;
         }
+        if (!_isCurrent(token)) return;
         _path = p.join(dir.path, 'voice_$stamp.m4a');
         await _rec.start(
           const RecordConfig(
@@ -108,24 +150,26 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
           ),
           path: _path!,
         );
+        if (!_isCurrent(token)) {
+          await _cleanup();
+          return;
+        }
       }
-      if (!mounted) return;
-      setState(() {
-        _recording = true;
-        _busy = false;
-      });
+      setState(() => _phase = _CapturePhase.recording);
       _tick = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (!mounted) return;
+        if (!_isCurrent(token)) return;
         setState(() => _elapsed++);
         if (_elapsed >= widget.maxSeconds) _stop();
       });
     } on SpeechPermissionException catch (e) {
-      _toast(e.message);
-      if (mounted) setState(() => _busy = false);
+      if (_isCurrent(token)) _toast(e.message);
     } catch (_) {
       await _cleanup();
-      _toast('录音启动失败，请重试');
-      if (mounted) setState(() => _busy = false);
+      if (_isCurrent(token)) _toast('录音启动失败，请重试');
+    } finally {
+      if (_isCurrent(token) && _phase == _CapturePhase.preparing) {
+        setState(() => _phase = _CapturePhase.idle);
+      }
     }
   }
 
@@ -138,13 +182,21 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
   }
 
   Future<void> _stop() async {
-    if (!_recording) return;
+    if (_phase == _CapturePhase.idle || _phase == _CapturePhase.stopping) {
+      return;
+    }
+    final token = ++_pressToken;
     _tick?.cancel();
-    if (!mounted) return;
-    setState(() {
-      _recording = false;
-      _busy = true;
-    });
+    if (_phase == _CapturePhase.preparing) {
+      setState(() => _phase = _CapturePhase.stopping);
+      await _cleanup();
+      if (_isCurrent(token)) {
+        setState(() => _phase = _CapturePhase.idle);
+        _toast('已取消，准备好后再说吧');
+      }
+      return;
+    }
+    setState(() => _phase = _CapturePhase.stopping);
     final s = _session;
     _session = null;
     VoiceCaptureResult? out;
@@ -170,16 +222,19 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
       }
       if ((path == null || path.isEmpty) && _path != null) path = _path;
       if (path == null || path.isEmpty) {
-        if (!mounted) return;
-        setState(() => _busy = false);
-        _toast('没录到声音，再试一次');
+        if (_isCurrent(token)) {
+          setState(() => _phase = _CapturePhase.idle);
+          _toast('没录到声音，再试一次');
+        }
         return;
       }
       out = VoiceCaptureResult(
-          wavPath: path, engineNote: _resolved?.reason, engine: _resolved?.engine);
+          wavPath: path,
+          engineNote: _resolved?.reason,
+          engine: _resolved?.engine);
     }
-    if (!mounted) return;
-    setState(() => _busy = false);
+    if (!_isCurrent(token)) return;
+    setState(() => _phase = _CapturePhase.idle);
     if (_elapsed < 1 && !(out.local?.hasText ?? false)) {
       _toast('说得太短啦，按住多说几个字');
       return;
@@ -191,82 +246,105 @@ class _HoldToTalkButtonState extends ConsumerState<HoldToTalkButton> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final size = widget.compact ? 72.0 : 150.0;
+    final status = switch (_phase) {
+      _CapturePhase.preparing => '正在准备录音',
+      _CapturePhase.recording => '正在录音，点按停止',
+      _CapturePhase.stopping => '正在结束录音',
+      _CapturePhase.idle => '按住说话，也可点按开始',
+    };
     return Semantics(
       button: true,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onLongPressStart: (_) => _start(),
-            onLongPressEnd: (_) => _stop(),
-            onLongPressCancel: () => _stop(),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: _recording
-                      ? [scheme.errorContainer, scheme.error]
-                      : [scheme.primary, scheme.tertiary],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: (recordingColor()).withValues(alpha: _recording ? 0.5 : 0.25),
-                    blurRadius: _recording ? 26 : 14,
-                    spreadRadius: _recording ? 6 : 0,
+      enabled: widget.enabled,
+      label: status,
+      hint: '长按说话，松开发送；也可以点按开始或停止',
+      child: IgnorePointer(
+        ignoring: !widget.enabled,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_recording)
+              AnimatedSize(
+                duration: const Duration(milliseconds: 150),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    _live?.trim().isNotEmpty == true
+                        ? _live!.trim()
+                        : '正在听，继续说…',
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: widget.compact ? 13 : 16,
+                      height: 1.35,
+                      color: scheme.onSurface,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ],
+                ),
               ),
-              child: Center(
-                child: _busy
-                    ? const SizedBox(
-                        width: 26,
-                        height: 26,
-                        child: CircularProgressIndicator(strokeWidth: 2.5))
-                    : Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(_recording ? Icons.graphic_eq_rounded : Icons.mic_rounded,
-                              size: widget.compact ? 30 : 48, color: Colors.white),
-                          if (!widget.compact)
-                            Text(
-                              _recording
-                                  ? '松开发送 · ${_elapsed}s/${widget.maxSeconds}s'
-                                  : '按住说话',
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13),
-                            ),
-                          if (!widget.compact && !_recording)
-                            const Text('说出你的灵感（≤${60}s）',
-                                style: TextStyle(color: Colors.white70, fontSize: 11)),
-                        ],
-                      ),
-              ),
-            ),
-          ),
-          // 端侧实时回显：说的字当场跳出来（松手后由「你说的话」页接管复核）
-          if (_recording && (_live?.trim().isNotEmpty ?? false))
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                _live!.trim(),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: widget.compact ? 13 : 16,
-                  height: 1.35,
-                  color: scheme.onSurface,
-                  fontWeight: FontWeight.w500,
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _busy ? null : () => _recording ? _stop() : _start(),
+              onLongPressStart: (_) => _start(),
+              onLongPressEnd: (_) => _stop(),
+              onLongPressCancel: _stop,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: size,
+                height: size,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: _recording
+                        ? [scheme.errorContainer, scheme.error]
+                        : [scheme.primary, scheme.tertiary],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (recordingColor())
+                          .withValues(alpha: _recording ? 0.5 : 0.25),
+                      blurRadius: _recording ? 26 : 14,
+                      spreadRadius: _recording ? 6 : 0,
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: _busy
+                      ? const SizedBox(
+                          width: 26,
+                          height: 26,
+                          child: CircularProgressIndicator(strokeWidth: 2.5))
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                                _recording
+                                    ? Icons.graphic_eq_rounded
+                                    : Icons.mic_rounded,
+                                size: widget.compact ? 30 : 48,
+                                color: Colors.white),
+                            if (!widget.compact)
+                              Text(
+                                _recording
+                                    ? '松开发送 · ${_elapsed}s/${widget.maxSeconds}s'
+                                    : '按住说话',
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 13),
+                              ),
+                            if (!widget.compact && !_recording)
+                              const Text('说出你的灵感（≤${60}s）',
+                                  style: TextStyle(
+                                      color: Colors.white70, fontSize: 11)),
+                          ],
+                        ),
                 ),
               ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -282,16 +360,15 @@ Future<String?> capturePhotoAndIntent(
     BuildContext context, WidgetRef ref) async {
   if (!await ensureBiometricConsent(context, ref)) return null;
   try {
-    final x = await ImagePicker()
-        .pickImage(source: ImageSource.camera, imageQuality: 85, maxWidth: 1600);
+    final x = await ImagePicker().pickImage(
+        source: ImageSource.camera, imageQuality: 85, maxWidth: 1600);
     if (x == null) return null;
     final id = await ref.read(apiClientProvider).intentImage(x.path);
     ref.read(creationProvider.notifier).setIntent(id);
     return id;
   } on ApiException catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.zh)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.zh)));
     }
     return null;
   } catch (_) {

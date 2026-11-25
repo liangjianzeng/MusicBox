@@ -11,7 +11,8 @@ abstract class WsEvent {
 }
 
 class JobProgressEvent extends WsEvent {
-  JobProgressEvent(this.jobId, this.progress, this.note) : super('job.progress');
+  JobProgressEvent(this.jobId, this.progress, this.note)
+      : super('job.progress');
   final String jobId;
   final int progress;
   final String? note;
@@ -31,6 +32,18 @@ class IntentCardEvent extends WsEvent {
   final String status;
 }
 
+class AssistantWsEvent extends WsEvent {
+  AssistantWsEvent(this.seq, this.event) : super('assistant.event');
+  final int seq;
+  final AssistantEventData event;
+}
+
+class AssistantEventData {
+  const AssistantEventData(this.type, this.payload);
+  final String type;
+  final Map payload;
+}
+
 class CreditDeltaEvent extends WsEvent {
   CreditDeltaEvent(this.delta, this.balanceAfter) : super('credit.delta');
   final int delta;
@@ -41,8 +54,8 @@ class CreditDeltaEvent extends WsEvent {
 /// note, shots:[{id,status}]}。server 侧 MV 路由尚未上线，先按文档解析，
 /// 收到即更新，不伪造事件。
 class MvProgressEvent extends WsEvent {
-  MvProgressEvent(this.projectId, this.status, this.progress, this.note,
-      this.shots)
+  MvProgressEvent(
+      this.projectId, this.status, this.progress, this.note, this.shots)
       : super('mv.progress');
   final String projectId;
   final String status;
@@ -116,16 +129,27 @@ class WsClient {
       WsEvent? ev;
       switch (type) {
         case 'job.progress':
-          ev = JobProgressEvent('${m['job_id']}', _asInt(m['progress']),
-              m['note']?.toString());
+          ev = JobProgressEvent(
+              '${m['job_id']}', _asInt(m['progress']), m['note']?.toString());
           break;
         case 'job.done':
-          ev = JobDoneEvent('${m['job_id']}',
-              m['result'] as Map?, m['error'] as Map?);
+          ev = JobDoneEvent(
+              '${m['job_id']}', m['result'] as Map?, m['error'] as Map?);
           break;
         case 'intent.card':
           ev = IntentCardEvent('${m['intent_id']}', '${m['status'] ?? ''}');
           break;
+        case 'assistant.event':
+          {
+            final event = m['event'] as Map?;
+            if (event != null) {
+              ev = AssistantWsEvent(
+                  _asInt(m['seq']),
+                  AssistantEventData('${event['type'] ?? ''}',
+                      (event['payload'] as Map?) ?? const {}));
+            }
+            break;
+          }
         case 'credit.delta':
           ev = CreditDeltaEvent(_asInt(m['delta']), _asInt(m['balance_after']));
           break;
@@ -135,9 +159,7 @@ class WsClient {
               '${m['status'] ?? ''}',
               _asInt(m['progress']),
               m['note']?.toString(),
-              (m['shots'] as List? ?? const [])
-                  .whereType<Map>()
-                  .toList());
+              (m['shots'] as List? ?? const []).whereType<Map>().toList());
           break;
       }
       if (ev != null && !_events.isClosed) _events.add(ev);

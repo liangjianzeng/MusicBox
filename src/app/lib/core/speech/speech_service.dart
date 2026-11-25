@@ -69,6 +69,8 @@ class SpeechService {
         AsrEngineKind.server => SpeechModel.asrStreaming,
       };
 
+  SpeechModel get selectedAsrModel => _modelFor(_settings.asrEngine);
+
   /// 用户选的档位 + 现实（模型是否就位）→ 实际档位。
   Future<ResolvedEngine> resolveEngine() async {
     final want = _settings.asrEngine;
@@ -78,8 +80,7 @@ class SpeechService {
     final ready = await SpeechModelManager.isReady(_modelFor(want));
     if (ready) return ResolvedEngine(want);
     if (!_settings.fallbackToServer) {
-      return ResolvedEngine(want,
-          reason: '语音模型还没下载', modelMissing: true);
+      return ResolvedEngine(want, reason: '语音模型还没下载', modelMissing: true);
     }
     // 端侧模型没就位：允许回落服务端，但原因必须上屏
     return const ResolvedEngine(
@@ -92,7 +93,7 @@ class SpeechService {
   /// 建一个识别会话；服务端档返回 null（调用方走上传线）。
   Future<StreamingAsrSession?> createSession({String? saveWavPath}) async {
     final r = await resolveEngine();
-    if (!r.onDevice) return null;
+    if (!r.onDevice || r.modelMissing) return null;
     final dir = await SpeechModelManager.dirOf(_modelFor(r.engine));
     return SherpaAsrSession(
       mode: r.engine,

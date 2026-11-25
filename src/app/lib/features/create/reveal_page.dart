@@ -21,7 +21,12 @@ import 'task_brief_card.dart';
 
 /// 「说一句改一点」的快捷改法（点一下填进输入框，不用打字）
 const kAdjustHints = [
-  '副歌更燃一点', '整体慢一点', '前奏短一些', '人声再靠前', '鼓点再重一点', '留白多一点',
+  '副歌更燃一点',
+  '整体慢一点',
+  '前奏短一些',
+  '人声再靠前',
+  '鼓点再重一点',
+  '留白多一点',
 ];
 
 /// 揭晓页：候选卡带翻转、A/B/C/D 快切（整队连续试听）、真波形+真播放进度+点按 seek、
@@ -107,8 +112,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
     // 这是「很容易点出去就不见了」的根治点
     _saveShelf();
     if (!_quietExit) {
-      _messenger.showSnackBar(const SnackBar(
-          content: Text('这几首已存进「曲库 · 暂存」，回来点它就能接着听')));
+      _messenger.showSnackBar(
+          const SnackBar(content: Text('这几首已存进「曲库 · 暂存」，回来点它就能接着听')));
     }
     super.dispose();
   }
@@ -175,17 +180,16 @@ class _RevealPageState extends ConsumerState<RevealPage> {
   void _ab(int which) {
     final i = math.min(which, widget.candidates.length - 1);
     _go(i);
-    ref.read(playerProvider.notifier).playQueue(
-        widget.candidates.map(_candidateToWork).toList(), i);
+    ref
+        .read(playerProvider.notifier)
+        .playQueue(widget.candidates.map(_candidateToWork).toList(), i);
   }
 
-  bool _isCurrent(Candidate c) =>
-      ref.read(playerProvider).current?.id == c.id;
+  bool _isCurrent(Candidate c) => ref.read(playerProvider).current?.id == c.id;
 
-  Duration _totalOf(Candidate c) =>
-      _isCurrent(c) && _dur.inMilliseconds > 0
-          ? _dur
-          : Duration(milliseconds: (c.durationSec * 1000).round());
+  Duration _totalOf(Candidate c) => _isCurrent(c) && _dur.inMilliseconds > 0
+      ? _dur
+      : Duration(milliseconds: (c.durationSec * 1000).round());
 
   Future<String?> _ensureAdopted(Candidate c) async {
     final existing = _adopted[c.id];
@@ -232,15 +236,16 @@ class _RevealPageState extends ConsumerState<RevealPage> {
   /// "说一句改一点"→ adjust；understood:false 显示追问气泡 + 快捷改法
   Future<void> _adjust() async {
     final text = _adjustCtrl.text.trim();
-    if (text.isEmpty || _adjustSending) return;
-    if (!await ensureCredits(context, ref, kCreditAdjust, action: '微调')) {
-      return;
-    }
+    if (text.isEmpty || _busy || _adjustSending) return;
     setState(() {
+      _busy = true;
       _adjustSending = true;
       _clarify = null;
     });
     try {
+      if (!await ensureCredits(context, ref, kCreditAdjust, action: '微调')) {
+        return;
+      }
       // 微调必须有母本 → 隐式 adopt。这是"替你收下一首"的副作用，必须说清楚，
       // 不能让用户事后在曲库里发现凭空多出一首。
       final firstAdopt = _adopted[_cur.id] == null;
@@ -278,13 +283,18 @@ class _RevealPageState extends ConsumerState<RevealPage> {
     } catch (_) {
       _toast('微调失败，请重试');
     } finally {
-      if (mounted) setState(() => _adjustSending = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _adjustSending = false;
+        });
+      }
     }
   }
 
   Future<void> _regenerate() async {
     final f = widget.onRegenerate;
-    if (f == null) return;
+    if (f == null || _busy) return;
     setState(() => _busy = true);
     try {
       final id = await f();
@@ -293,8 +303,18 @@ class _RevealPageState extends ConsumerState<RevealPage> {
         _toast('没能在服务端重交，稍后再试');
         return;
       }
+      if (id == widget.jobId) {
+        _toast('服务端仍在原任务幂等窗口内，请稍后再试');
+        return;
+      }
       _quietExit = true; // 内部跳转，不弹「已存暂存架」
-      ProgressPage.pushReplacement(context, id);
+      ProgressPage.pushReplacement(
+        context,
+        id,
+        brief: widget.brief,
+        plannedCount: widget.brief?.count,
+        onRetry: widget.onRegenerate,
+      );
     } catch (_) {
       _toast('重交失败，请重试');
     } finally {
@@ -317,7 +337,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('这次是按这些要素生成的',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 10),
                 TaskBriefCard(brief: brief, initiallyExpanded: true),
               ],
@@ -340,7 +361,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
         : 0.0;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.adjusted ? '微调揭晓' : '你的${widget.candidates.length}首候选'),
+        title:
+            Text(widget.adjusted ? '微调揭晓' : '你的${widget.candidates.length}首候选'),
         leading: IconButton(
           icon: const Icon(Icons.close_rounded),
           tooltip: '收起（自动存进暂存架）',
@@ -356,8 +378,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
           IconButton(
             icon: const Icon(Icons.bookmark_border, size: 20),
             tooltip: '灵感暂存架',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const ShelfPage())),
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const ShelfPage())),
           ),
           if (widget.onRegenerate != null)
             TextButton.icon(
@@ -367,8 +389,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
             ),
           if (adoptedCount > 0)
             TextButton.icon(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => const LibraryPage())),
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const LibraryPage())),
               icon: const Icon(Icons.library_music, size: 16),
               label: Text('曲库($adoptedCount)'),
             ),
@@ -436,14 +458,14 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                       peaks: _peaks[_cur.id],
                       progress: progress,
                       onPlay: () => ref.read(playerProvider.notifier).playQueue(
-                          widget.candidates.map(_candidateToWork).toList(), _idx),
+                          widget.candidates.map(_candidateToWork).toList(),
+                          _idx),
                       onTogglePlay: isCurrent
                           ? () => ref.read(playerProvider.notifier).toggle()
                           : null,
                       onSeek: isCurrent && total.inMilliseconds > 0
-                          ? (v) => ref
-                              .read(playerProvider.notifier)
-                              .seek(Duration(
+                          ? (v) => ref.read(playerProvider.notifier).seek(
+                              Duration(
                                   milliseconds:
                                       (v * total.inMilliseconds).round()))
                           : null,
@@ -489,20 +511,19 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                           Text('第 ${i + 1} 首',
                               style: TextStyle(
                                   fontSize: 12,
-                                  fontWeight: sel
-                                      ? FontWeight.w700
-                                      : FontWeight.w500,
+                                  fontWeight:
+                                      sel ? FontWeight.w700 : FontWeight.w500,
                                   color: sel ? Colors.white : Colors.white54)),
                           const SizedBox(width: 4),
-                          Text('${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}',
+                          Text(
+                              '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}',
                               style: const TextStyle(
                                   fontSize: 11, color: Colors.white38)),
                           if (_adopted.containsKey(c.id)) ...[
                             const SizedBox(width: 3),
                             Icon(Icons.check_circle,
                                 size: 13,
-                                color:
-                                    Theme.of(context).colorScheme.primary),
+                                color: Theme.of(context).colorScheme.primary),
                           ],
                         ],
                       ),
@@ -615,7 +636,7 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                   ),
                   const SizedBox(width: 8),
                   IconButton.filled(
-                    onPressed: _adjustSending ? null : _adjust,
+                    onPressed: _busy ? null : _adjust,
                     icon: _adjustSending
                         ? const SizedBox(
                             width: 16,
@@ -730,8 +751,8 @@ class _CandidateCard extends StatelessWidget {
                     scheme.tertiary.withValues(alpha: .6),
                   ]),
                 ),
-                child:
-                    const Center(child: Text('💿', style: TextStyle(fontSize: 24))),
+                child: const Center(
+                    child: Text('💿', style: TextStyle(fontSize: 24))),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -746,7 +767,8 @@ class _CandidateCard extends StatelessWidget {
                           fontSize: 18, fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 2),
-                    Text('时长 ${_fmt(candidate.durationSec)} · ${candidate.format.toUpperCase()}',
+                    Text(
+                        '时长 ${_fmt(candidate.durationSec)} · ${candidate.format.toUpperCase()}',
                         style: const TextStyle(
                             fontSize: 12, color: Colors.white54)),
                   ],

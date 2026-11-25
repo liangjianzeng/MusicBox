@@ -12,7 +12,7 @@ List<double> pseudoPeaks(String seed, {int n = 64}) {
   });
 }
 
-/// 波形画布：peaks 峰值条 + 已播进度高亮，可拖拽 seek
+/// 波形画布：peaks 峰值条 + 已播进度高亮，点击或横向拖动 seek，纵向滚动交给页面
 class WaveformCanvas extends StatelessWidget {
   const WaveformCanvas({
     super.key,
@@ -40,12 +40,14 @@ class WaveformCanvas extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTapDown: onSeek == null
+      onTapUp: onSeek == null
           ? null
-          : (d) => onSeek!((d.localPosition.dx / (context.size?.width ?? 1)).clamp(0.0, 1.0)),
+          : (d) => onSeek!((d.localPosition.dx / (context.size?.width ?? 1))
+              .clamp(0.0, 1.0)),
       onHorizontalDragUpdate: onSeek == null
           ? null
-          : (d) => onSeek!((d.localPosition.dx / (context.size?.width ?? 1)).clamp(0.0, 1.0)),
+          : (d) => onSeek!((d.localPosition.dx / (context.size?.width ?? 1))
+              .clamp(0.0, 1.0)),
       child: SizedBox(
         height: height,
         width: double.infinity,

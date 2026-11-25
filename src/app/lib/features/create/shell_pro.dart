@@ -36,13 +36,11 @@ class _ShellProState extends ConsumerState<ShellPro> {
   final _lyrics = TextEditingController();
   final _tags = TextEditingController();
   final _seed = TextEditingController();
+  late List<String> _catalogTags;
+  late List<String> _freeTags;
 
   /// 选择项目录（远程优先，兜底本地）——initState 里先定一次，build 里再随远程刷新取
   StyleCatalog _cat = StyleCatalog.fallback;
-
-  /// 目录内的规范词由选择器管，目录外的词由自由框管，两者合并存进 st.tags
-  List<String> _freeOf(String raw) =>
-      parseTagList(raw).where((t) => !_cat.isKnown(t)).toList();
 
   @override
   void initState() {
@@ -51,8 +49,11 @@ class _ShellProState extends ConsumerState<ShellPro> {
     final st = ref.read(creationProvider);
     _prompt.text = st.prompt;
     _lyrics.text = st.lyrics;
-    // 自由框只回填"目录外的词"，目录内的由 chips 呈现，避免同一词两处显示
-    _tags.text = joinTagList(_freeOf(st.tags));
+    _seed.text = st.seed?.toString() ?? '';
+    final tags = parseTagList(st.tags);
+    _catalogTags = tags.where(_cat.isKnown).toList();
+    _freeTags = tags.where((t) => !_cat.isKnown(t)).toList();
+    _tags.text = joinTagList(_freeTags);
   }
 
   @override
@@ -67,6 +68,28 @@ class _ShellProState extends ConsumerState<ShellPro> {
   void _toast(String m) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+
+  void _syncTags() {
+    ref
+        .read(creationProvider.notifier)
+        .setTags(joinTagList([..._catalogTags, ..._freeTags]));
+  }
+
+  void _setPrompt(String value) {
+    _prompt.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+    ref.read(creationProvider.notifier).setPrompt(value);
+  }
+
+  void _setLyrics(String value) {
+    _lyrics.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+    ref.read(creationProvider.notifier).setLyrics(value);
   }
 
   /// 在光标处插入结构标记
@@ -84,6 +107,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
   }
 
   Future<void> _generate() async {
+    if (_busy) return;
     final st = ref.read(creationProvider);
     final prompt = _prompt.text.trim();
     final lyrics = _lyrics.text.trim();
@@ -91,12 +115,12 @@ class _ShellProState extends ConsumerState<ShellPro> {
       _toast('至少给个灵感描述或歌词');
       return;
     }
-    if (!await ensureCredits(context, ref, kCreditGenerateEach * st.count,
-        action: '深度生成 ${st.count} 首')) {
-      return;
-    }
     setState(() => _busy = true);
     try {
+      if (!await ensureCredits(context, ref, kCreditGenerateEach * st.count,
+          action: '深度生成 ${st.count} 首')) {
+        return;
+      }
       // 标签 = 选择器选中的规范词 + 自由补充（统一存于 st.tags，切档位不丢）
       final tagList = parseTagList(st.tags);
       final seedNum = int.tryParse(_seed.text.trim());
@@ -151,155 +175,194 @@ class _ShellProState extends ConsumerState<ShellPro> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(creationProvider, (previous, next) {
+      if (_prompt.text != next.prompt) _setPrompt(next.prompt);
+      if (_lyrics.text != next.lyrics) _setLyrics(next.lyrics);
+      final seed = next.seed?.toString() ?? '';
+      if (_seed.text != seed) {
+        _seed.value = TextEditingValue(
+          text: seed,
+          selection: TextSelection.collapsed(offset: seed.length),
+        );
+      }
+    });
     final st = ref.watch(creationProvider);
     final notifier = ref.read(creationProvider.notifier);
     final personas = ref.watch(personasProvider);
     final cat = styleCatalogOf(ref);
+    final scheme = Theme.of(context).colorScheme;
     _cat = cat; // 与 initState 的回填口径保持一致（远程目录晚到时也对得上）
-    final pickedTags = parseTagList(st.tags).where((t) => cat.isKnown(t)).toList();
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+    return Column(
       children: [
-        const _H('灵感描述'),
-        TextField(
-          controller: _prompt,
-          maxLines: 3,
-          minLines: 2,
-          onChanged: notifier.setPrompt,
-          decoration: const InputDecoration(
-            hintText: '想要的画面/情绪/乐器，如：雨夜公路、合成器贝斯、微微加速',
-            border: OutlineInputBorder(),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            children: [
+              const _H('灵感描述'),
+              TextField(
+                controller: _prompt,
+                maxLines: 3,
+                minLines: 2,
+                onChanged: notifier.setPrompt,
+                decoration: const InputDecoration(
+                  hintText: '想要的画面/情绪/乐器，如：雨夜公路、合成器贝斯、微微加速',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const _H('歌词（可插入结构标记）'),
+              TextField(
+                controller: _lyrics,
+                minLines: 5,
+                maxLines: 12,
+                onChanged: notifier.setLyrics,
+                decoration: const InputDecoration(
+                  hintText: '留空则由 AI 自动填词',
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                children: kStructureTags
+                    .map((t) => ActionChip(
+                          label: Text('${t.$2} ${t.$1}',
+                              style: const TextStyle(fontSize: 12)),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _insertTag(t.$1),
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 16),
+              // 「标签」原来是自由文本框 + 英文示例（city pop, retro, synth），
+              // 没人知道它是曲风还是情绪。拆成两组中文选择项，自由补充降为逃生口。
+              StylePicker(
+                selected: _catalogTags,
+                onChanged: (next) {
+                  setState(() => _catalogTags = next);
+                  _syncTags();
+                },
+              ),
+              const SizedBox(height: 12),
+              FreeTagField(
+                controller: _tags,
+                onChanged: (v) {
+                  _freeTags = parseTagList(v);
+                  _syncTags();
+                },
+              ),
+              const SizedBox(height: 16),
+              const _H('心情（可多选）'),
+              MoodChips(
+                  options: kMoodOptions,
+                  selected: st.mood,
+                  onChanged: (v) {
+                    notifier.setMood(v);
+                    // 第一次选心情时，按词典里的典型速度给 BPM 一个合理起点；
+                    // 只在"从空开始选"时给，之后一律尊重用户手调的值，不偷偷改
+                    if (st.mood.isEmpty && v.isNotEmpty) {
+                      final bpm = cat.bpmFor(v.first);
+                      if (bpm != null) notifier.setBpm(bpm);
+                    }
+                  }),
+              const SizedBox(height: 16),
+              const _H('人声'),
+              MoodChips(
+                options: const ['人声演唱', '纯音乐'],
+                selected: [st.instrumental ? '纯音乐' : '人声演唱'],
+                single: true,
+                onChanged: (v) =>
+                    notifier.setInstrumental(v.isNotEmpty && v.first == '纯音乐'),
+              ),
+              const SizedBox(height: 16),
+              _H('速度 BPM · ${st.bpm}'),
+              Slider(
+                value: st.bpm.toDouble().clamp(60, 180),
+                min: 60,
+                max: 180,
+                divisions: 120,
+                label: '${st.bpm}',
+                onChanged: (v) => notifier.setBpm(v.round()),
+              ),
+              _H('时长 · ${st.sec} 秒'),
+              Slider(
+                value: st.sec.toDouble().clamp(15, 240),
+                min: 15,
+                max: 240,
+                divisions: 45,
+                label: '${st.sec}s',
+                onChanged: (v) => notifier.setSec(v.round()),
+              ),
+              const SizedBox(height: 4),
+              const _H('候选数量'),
+              Wrap(
+                spacing: 6,
+                children: [1, 2, 3, 4]
+                    .map((n) => ChoiceChip(
+                          label: Text('$n 首'),
+                          selected: st.count == n,
+                          onSelected: (_) => notifier.setCount(n),
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 16),
+              const _H('声音人格（可选）'),
+              DropdownButtonFormField<String?>(
+                value: st.personaId,
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('默认音色')),
+                  ...personas.map((p) => DropdownMenuItem(
+                      value: p.id,
+                      child: Text(p.isPublic ? '${p.name} · 公开' : p.name)))
+                ],
+                onChanged: (v) => notifier.setPersona(v),
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              const _H('随机种子（可选）'),
+              TextField(
+                controller: _seed,
+                keyboardType: TextInputType.number,
+                onChanged: (v) => notifier.setSeed(int.tryParse(v.trim())),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: '留空＝每次随机',
+                  helperText: '填同一个数字，可以复现同一首歌（收下作品后可固定它）',
+                  helperMaxLines: 2,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 16),
-        const _H('歌词（可插入结构标记）'),
-        TextField(
-          controller: _lyrics,
-          minLines: 5,
-          maxLines: 12,
-          onChanged: notifier.setLyrics,
-          decoration: const InputDecoration(
-            hintText: '留空则由 AI 自动填词',
-            alignLabelWithHint: true,
-            border: OutlineInputBorder(),
+        Container(
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            border: Border(top: BorderSide(color: scheme.outlineVariant)),
           ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          children: kStructureTags
-              .map((t) => ActionChip(
-                    label: Text('${t.$2} ${t.$1}',
-                        style: const TextStyle(fontSize: 12)),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _insertTag(t.$1),
-                  ))
-              .toList(),
-        ),
-        const SizedBox(height: 16),
-        // 「标签」原来是自由文本框 + 英文示例（city pop, retro, synth），
-        // 没人知道它是曲风还是情绪。拆成两组中文选择项，自由补充降为逃生口。
-        StylePicker(
-          selected: parseTagList(st.tags),
-          onChanged: (next) => notifier.setTags(joinTagList(next)),
-        ),
-        const SizedBox(height: 12),
-        FreeTagField(
-          controller: _tags,
-          onChanged: (v) => notifier
-              .setTags(joinTagList([...pickedTags, ...parseTagList(v)])),
-        ),
-        const SizedBox(height: 16),
-        const _H('心情（可多选）'),
-        MoodChips(
-            options: kMoodOptions,
-            selected: st.mood,
-            onChanged: (v) {
-              notifier.setMood(v);
-              // 第一次选心情时，按词典里的典型速度给 BPM 一个合理起点；
-              // 只在"从空开始选"时给，之后一律尊重用户手调的值，不偷偷改
-              if (st.mood.isEmpty && v.isNotEmpty) {
-                final bpm = cat.bpmFor(v.first);
-                if (bpm != null) notifier.setBpm(bpm);
-              }
-            }),
-        const SizedBox(height: 16),
-        const _H('人声'),
-        MoodChips(
-          options: const ['人声演唱', '纯音乐'],
-          selected: [st.instrumental ? '纯音乐' : '人声演唱'],
-          single: true,
-          onChanged: (v) =>
-              notifier.setInstrumental(v.isNotEmpty && v.first == '纯音乐'),
-        ),
-        const SizedBox(height: 16),
-        _H('速度 BPM · ${st.bpm}'),
-        Slider(
-          value: st.bpm.toDouble().clamp(60, 180),
-          min: 60,
-          max: 180,
-          divisions: 120,
-          label: '${st.bpm}',
-          onChanged: (v) => notifier.setBpm(v.round()),
-        ),
-        _H('时长 · ${st.sec} 秒'),
-        Slider(
-          value: st.sec.toDouble().clamp(15, 240),
-          min: 15,
-          max: 240,
-          divisions: 45,
-          label: '${st.sec}s',
-          onChanged: (v) => notifier.setSec(v.round()),
-        ),
-        const SizedBox(height: 4),
-        const _H('候选数量'),
-        SegmentedButton<int>(
-          segments: const [
-            ButtonSegment(value: 1, label: Text('1 首')),
-            ButtonSegment(value: 2, label: Text('2 首')),
-            ButtonSegment(value: 3, label: Text('3 首')),
-            ButtonSegment(value: 4, label: Text('4 首')),
-          ],
-          selected: {st.count},
-          onSelectionChanged: (s) => notifier.setCount(s.first),
-        ),
-        const SizedBox(height: 16),
-        const _H('声音人格（可选）'),
-        DropdownButtonFormField<String?>(
-          value: st.personaId,
-          items: [
-            const DropdownMenuItem(value: null, child: Text('默认音色')),
-            ...personas
-                .map((p) => DropdownMenuItem(
-                    value: p.id,
-                    child: Text(p.isPublic ? '${p.name} · 公开' : p.name)))
-          ],
-          onChanged: (v) => notifier.setPersona(v),
-          decoration: const InputDecoration(border: OutlineInputBorder()),
-        ),
-        const SizedBox(height: 16),
-        const _H('随机种子（可选）'),
-        TextField(
-          controller: _seed,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            isDense: true,
-            hintText: '留空＝每次随机',
-            helperText: '填同一个数字，可以复现同一首歌（比心后固定它）',
-            helperMaxLines: 2,
-            border: OutlineInputBorder(),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  PrimaryButton(
+                    text:
+                        '生成 ${st.count} 首 · 约 ${kCreditGenerateEach * st.count} 积分',
+                    big: true,
+                    icon: Icons.auto_awesome,
+                    loading: _busy,
+                    onPressed: _busy ? null : _generate,
+                  ),
+                  const SizedBox(height: 4),
+                  const Text('失败自动返还积分',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                ],
+              ),
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text('共约 ${kCreditGenerateEach * st.count} 积分 · 失败自动返还',
-            style: const TextStyle(color: Colors.white38, fontSize: 12)),
-        const SizedBox(height: 14),
-        PrimaryButton(
-          text: '生成 ${st.count} 首',
-          big: true,
-          icon: Icons.auto_awesome,
-          loading: _busy,
-          onPressed: _busy ? null : _generate,
         ),
       ],
     );
@@ -316,7 +379,9 @@ class _H extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Text(text,
           style: const TextStyle(
-              fontWeight: FontWeight.w700, fontSize: 13, color: Colors.white70)),
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: Colors.white70)),
     );
   }
 }

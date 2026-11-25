@@ -6,7 +6,7 @@ const store = require('./store');
 const U = require('./util');
 
 // 功能开关键位（mv 灰度、dsp、persona、助手对话、音乐助手（契约 v3.1））
-const FLAG_KEYS = ['mv', 'dsp', 'persona', 'assistant_chat', 'music_assistant', 'assistant_chat_music'];
+const FLAG_KEYS = ['mv', 'dsp', 'persona', 'assistant_chat', 'music_assistant', 'assistant_chat_music', 'assistant_core', 'assistant_actions'];
 
 // 默认快照：取自 config.js（现网实值），运营后台改后写入 app_config
 function defaultBlob() {
@@ -100,6 +100,9 @@ function initDefaults() {
     // 音乐助手（契约 v3.1）：总闸开关 music_assistant（默认关）；LLM 增强灰度 assistant_chat_music（默认关，灰度 0.2）
     if (k === 'music_assistant') { on = config.music.assistant.enabled ? 1 : 0; gray = 1; }
     if (k === 'assistant_chat_music') { on = config.music.assistant.chat.enabled ? 1 : 0; gray = config.music.assistant.chat.grayscale || 0; }
+    // 统一助手（契约 v4.0）：核心默认全量开启，跨域付费动作默认关闭。
+    if (k === 'assistant_core') { on = 1; gray = 1; }
+    if (k === 'assistant_actions') { on = 0; gray = 0; }
     store.run('INSERT OR IGNORE INTO feature_flags(key,enabled,grayscale,created_at,updated_at) VALUES(?,?,?,?,?)', k, on, gray, now, now);
   }
 }

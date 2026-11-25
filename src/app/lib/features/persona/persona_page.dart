@@ -39,7 +39,8 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
             child: Row(
               children: [
                 Text('声音人格',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                    style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
                 Spacer(),
               ],
             ),
@@ -72,8 +73,9 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
                           margin: const EdgeInsets.only(bottom: 10),
                           child: ListTile(
                             leading: CircleAvatar(
-                              backgroundColor:
-                                  Theme.of(context).colorScheme.primaryContainer,
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer,
                               child: Text(p.name.characters.first,
                                   style: TextStyle(
                                       color: Theme.of(context)
@@ -99,8 +101,7 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
                                           .read(prefsProvider)
                                           .setDefaultPersonaId(p.id);
                                       ref
-                                          .read(defaultPersonaProvider
-                                              .notifier)
+                                          .read(defaultPersonaProvider.notifier)
                                           .state = p.id;
                                     },
                                     child: const Text('设为默认'),
@@ -109,14 +110,19 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
                                   icon: const Icon(Icons.play_arrow_rounded),
                                   tooltip: '创作时使用',
                                   onPressed: () async {
+                                    final messenger =
+                                        ScaffoldMessenger.of(context);
                                     await ref
                                         .read(prefsProvider)
                                         .setDefaultPersonaId(p.id);
+                                    if (!mounted) return;
                                     ref
                                         .read(defaultPersonaProvider.notifier)
                                         .state = p.id;
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text('已选「${p.name}」为默认音色')));
+                                    messenger.showSnackBar(
+                                        SnackBar(
+                                            content:
+                                                Text('已选「${p.name}」为默认音色')));
                                   },
                                 ),
                               ],
@@ -155,8 +161,7 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
               decoration: const InputDecoration(hintText: '如：小空的清亮女声')),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('取消')),
+                onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
             FilledButton(
                 onPressed: () => Navigator.pop(ctx, c.text.trim()),
                 child: const Text('登记')),
@@ -173,8 +178,7 @@ class _PersonaPageState extends ConsumerState<PersonaPage> {
           .showSnackBar(SnackBar(content: Text('「$name」登记成功')));
     } on ApiException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.zh)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.zh)));
     }
   }
 }
@@ -203,6 +207,7 @@ class _RecordDialogState extends ConsumerState<_RecordDialog> {
 
   Future<void> _start() async {
     if (!await _rec.hasPermission()) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('没有麦克风权限')));
       return;
@@ -263,7 +268,8 @@ class _RecordDialogState extends ConsumerState<_RecordDialog> {
               style: TextStyle(fontSize: 13, color: Colors.white70)),
           const SizedBox(height: 16),
           Text('${_elapsed}s',
-              style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w700)),
+              style:
+                  const TextStyle(fontSize: 40, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           Text(_hint,
               textAlign: TextAlign.center,
@@ -272,14 +278,15 @@ class _RecordDialogState extends ConsumerState<_RecordDialog> {
           IconButton.filled(
             iconSize: 40,
             onPressed: _recording ? _stop : _start,
-            icon: Icon(_recording ? Icons.stop_rounded : Icons.fiber_manual_record_rounded),
+            icon: Icon(_recording
+                ? Icons.stop_rounded
+                : Icons.fiber_manual_record_rounded),
           ),
         ],
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消')),
+            onPressed: () => Navigator.pop(context), child: const Text('取消')),
         FilledButton(
           onPressed: _valid ? () => Navigator.pop(context, _path) : null,
           child: const Text('下一步'),

@@ -19,6 +19,7 @@ const personasApi = require('./api/personas');
 const executorApi = require('./api/executor');
 const mvApi = require('./api/mv');
 const musicAssistantApi = require('./api/music_assistant');
+const assistantApi = require('./api/assistant');
 const adminAuth = require('./api/admin');
 const modelnodesApi = require('./api/modelnodes');
 const appconfigApi = require('./api/appconfig');
@@ -36,7 +37,7 @@ function addRoute(m, p, h, opts) {
   }).join('/') + '$';
   routes.push({ m, re: new RegExp(regexSrc), names, h, literal: p.split('/').filter(s => s && !s.startsWith(':')).length, opts: opts || {} });
 }
-for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi, mvApi, musicAssistantApi, adminAuth, modelnodesApi, appconfigApi, adminOpsApi]) {
+for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi, mvApi, musicAssistantApi, assistantApi, adminAuth, modelnodesApi, appconfigApi, adminOpsApi]) {
   for (const r of mod.routes) addRoute(r.m, r.p, r.h, r);
 }
 routes.sort((a, b) => b.literal - a.literal);

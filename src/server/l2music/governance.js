@@ -1,5 +1,5 @@
 // 音乐助手治理层（契约 v3.1 / 架构 l2，2026-11-24）——复用 l2/governance_core，只定义音乐 scope 的工具白名单与实体归属。
-// 纪律：白名单恰 8 项（对齐 ADR-MV-7 封顶）；花钱大门（generate/boot）不入白名单，付费动作一律 expensive→确认票；
+// 纪律：白名单恰 7 项（对齐 ADR-MV-7 封顶）；花钱大门（generate/boot）不入白名单，付费动作一律 expensive→确认票；
 //       助手侧昂贵动作必须过票（把 works.adjust 的"NL 直接扣费"通道收编进确认票治理，A1 资金路径人工过目）。
 'use strict';
 const config = require('../config');
@@ -11,7 +11,7 @@ const core = require('../l2/governance_core');
 const AUDIT = 'music.assistant';
 const CREDITS_SCOPE = 300; // scope 级预算兜底（无基准时用；fuse 基准优先取项目/作品累计）
 
-// ———— 工具白名单（恰 8 项）+ 参数域（复用 core.gateTool 的 kind）————
+// ———— 工具白名单（恰 7 项）+ 参数域（复用 core.gateTool 的 kind）————
 const C = () => AC.credits();
 const TOOLS = {
   'music.query_status': {          // 只读：查作品/任务进度、位次、ETA

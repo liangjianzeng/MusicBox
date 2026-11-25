@@ -76,7 +76,8 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   @override
   void initState() {
     super.initState();
-    _text = TextEditingController(text: widget.capture.local?.text.trim() ?? '');
+    _text =
+        TextEditingController(text: widget.capture.local?.text.trim() ?? '');
     _note = widget.capture.engineNote;
     _run();
   }
@@ -92,7 +93,8 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   AsrOutcome? get _local => widget.capture.local;
 
   bool get _edited =>
-      _card?.sourceText != null && _text.text.trim() != _card!.sourceText!.trim();
+      _card?.sourceText != null &&
+      _text.text.trim() != _card!.sourceText!.trim();
 
   Future<void> _run() async {
     final api = ref.read(apiClientProvider);
@@ -109,12 +111,15 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
         (engine == null ||
             engine == AsrEngineKind.server ||
             engine == AsrEngineKind.streamingZipformer ||
-            (engine == AsrEngineKind.senseVoiceOffline && !hasLocal && fallbackOk));
+            (engine == AsrEngineKind.senseVoiceOffline &&
+                !hasLocal &&
+                fallbackOk));
     // 1) 需要服务端 → 交给它复核（这是"准"的来源）
     if (needServer) {
       try {
         final id = await api.intentVoice(wav,
-            filename: wav.toLowerCase().endsWith('.wav') ? 'voice.wav' : 'voice.m4a');
+            filename:
+                wav.toLowerCase().endsWith('.wav') ? 'voice.wav' : 'voice.m4a');
         if (_cancelled) return;
         _intentId = id;
         final card = await _pollCard(api, id);
@@ -195,6 +200,7 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   }
 
   Future<void> _confirm() async {
+    if (_phase == _Phase.submitting) return;
     final t = _text.text.trim();
     if (t.isEmpty) {
       setState(() => _error = '这句是空的，改个字或重说一条');
@@ -206,7 +212,8 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
       String cardId = _intentId ?? '';
       // 改过字（或压根没走服务端）→ 文本线重新理解，理解跟着改后的字走
       if (_edited || cardId.isEmpty || !_serverAuthoritative) {
-        cardId = await api.intentText(t, intentId: cardId.isEmpty ? null : cardId);
+        cardId =
+            await api.intentText(t, intentId: cardId.isEmpty ? null : cardId);
         final c = await _pollCard(api, cardId);
         if (c != null) _card = c;
       }
@@ -222,7 +229,8 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
       if (widget.autoOpenFlow) {
         Navigator.of(context).pop();
         await Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => IntentFlowPage(intentId: cardId, easy: widget.easy)));
+            builder: (_) =>
+                IntentFlowPage(intentId: cardId, easy: widget.easy)));
       } else {
         Navigator.of(context).pop(ConfirmExit(kConfirmIntent, cardId));
       }
@@ -250,120 +258,150 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
         title: const Text('你说的话'),
         leading: IconButton(
           icon: const Icon(Icons.close_rounded),
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _phase == _Phase.submitting
+              ? null
+              : () => Navigator.of(context).pop(),
         ),
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _SourceBadge(
-                authoritative: _serverAuthoritative,
-                busy: _phase == _Phase.waitingServer,
-                localLabel: _local?.engineLabel,
-              ),
-              const SizedBox(height: 10),
-              if (_note != null) _HintBar(text: _note!, tone: _HintTone.warn),
-              if (_card?.degraded ?? false)
-                const _HintBar(
-                  text: '这次理解走了保底词典（识别或理解服务没起来），参数可能不准，可直接改。',
-                  tone: _HintTone.warn,
-                ),
-              const SizedBox(height: 6),
-              // 逐字区：可编辑
-              TextField(
-                controller: _text,
-                minLines: 2,
-                maxLines: 5,
-                enabled: !busy,
-                style: TextStyle(
-                    fontSize: widget.easy ? 20 : 16, height: 1.45),
-                decoration: InputDecoration(
-                  hintText: _phase == _Phase.failed
-                      ? (_error ?? '没听清，点下面「重说」再来一次')
-                      : '（没听到内容）',
-                  border: const OutlineInputBorder(),
-                  filled: true,
-                  fillColor: scheme.surfaceContainerHighest.withValues(alpha: .35),
-                ),
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  if (_local?.emotion != null) ...[
-                    _Chip(
-                        icon: Icons.mood_rounded,
-                        label: '情绪：${_zhEmotion(_local!.emotion!)}'),
-                    const SizedBox(width: 8),
-                  ],
-                  if (_local?.events.isNotEmpty ?? false) ...[
-                    _Chip(
-                        icon: Icons.graphic_eq_rounded,
-                        label: '背景：${(_local!.events).join('、')}'),
-                    const SizedBox(width: 8),
-                  ],
-                  if (_local?.durationSec != null)
-                    _Chip(
-                        icon: Icons.timer_outlined,
-                        label: '${(_local!.durationSec!).toStringAsFixed(1)} 秒'),
-                ],
-              ),
-              const SizedBox(height: 6),
-              // AI 理解摘要（有卡才显示；没卡就说实话）
-              _Understanding(card: _card, busy: _phase == _Phase.waitingServer),
-              const Spacer(),
-              if (_error != null) ...[
-                Text(_error!,
-                    style: TextStyle(color: scheme.error, fontSize: widget.easy ? 16 : 13)),
-                const SizedBox(height: 10),
-              ],
-              if (busy)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 18),
-                  child: Center(
-                      child: SizedBox(
-                          width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 2.5))),
-                )
-              else ...[
-                FilledButton.icon(
-                  onPressed: _confirm,
-                  icon: const Icon(Icons.check_rounded),
-                  label: Text(_edited ? '按改后的这句生成' : '就这句'),
-                  style: FilledButton.styleFrom(
-                      minimumSize: Size(0, widget.easy ? 60 : 48)),
-                ),
-                const SizedBox(height: 10),
-                Row(
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.of(context)
-                            .pop(const ConfirmExit(kConfirmRedo, '')),
-                        icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('重说一遍'),
-                        style: OutlinedButton.styleFrom(
-                            minimumSize: Size(0, widget.easy ? 56 : 44)),
-                      ),
+                    _SourceBadge(
+                      authoritative: _serverAuthoritative,
+                      busy: _phase == _Phase.waitingServer,
+                      localLabel: _local?.engineLabel,
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.of(context)
-                            .pop(ConfirmExit(kConfirmTyped, _text.text.trim())),
-                        icon: const Icon(Icons.keyboard_rounded),
-                        label: const Text('改成打字'),
-                        style: OutlinedButton.styleFrom(
-                            minimumSize: Size(0, widget.easy ? 56 : 44)),
+                    const SizedBox(height: 10),
+                    if (_note != null)
+                      _HintBar(text: _note!, tone: _HintTone.warn),
+                    if (_card?.degraded ?? false)
+                      const _HintBar(
+                        text: '这次理解走了保底词典（识别或理解服务没起来），参数可能不准，可直接改。',
+                        tone: _HintTone.warn,
                       ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _text,
+                      minLines: 2,
+                      maxLines: 5,
+                      enabled: !busy,
+                      style: TextStyle(
+                          fontSize: widget.easy ? 20 : 16, height: 1.45),
+                      decoration: InputDecoration(
+                        hintText: _phase == _Phase.failed
+                            ? (_error ?? '没听清，点下面「重说」再来一次')
+                            : '（没听到内容）',
+                        border: const OutlineInputBorder(),
+                        filled: true,
+                        fillColor: scheme.surfaceContainerHighest
+                            .withValues(alpha: .35),
+                      ),
+                      onChanged: (_) => setState(() {}),
                     ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        if (_local?.emotion != null)
+                          _Chip(
+                              icon: Icons.mood_rounded,
+                              label: '情绪：${_zhEmotion(_local!.emotion!)}'),
+                        if (_local?.events.isNotEmpty ?? false)
+                          _Chip(
+                              icon: Icons.graphic_eq_rounded,
+                              label: '背景：${(_local!.events).join('、')}'),
+                        if (_local?.durationSec != null)
+                          _Chip(
+                              icon: Icons.timer_outlined,
+                              label:
+                                  '${(_local!.durationSec!).toStringAsFixed(1)} 秒'),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    _Understanding(
+                        card: _card, busy: _phase == _Phase.waitingServer),
+                    if (_error != null) ...[
+                      const SizedBox(height: 10),
+                      Text(_error!,
+                          style: TextStyle(
+                              color: scheme.error,
+                              fontSize: widget.easy ? 16 : 13)),
+                    ],
                   ],
                 ),
-              ],
-            ],
-          ),
+              ),
+            ),
+            Container(
+              decoration: BoxDecoration(
+                color: scheme.surface,
+                border: Border(top: BorderSide(color: scheme.outlineVariant)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+                  child: busy
+                      ? const SizedBox(
+                          height: 60,
+                          child: Center(
+                              child: SizedBox(
+                                  width: 26,
+                                  height: 26,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2.5))),
+                        )
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            FilledButton.icon(
+                              onPressed: _confirm,
+                              icon: const Icon(Icons.check_rounded),
+                              label: Text(_edited ? '按改后的这句生成' : '就这句'),
+                              style: FilledButton.styleFrom(
+                                  minimumSize: Size(0, widget.easy ? 60 : 48)),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => Navigator.of(context).pop(
+                                        const ConfirmExit(kConfirmRedo, '')),
+                                    icon: const Icon(Icons.refresh_rounded),
+                                    label: const Text('重说一遍'),
+                                    style: OutlinedButton.styleFrom(
+                                        minimumSize:
+                                            Size(0, widget.easy ? 56 : 44)),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => Navigator.of(context).pop(
+                                        ConfirmExit(
+                                            kConfirmTyped, _text.text.trim())),
+                                    icon: const Icon(Icons.keyboard_rounded),
+                                    label: const Text('改成打字'),
+                                    style: OutlinedButton.styleFrom(
+                                        minimumSize:
+                                            Size(0, widget.easy ? 56 : 44)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -400,7 +438,11 @@ class _SourceBadge extends StatelessWidget {
         ? (Icons.cloud_sync_rounded, '服务端复核中…', scheme.primary)
         : authoritative
             ? (Icons.verified_rounded, '服务端已复核', scheme.primary)
-            : (Icons.phone_iphone_rounded, localLabel ?? '本机识别', scheme.tertiary);
+            : (
+                Icons.phone_iphone_rounded,
+                localLabel ?? '本机识别',
+                scheme.tertiary
+              );
     return Row(
       children: [
         Icon(icon, size: 16, color: color),
@@ -433,13 +475,19 @@ class _HintBar extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(tone == _HintTone.warn ? Icons.info_outline_rounded : Icons.lightbulb_outline_rounded,
-                size: 16, color: scheme.onSurfaceVariant),
+            Icon(
+                tone == _HintTone.warn
+                    ? Icons.info_outline_rounded
+                    : Icons.lightbulb_outline_rounded,
+                size: 16,
+                color: scheme.onSurfaceVariant),
             const SizedBox(width: 8),
             Expanded(
                 child: Text(text,
                     style: TextStyle(
-                        fontSize: 12.5, color: scheme.onSurfaceVariant, height: 1.4))),
+                        fontSize: 12.5,
+                        color: scheme.onSurfaceVariant,
+                        height: 1.4))),
           ],
         ),
       ),
@@ -466,7 +514,8 @@ class _Chip extends StatelessWidget {
         children: [
           Icon(icon, size: 13, color: scheme.onSurfaceVariant),
           const SizedBox(width: 4),
-          Text(label, style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+          Text(label,
+              style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
         ],
       ),
     );
@@ -536,7 +585,8 @@ class _Understanding extends StatelessWidget {
             Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: bits.map((b) => _Chip(icon: Icons.circle, label: b)).toList(),
+              children:
+                  bits.map((b) => _Chip(icon: Icons.circle, label: b)).toList(),
             ),
           ],
           const SizedBox(height: 6),

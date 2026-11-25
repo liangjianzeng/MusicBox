@@ -26,8 +26,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _refreshStatus());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshStatus());
   }
 
   Future<void> _refreshStatus() async {
@@ -41,7 +40,8 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
         setState(() => _status[s.jobId] = _labelOf(job, s));
       } catch (_) {
         if (!mounted) return;
-        setState(() => _status[s.jobId] = s.candidates.isNotEmpty ? '可离线试听' : '待确认');
+        setState(
+            () => _status[s.jobId] = s.candidates.isNotEmpty ? '可离线试听' : '待确认');
       }
     }
     if (mounted) setState(() => _refreshing = false);
@@ -71,8 +71,8 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
             .showSnackBar(SnackBar(content: Text(e.zh)));
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('取不到最新任务信息，先用本地留存的候选试听')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('取不到最新任务信息，先用本地留存的候选试听')));
     } catch (_) {
       job = null;
     }
@@ -80,14 +80,16 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
 
     if (job != null && job.isFailed) {
       ProgressPage.push(context, s.jobId,
-          title: '压制记录', brief: s.brief, plannedCount: s.brief.count);
+          title: '压制记录',
+          brief: s.brief,
+          plannedCount: s.brief.count,
+          onRetry: ref.read(shelfProvider.notifier).retryHandler(s.jobId));
       return;
     }
-    final cands = (job != null &&
-            job.candidates != null &&
-            job.candidates!.isNotEmpty)
-        ? job.candidates
-        : (s.candidates.isNotEmpty ? s.candidates : null);
+    final cands =
+        (job != null && job.candidates != null && job.candidates!.isNotEmpty)
+            ? job.candidates
+            : (s.candidates.isNotEmpty ? s.candidates : null);
     if (cands != null && cands.isNotEmpty) {
       Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => RevealPage(
@@ -96,6 +98,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
           resultWorkId: job?.resultWorkId,
           brief: s.brief,
           adopted: s.adopted,
+          onRegenerate: ref.read(shelfProvider.notifier).retryHandler(s.jobId),
         ),
       ));
       return;
@@ -109,7 +112,10 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
     }
     // 还在跑 / 还没产物：回到进度页
     ProgressPage.push(context, s.jobId,
-        title: '压制唱片中', brief: s.brief, plannedCount: s.brief.count);
+        title: '压制唱片中',
+        brief: s.brief,
+        plannedCount: s.brief.count,
+        onRetry: () => ref.read(shelfProvider.notifier).retry(s.jobId));
   }
 
   Future<void> _confirmDelete(ShelfSession s) async {
@@ -117,9 +123,9 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('从暂存架移除？'),
-        content: Text(
-            '「${s.title}」的 ${s.candidates.length} 首候选会从暂存架消失。'
-            '已收下的作品不受影响，仍在曲库。'),
+        content: Text('「${s.title}」的 ${s.candidates.length} 首候选会从暂存架消失。'
+            '已收下的作品不受影响，仍在曲库。'
+            '如果任务仍在运行，移除不会停止后台生成，之后可能无法从暂存架找到它。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -159,8 +165,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
                 children: [
                   const Text('🗂', style: TextStyle(fontSize: 42)),
                   const SizedBox(height: 10),
-                  const Text('暂存架是空的',
-                      style: TextStyle(color: Colors.white70)),
+                  const Text('暂存架是空的', style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 4),
                   const SizedBox(
                     width: 260,
@@ -183,8 +188,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
                 itemCount: items.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (ctx, i) =>
-                    _ShelfCard(
+                itemBuilder: (ctx, i) => _ShelfCard(
                   session: items[i],
                   statusLabel: _status[items[i].jobId],
                   onOpen: () => _open(items[i]),
@@ -311,7 +315,11 @@ class _ShelfCard extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(left: 46, top: 4, right: 6),
                   child: Text(
-                    session.brief.toRows().take(2).map((f) => '${f.label} ${f.value}').join('   '),
+                    session.brief
+                        .toRows()
+                        .take(2)
+                        .map((f) => '${f.label} ${f.value}')
+                        .join('   '),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(

@@ -658,12 +658,118 @@ POST /v1/music/tickets/:id/deny     {} → 200 { ok:true }         # 记 denied�
 - `degraded`：`1` = 本轮理解由本地词典兜底（ASR 或 LLM 未起来）。此时 job `note` 必须是「没听清：识别服务没起来，已用本地词典兜底」
   这类人话，不得继续报「意图卡已生成」。
 
-### 端侧模型资产（不打包、不自动下，按需下载可删除）
+### 端侧模型资产（不打包、不启动自动下，首次使用确认后下载，可删除）
 即时识别 4 件 ≈167MB；精听 2 件（**只下 int8，fp32 937MB 永不下**）≈228MB；中文朗读声库 16 件 ≈135MB（含 `lexicon.txt` 与 jieba `dict/`，
 缺件即判不可用，不硬跑）。全部落在应用私有目录，设置页可看体积与删除，删除即刻释放原生资源。
+用户首次主动使用端侧识别时，必须先提示模型体积与流量消耗，确认后才下载；下载进度可见、可取消，失败可重试。
+下载完成前不得开始端侧录音；创作页可在用户选择后改用服务端识别，MV 助手无服务端听写能力时必须明确阻断。下载完成后本次手势不自动开录，须再次按住说话。
+
+## v4.0 统一创作助手（全局入口、跨域上下文、可恢复会话，2026-11-25 追加，append-only）
+
+### 定位与兼容边界
+
+- 统一助手是创作副驾驶，不新增底部一级页、不绕过既有创作/计费内核。全局入口在迷你播放器上方，任务与待确认票统一进入「助手中心」。
+- v3.1 音乐助手与 v2.13 制片助手端点、工具、表与既有行为继续有效；v4 不要求把 `chat_*`、`mv_chat_*` 物理合并。统一层增量扩展 `chat_*`，通过领域适配器复用既有执行器。
+- REST 是任务真相。`assistant_events` 仅保存助手消息、确认票、任务变化通知，供重连补发；既有 `jobs` 队列与 WSS 业务事件不改为事件溯源。
+- 规则模式始终可用；LLM 仅增强理解与工具选择。模型不可达、未就绪或 scaffold 时如实返回 `mode:'rule'`，不得把 HTTP 端口可达冒充模型就绪。
+- 所有实体 ID 只接受服务端验证过的 `context.refs`；文本或 LLM 给出的 ID 不参与实体解析。跨用户引用丢弃，确认票归属和会话归属再次校验。
+
+### 开关（服务端为权威）
+
+- `assistant_core`：全局助手总闸，关闭时 v4 端点 404；种子默认开启、灰度 1.0。运营可改 `enabled/grayscale`，沿用 `appconfig.featureOn` 用户哈希分桶。
+- `assistant_actions`：统一助手的付费动作闸门，种子默认关闭；仅控制 v4 跨域动作，不改变 v3.1/v2.13 原有入口。
+- `assistant_chat_music`：继续作为 v4 LLM 增强开关；关闭或 LLM 未就绪时 `mode:'rule'`。`music_assistant`/`assistant_chat` 保持各自原端点语义。
+
+### REST（前缀 `/v1`，2xx 裸 JSON，错误 `{code,message}`）
+
+```
+GET /v1/assistant/bootstrap
+  → 200 {available, mode:'rule'|'llm+rule', capabilities:{chat,voice,actions,music,mv,llm},
+         recent_session:{id,title,surface,updated_at}|null, pending_tickets:[], tasks:[], server_time}
+POST /v1/assistant/sessions  {title?, context?:{surface, refs:[entity_ref]}}
+  → 201 {session:{id,title,surface,refs,created_at,updated_at}}
+GET /v1/assistant/sessions/:id/messages?after_seq=0
+  → 200 {session_id, messages:[assistant_message], next_seq}
+POST /v1/assistant/messages  {session_id?, client_msg_id, text, context?:{surface,refs:[entity_ref]}, feedback?:{message_id,result}}
+  → 200 {session_id, message, reply, ticket?:assistant_ticket, meta:{mode,intent,tool,status,rejected?}}
+  # client_msg_id 必填且 ≤80；同会话同键重复提交返回首次结果，不重复执行、不重复记账
+  # text 1..1000；context.refs 0..12；session_id 缺省时取最近 open 会话或新建
+  # feedback.result 为 accepted|dismissed|completed；仅记录效果指标，不改变任务结果
+GET /v1/assistant/tasks?limit=50
+  → 200 {items:[{kind:'job', id, title, status, progress, updated_at, result_work_id?, credits_cost}]}
+GET /v1/assistant/tickets?limit=50
+  → 200 {items:[assistant_ticket]}                 # 含 pending/executing/succeeded/failed/reconciling/compensated
+POST /v1/assistant/tickets/:id/confirm  {ver,hash}
+  → 200 {ok:true, ticket:assistant_ticket, action, reply, job_id?, credits_charged}
+  # 五连校验与原子状态迁移；重复 confirm 返回同一 ticket，不重复执行或扣费
+POST /v1/assistant/tickets/:id/deny     {}
+  → 200 {ok:true, ticket:assistant_ticket}
+GET /v1/assistant/events?after_seq=0&limit=100
+  → 200 {items:[{id,seq,type,payload,created_at}], next_seq}
+POST /v1/assistant/feedback  {message_id,result}
+  → 200 {ok:true}
+```
+
+### 数据形状
+
+- `entity_ref = {type:'work'|'intent'|'job'|'project'|'shot'|'persona', id}`。`shot` 必须属于 refs 中同项目或当前会话固化的项目；`job` 必须属于当前用户。refs 去重，最多 12 个。
+- `assistant_message = {id,seq,session_id,role:'user'|'assistant'|'tool'|'result'|'system',content,meta,client_msg_id?,created_at}`。`meta` 只含已净化后的工具名、状态、票 ID 等，不落原始模型指令。
+- `assistant_ticket = {ticket_id,scope:'assistant',session_id,subject_type,subject_id,action,est:{credits,minutes},
+  status:'pending'|'executing'|'succeeded'|'failed'|'reconciling'|'compensated'|'denied'|'expired'|'consumed',
+  ver?,hash?,job_id?,reply?,created_at,expires_at,consumed_at?}`。`hash/ver` 只返回给票主，列表仍保留展示所需估价。
+- 统一会话：`chat_sessions.scope='global'`，`subject_type='user'`，`subject_id=user.id`。一个用户可有多个会话，消息只按会话恢复，不把不同用户/主体的上下文混入。
+
+### v4 工具与确认边界
+
+| 工具 | 类型 | 说明 |
+|---|---|---|
+| `assistant.context` | free | 校验并固化当前 refs/surface，输出人话上下文摘要 |
+| `assistant.task_query` | free | 查询当前 job/project 或最近任务，不派单 |
+| `assistant.ticket_query` | free | 查询当前用户待处理与最近确认票 |
+| `library.search` | free | 复用既有曲库检索，只返回当前用户可见作品 |
+| `music.query_status` | free | 复用 v3.1 只读工具 |
+| `music.set_title` | free + explicit confirm | 先返回前后差异，用户确认后才写；每票一次 |
+| `music.set_card` | free + explicit confirm | 复用 `intent.patchIntentInternal`；先确认差异，再写 |
+| `work.explain` | free | 基于当前作品字段给结构化解释，不虚构模型内幕 |
+| `music.adjust_params` | paid + confirm | `assistant_actions` 开启；确认后复用 `executeMusicTicketAction`，唯一扣费派单 |
+| `mv.shot_reshoot` | paid + confirm | `assistant_actions` 开启；项目/镜头属主校验，确认后复用 `mv.executeTicketAction` |
+
+- 付费动作没有批准票绝不派单、不扣费。`music.regenerate/cover/extend` 与 MV 写操作仍走原入口；v4 首轮不扩大白名单。
+- 所有写操作先展示 diff/预估，再由用户点击票面确认；助手回复只能说「已提交确认」或「已开始执行」，不能在确认前说已完成。
+- 注入命中返回 `meta.rejected:true`、`reply` 拒绝说明，不执行、不发票。白名单外工具 403 `FORBIDDEN`。
+
+### 确认票生命周期与故障恢复
+
+- `pending → executing → succeeded | failed | reconciling | compensated`；`denied/expired` 为终态。旧 `consumed` 记录按 succeeded 兼容展示。
+- confirm 在同一事务内完成 hash/ver/TTL/owner 校验和 `pending → executing` CAS；执行器以 `ticket_id` 幂等。执行成功后置 `succeeded`，明确失败置 `failed` 并记录原因，疑似结果不明置 `reconciling`，严禁盲目重放。
+- 动作执行前不扣费；执行器按既有唯一扣费点落账。重复 confirm 返回已存在 ticket/job，不新增 job、不重复扣费；可补偿失败按既有账本原语退款，不靠删除记录修复。
+- TTL 60s。列表可将过期 pending 票展示为 `expired`，但 confirm 仍以数据库状态和 TTL 硬判。
+
+### 增量迁移（schema v12）
+
+- `chat_messages` 增 `seq INTEGER`、`client_msg_id TEXT`，并增 `(session_id,seq)` 唯一索引；旧 role='result' 保留，历史 seq 回填。
+- `chat_tickets` 增 `session_id`、`meta_json`、`job_id`、`reply`、`expires_at`、`started_at`、`finished_at`、`failure_code`；旧 `consumed` 保持兼容。
+- 新表 `assistant_events(id,user_id,seq,type,payload,created_at)`，唯一 `(user_id,seq)`；`assistant_metrics(id,user_id,session_id,surface,tool,mode,status,kind,latency_ms,credits,created_at)` 持久化采用与结果指标。
+- 不迁移、不改写既有 MV 表；不存语音原文件或模型完整提示词。
+
+### WSS 与事件
+
+- v4 事件 `{type:'assistant.event', seq, event:{id,type,payload,created_at}}`，既有 job/credit/MV 事件不变。
+- 离线事件保留在 `assistant_events`；端侧重连后先 `GET /events?after_seq` 补发，再继续接收实时事件。响应 `next_seq` 为当前用户游标。
+- `assistant.message`、`assistant.ticket`、`assistant.task` 均带 `session_id`（可用时）；事件仅作通知，任务状态最终以 REST/jobs 为准。
+
+### 审计、指标与验收
+
+- 审计：`assistant.message`、`assistant.tool`、`assistant.ticket.issue|confirm|deny|execute|reconcile`、`assistant.feedback`、`assistant.metric`。
+- 指标至少覆盖请求数、工具成功率、LLM/规则占比、p50/p90 延迟、建议采纳/驳回/完成、票确认/拒绝/执行失败、助手触发积分成本。管理员聚合接口不向普通用户暴露他人数据。
+- `GET /v1/admin/assistant/metrics?days=7` → `{range_days, totals, tools:[], modes:[], daily:[]}`；越权 401/403，不得返回用户原始文本。
+- 验收 V19：开关/灰度；会话恢复与幂等消息；跨用户/跨会话拒绝；离线事件补发；免费工具与低风险写确认；付费票五连与重复 confirm 不重派；故障状态不盲重放；注入/工具越界；规则降级；指标聚合；V13/V16/V17 零回归。
+- 端侧验收：全局入口不增加第六 tab；关闭/重开助手恢复同一会话；detach 后不再发送旧 refs；重试切换到新 job；暂存恢复保留回调；任务/票中心可处理跨域待办；付费入口均有确认票。
+
 
 ### 验收
 - `V8-⑨`：文本线逐字必落库；改字原地重编译且清空旧澄清答案；空文本/超长/他人卡边界。
 - `V8-⑩`：ASR 不可达 ⇒ `degraded=1`、`source_text` 不得凭空出现、`note` 说清兜底（此前该失败模式零自动化覆盖）。
 - App `test/speech_test.dart`：WAV 往返与「采样率跟着结果走」、契约字段不编造（无情绪就不出 `emotion` 键）、
-  语音偏好 k=v 字符串落盘回读、清单只含 int8 且中文声库带 lexicon/dict、用户可见文案不含引擎型号名。
+  语音偏好 k=v 字符串落盘回读、清单只含 int8 且中文声库带 lexicon/dict、用户可见文案不含引擎型号名；
+  首次模型准备先确认再下载、进度可取消、失败可重试、创作页可选择服务端而 MV 助手明确阻断、下载完成后不自动开录。

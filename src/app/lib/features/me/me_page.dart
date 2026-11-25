@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/state.dart';
 import '../../shared/widgets/consent.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_state.dart';
+import '../assistant/assistant_surface.dart';
 import '../auth/bind_phone_page.dart';
 import 'speech_settings_page.dart';
 
@@ -14,6 +17,9 @@ class MePage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionProvider);
     final cfg = ref.watch(configProvider);
+    final assistant = ref.watch(assistantProvider);
+    final rc = ref.watch(remoteConfigProvider);
+    final assistantVisible = rc?.assistantCore != false && assistant.available;
     final user = session.user;
     final credits = session.credits;
     final quota = credits?.dailyQuota ?? 50;
@@ -64,16 +70,15 @@ class MePage extends ConsumerWidget {
                 children: [
                   const Text('积分',
                       style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white70)),
+                          fontWeight: FontWeight.w700, color: Colors.white70)),
                   const SizedBox(height: 6),
                   Text('${credits?.balance ?? '--'}',
                       style: const TextStyle(
                           fontSize: 36, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 4),
                   Text('每日免费额度 $quota · 今日已用 $used',
-                      style: const TextStyle(
-                          fontSize: 12, color: Colors.white54)),
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.white54)),
                   const SizedBox(height: 8),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(4),
@@ -108,8 +113,7 @@ class MePage extends ConsumerWidget {
                   const SizedBox(height: 8),
                   if (session.ledger.isEmpty)
                     const Text('暂无记录，去生成一首歌试试',
-                        style:
-                            TextStyle(fontSize: 12, color: Colors.white38))
+                        style: TextStyle(fontSize: 12, color: Colors.white38))
                   else
                     ...session.ledger.reversed.map((e) => Padding(
                           padding: const EdgeInsets.symmetric(vertical: 3),
@@ -149,6 +153,24 @@ class MePage extends ConsumerWidget {
             margin: EdgeInsets.zero,
             child: Column(
               children: [
+                if (assistantVisible) ...[
+                  ListTile(
+                    leading: const Icon(Icons.auto_awesome_outlined),
+                    title: const Text('创作助手'),
+                    subtitle:
+                        const Text('带着当前页面上下文对话', style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _openAssistant(context, ref),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.fact_check_outlined),
+                    title: const Text('任务与确认'),
+                    subtitle: const Text('查看创作任务和待确认操作',
+                        style: TextStyle(fontSize: 12)),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _openAssistant(context, ref, tasks: true),
+                  ),
+                ],
                 ListTile(
                   leading: const Icon(Icons.dns_outlined),
                   title: const Text('服务器地址'),
@@ -186,8 +208,8 @@ class MePage extends ConsumerWidget {
                   onTap: () async {
                     await ref.read(localDbProvider).clearCache();
                     if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('缓存已清除')));
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(const SnackBar(content: Text('缓存已清除')));
                   },
                 ),
                 ListTile(
@@ -207,19 +229,16 @@ class MePage extends ConsumerWidget {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text('MusicBox v0.1.0（M0/M1）',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w700)),
+                                style: TextStyle(fontWeight: FontWeight.w700)),
                             SizedBox(height: 8),
                             Text('云端 AI 音乐生成 · 灵感一拍即合'),
                             SizedBox(height: 12),
                             Text('隐私条款（语音/图像）',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w700)),
+                                style: TextStyle(fontWeight: FontWeight.w700)),
                             SizedBox(height: 4),
                             Text(kBiometricPrivacyText),
                             SizedBox(height: 8),
-                            Text(
-                                'AI 生成内容均带“AI 生成”标注；情绪与意图为 AI 推测，可在意图卡点改。'),
+                            Text('AI 生成内容均带“AI 生成”标注；情绪与意图为 AI 推测，可在意图卡点改。'),
                           ],
                         ),
                       ),
@@ -241,6 +260,17 @@ class MePage extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  void _openAssistant(BuildContext context, WidgetRef ref,
+      {bool tasks = false}) {
+    ref.read(assistantContextProvider.notifier).state =
+        const AssistantContext(surface: 'settings');
+    if (tasks) {
+      showAssistantCenter(context);
+    } else {
+      showGlobalAssistant(context);
+    }
   }
 
   Future<void> _editServer(BuildContext context, WidgetRef ref) async {
@@ -288,9 +318,7 @@ class MePage extends ConsumerWidget {
     if (rc == null) return '跟随后台默认';
     if (rc.musicLocked) return '后台指定（已锁定）';
     if (sel == null || sel.isEmpty) return '跟随后台默认';
-    final hit = rc.musicModelOptions
-        .where((o) => '${o['id']}' == sel)
-        .toList();
+    final hit = rc.musicModelOptions.where((o) => '${o['id']}' == sel).toList();
     return hit.isNotEmpty ? '${hit.first['label']}' : '跟随后台默认';
   }
 
@@ -302,8 +330,8 @@ class MePage extends ConsumerWidget {
     if (!context.mounted) return;
     final cur = ref.read(remoteConfigProvider);
     if (cur != null && cur.musicLocked) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('模型已由后台统一指定，暂不可自选')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('模型已由后台统一指定，暂不可自选')));
       return;
     }
     final options = (cur?.musicModelOptions ?? const []).toList();

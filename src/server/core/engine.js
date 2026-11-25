@@ -142,6 +142,12 @@ function setProgress(job, progress, note) {
   store.run("UPDATE jobs SET status='running', progress=?, note=?, updated_at=? WHERE id=?",
     p, String(note || '').slice(0, 200), U.nowIso(), job.id);
   if (job.user_id) bus.jobProgress(job.user_id, job.id, p, note);
+  notifyAssistantJob(Object.assign({}, job, { status: 'running', progress: p }));
+}
+
+// 统一助手只消费任务变化通知；不改变 jobs 队列与既有 WSS 业务事件。
+function notifyAssistantJob(job) {
+  try { require('../l2assistant/core').notifyJob(job, job.status); } catch (e) { /* 通知失败不阻断任务 */ }
 }
 
 function progress(jobId, executorId, { progress: p, note }) {
@@ -159,6 +165,7 @@ function finishDone(job, result) {
   // lane 指标（N1-5，架构 §11 最小集）：per-type 完成耗时直方（created→done 总时长）
   try { require('./metrics').recordDone(job.type, Date.now() - (Date.parse(job.created_at) || Date.now())); } catch (e) { /* 观测不阻断 */ }
   if (job.user_id) bus.jobDone(job.user_id, job.id, result);
+  notifyAssistantJob(Object.assign({}, job, { status: 'done', progress: 100 }));
 }
 
 // 落盘 multipart 文件 → Map<field, {rel,abs,bytes}>
@@ -760,6 +767,7 @@ function requeueOrFail(job, code, message) {
       attempts, U.jstr(newPayload), code, message, U.nowIso(), job.id);
     store.log('job.requeue', { job_id: job.id, attempts, code });
     if (job.user_id) bus.jobProgress(job.user_id, job.id, job.progress || 0, '正在重试');
+    notifyAssistantJob(Object.assign({}, job, { status: 'queued' }));
     notify();
     return;
   }
@@ -775,6 +783,7 @@ function requeueOrFail(job, code, message) {
     bus.jobError(job.user_id, job.id, { code: code === 'MODERATION_BLOCK' ? code : 'INTERNAL', message });
   }
   store.log('job.failed', { job_id: job.id, code, attempts });
+  notifyAssistantJob(Object.assign({}, job, { status: 'failed', error_code: code }));
   // 子 job 连带取消
   for (const c of store.all("SELECT * FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id)) {
     store.run("UPDATE jobs SET status='canceled', updated_at=? WHERE id=?", U.nowIso(), c.id);

@@ -4,6 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api_client.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/primary_button.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_state.dart';
+import '../assistant/assistant_surface.dart';
 import '../create/credit_guard.dart';
 import '../create/progress_page.dart';
 import '../create/shelf_store.dart';
@@ -39,6 +42,38 @@ class _DspPageState extends ConsumerState<DspPage> {
   double _tempoFactor = 1.0;
   bool _busy = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _setAssistantContext();
+    });
+  }
+
+  void _setAssistantContext() {
+    ref.read(assistantContextProvider.notifier).state = AssistantContext(
+      surface: 'library',
+      refs: [AssistantRef('work', widget.workId)],
+    );
+  }
+
+  bool get _ownsAssistantContext {
+    final current = ref.read(assistantContextProvider);
+    return current.surface == 'library' &&
+        current.refs.length == 1 &&
+        current.refs.single.type == 'work' &&
+        current.refs.single.id == widget.workId;
+  }
+
+  @override
+  void dispose() {
+    if (_ownsAssistantContext) {
+      ref.read(assistantContextProvider.notifier).state =
+          const AssistantContext(surface: 'library');
+    }
+    super.dispose();
+  }
+
   void _toast(String m) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
@@ -71,7 +106,8 @@ class _DspPageState extends ConsumerState<DspPage> {
           params['factor'] = _tempoFactor;
           break;
       }
-      final jobId = await ref.read(apiClientProvider).dsp(widget.workId, _op, params);
+      final jobId =
+          await ref.read(apiClientProvider).dsp(widget.workId, _op, params);
       if (!mounted) return;
       final api = ref.read(apiClientProvider);
       ProgressPage.push(
@@ -113,6 +149,11 @@ class _DspPageState extends ConsumerState<DspPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const AssistantSuggestionCard(
+            title: '解释这个音频处理',
+            prompt: '请基于当前作品上下文，解释裁剪、淡化、变调和变速对音频的影响，并给出适合这首作品的处理建议',
+            icon: Icons.hearing_outlined,
+          ),
           SegmentedButton<String>(
             segments: const [
               ButtonSegment(value: 'trim', label: Text('裁剪')),
@@ -146,8 +187,7 @@ class _DspPageState extends ConsumerState<DspPage> {
                       divisions: 240,
                       onChanged: (v) => setState(() => _endSec = v)),
                 ],
-              )
-            ,
+              ),
             'fade' => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -166,8 +206,7 @@ class _DspPageState extends ConsumerState<DspPage> {
                       divisions: 10,
                       onChanged: (v) => setState(() => _fadeOut = v)),
                 ],
-              )
-            ,
+              ),
             'pitch' => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -180,8 +219,7 @@ class _DspPageState extends ConsumerState<DspPage> {
                       label: '${_semitones.round()}',
                       onChanged: (v) => setState(() => _semitones = v)),
                 ],
-              )
-            ,
+              ),
             _ => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [

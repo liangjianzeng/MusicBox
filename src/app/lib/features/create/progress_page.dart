@@ -94,6 +94,8 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
   String? _resultWorkId;
   bool _finished = false;
   bool _retryBlocked = false; // 命中服务端 10 分钟幂等窗口
+  bool _retrying = false;
+  late String _jobId;
   Timer? _poll;
   StreamSubscription<WsEvent>? _wsSub;
 
@@ -106,7 +108,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
   Map<String, String> get _shelfAdopted {
     try {
       for (final s in ref.read(shelfProvider)) {
-        if (s.jobId == widget.jobId) return s.adopted;
+        if (s.jobId == _jobId) return s.adopted;
       }
     } catch (_) {}
     return const {};
@@ -127,17 +129,27 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
   @override
   void initState() {
     super.initState();
+    _jobId = widget.jobId;
+    _bindJob();
+    if (widget.onRetry != null) {
+      ref.read(shelfProvider.notifier).registerRetry(_jobId, widget.onRetry!);
+    }
+    _fetch();
+    // 一进页面就挂上暂存架：中途退出/杀进程也找得回来
+    scheduleMicrotask(_saveShelf);
+  }
+
+  void _bindJob() {
+    _poll?.cancel();
+    _wsSub?.cancel();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _fetch());
     _wsSub = ref
         .read(wsClientProvider)
         .events
         .where((e) =>
-            (e is JobProgressEvent && e.jobId == widget.jobId) ||
-            (e is JobDoneEvent && e.jobId == widget.jobId))
+            (e is JobProgressEvent && e.jobId == _jobId) ||
+            (e is JobDoneEvent && e.jobId == _jobId))
         .listen(_onWs);
-    _fetch();
-    // 一进页面就挂上暂存架：中途退出/杀进程也找得回来
-    scheduleMicrotask(_saveShelf);
   }
 
   @override
@@ -150,7 +162,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
   Future<void> _saveShelf({List<Candidate>? candidates}) async {
     try {
       await ref.read(shelfProvider.notifier).save(
-            jobId: widget.jobId,
+            jobId: _jobId,
             title: _shelfTitle,
             brief: _brief,
             candidates: candidates ?? _candidates,
@@ -186,8 +198,9 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
 
   Future<void> _fetch() async {
     try {
-      final job = await _api.job(widget.jobId);
-      if (!mounted) return;
+      final requestedId = _jobId;
+      final job = await _api.job(requestedId);
+      if (!mounted || requestedId != _jobId) return;
       setState(() {
         _status = job.status;
         _type = job.type.isEmpty ? _type : job.type;
@@ -203,8 +216,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
         _finish(candidates: job.candidates ?? _candidates);
       } else if (job.isFailed) {
         _poll?.cancel();
-        _showError(job.error ??
-            const {'code': 'INTERNAL', 'message': '任务中断'});
+        _showError(job.error ?? const {'code': 'INTERNAL', 'message': '任务中断'});
       }
     } on ApiException catch (_) {
       // 网络抖动：继续轮询
@@ -236,7 +248,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
       _saveShelf(candidates: _candidates);
       Navigator.of(context).pushReplacement(MaterialPageRoute(
         builder: (_) => RevealPage(
-          jobId: widget.jobId,
+          jobId: _jobId,
           candidates: _candidates!,
           resultWorkId: _resultWorkId,
           brief: _brief,
@@ -262,37 +274,47 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
     final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).pop();
     messenger.showSnackBar(SnackBar(
-      content: Text(_finished
-          ? '已存进「曲库 · 暂存」，随时回来继续'
-          : '任务还在跑，已存进「曲库 · 暂存」，回去点它可继续看进度'),
+      content: Text(
+          _finished ? '已存进「曲库 · 暂存」，随时回来继续' : '任务还在跑，已存进「曲库 · 暂存」，回去点它可继续看进度'),
       action: SnackBarAction(
           label: '去暂存',
-          onPressed: () => Navigator.of(messenger.context).push(
-              MaterialPageRoute(builder: (_) => const ShelfPage()))),
+          onPressed: () => Navigator.of(messenger.context)
+              .push(MaterialPageRoute(builder: (_) => const ShelfPage()))),
     ));
   }
 
   /// 原参数重交。服务端 10 分钟内同参会命中幂等，把已失败的旧 job 原样还回来，
   /// 这种情况诚实告知，不假装重试成功。
   Future<void> _retry() async {
-    final id = await widget.onRetry?.call();
-    if (!mounted) return;
-    if (id == null || id.isEmpty) return;
-    if (id == widget.jobId) {
-      setState(() => _retryBlocked = true);
-      return;
+    final retry = widget.onRetry;
+    if (retry == null || _retrying) return;
+    setState(() => _retrying = true);
+    try {
+      final id = await retry();
+      if (!mounted) return;
+      if (id == null || id.isEmpty) return;
+      if (id == _jobId) {
+        setState(() => _retryBlocked = true);
+        return;
+      }
+      _jobId = id;
+      ref.read(shelfProvider.notifier).registerRetry(_jobId, retry);
+      setState(() {
+        _error = null;
+        _finished = false;
+        _retryBlocked = false;
+        _progress = 0;
+        _status = 'queued';
+        _note = null;
+        _candidates = null;
+        _resultWorkId = null;
+      });
+      _bindJob();
+      _saveShelf();
+      _fetch();
+    } finally {
+      if (mounted) setState(() => _retrying = false);
     }
-    setState(() {
-      _error = null;
-      _finished = false;
-      _retryBlocked = false;
-      _progress = 0;
-      _status = 'queued';
-      _note = null;
-    });
-    _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 3), (_) => _fetch());
-    _fetch();
   }
 
   @override
@@ -300,7 +322,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
     final scheme = Theme.of(context).colorScheme;
     final track = JobTrack.from(
       job: Job(
-        id: widget.jobId,
+        id: _jobId,
         type: _type,
         status: _status,
         progress: (_progress * 100).round(),
@@ -318,9 +340,8 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_brief.action.isEmpty
-              ? widget.title
-              : '${_brief.action}中'),
+          title:
+              Text(_brief.action.isEmpty ? widget.title : '${_brief.action}中'),
           leading: IconButton(
             icon: const Icon(Icons.keyboard_arrow_left_rounded),
             onPressed: _leave,
@@ -354,9 +375,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
                   const SizedBox(width: 5),
                   Expanded(
                     child: Text(
-                      _error == null
-                          ? '积分已预扣，任务失败会自动全额返还'
-                          : '本次积分会全额返还（后台已入账）',
+                      _error == null ? '积分已预扣，任务失败会自动全额返还' : '本次积分会全额返还（后台已入账）',
                       style: const TextStyle(
                           color: Colors.white38, fontSize: 11.5),
                     ),
@@ -366,8 +385,13 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
               const SizedBox(height: 16),
               if (_error != null && widget.onRetry != null)
                 FilledButton.icon(
-                    onPressed: _retry,
-                    icon: const Icon(Icons.refresh_rounded),
+                    onPressed: _retrying ? null : _retry,
+                    icon: _retrying
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh_rounded),
                     label: Text(_retryBlocked ? '还是再试一次' : '原参数再试一次')),
               if (_error != null && widget.onRetry != null)
                 const SizedBox(height: 10),
@@ -415,8 +439,8 @@ class _ProgressHead extends StatelessWidget {
                       style: const TextStyle(
                           fontSize: 24, fontWeight: FontWeight.w800)),
                   Text(track.done ? '完成' : (track.queued ? '排队' : '压制'),
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white38)),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white38)),
                 ],
               ),
             ),
@@ -431,8 +455,8 @@ class _ProgressHead extends StatelessWidget {
                 track.queued
                     ? '排队中，前面的灵感正在压制'
                     : (track.done ? '压制完成，正在揭晓' : '正在压制'),
-                style: const TextStyle(
-                    fontSize: 17, fontWeight: FontWeight.w700),
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 5),
               Text(track.currentAction,
@@ -481,8 +505,7 @@ class _CandidateLedger extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.disc_full_outlined,
-                  size: 15, color: scheme.primary),
+              Icon(Icons.disc_full_outlined, size: 15, color: scheme.primary),
               const SizedBox(width: 6),
               const Text('逐首就绪',
                   style: TextStyle(
@@ -491,8 +514,8 @@ class _CandidateLedger extends StatelessWidget {
                       color: Colors.white70)),
               const Spacer(),
               Text('${track.readyCount} / ${track.totalCount} 首已出',
-                  style: const TextStyle(
-                      fontSize: 11.5, color: Colors.white38)),
+                  style:
+                      const TextStyle(fontSize: 11.5, color: Colors.white38)),
             ],
           ),
           const SizedBox(height: 9),
@@ -500,10 +523,12 @@ class _CandidateLedger extends StatelessWidget {
             children: List.generate(track.totalCount, (i) {
               final n = i + 1;
               final ready = n <= track.readyCount;
-              final active = !ready && n == track.readyCount + 1 && !track.failed;
+              final active =
+                  !ready && n == track.readyCount + 1 && !track.failed;
               return Expanded(
                 child: Container(
-                  margin: EdgeInsets.only(right: i == track.totalCount - 1 ? 0 : 6),
+                  margin:
+                      EdgeInsets.only(right: i == track.totalCount - 1 ? 0 : 6),
                   padding: const EdgeInsets.symmetric(vertical: 7),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
@@ -535,7 +560,8 @@ class _CandidateLedger extends StatelessWidget {
                       Text('第 $n 首',
                           style: TextStyle(
                               fontSize: 11.5,
-                              fontWeight: ready ? FontWeight.w700 : FontWeight.w500,
+                              fontWeight:
+                                  ready ? FontWeight.w700 : FontWeight.w500,
                               color: ready ? Colors.white : Colors.white54)),
                     ],
                   ),
@@ -592,8 +618,7 @@ class _StageRow extends StatelessWidget {
       JobStageState.done => (Icons.check_circle, scheme.primary),
       JobStageState.active => (Icons.pending, Colors.amberAccent),
       JobStageState.failed => (Icons.error_outline, Colors.redAccent),
-      JobStageState.pending =>
-        (Icons.radio_button_unchecked, Colors.white24),
+      JobStageState.pending => (Icons.radio_button_unchecked, Colors.white24),
     };
     return SizedBox(
       height: 38,
@@ -622,8 +647,9 @@ class _StageRow extends StatelessWidget {
                 color: stage.state == JobStageState.pending
                     ? Colors.white38
                     : Colors.white,
-                fontWeight:
-                    stage.state == JobStageState.active ? FontWeight.w700 : null,
+                fontWeight: stage.state == JobStageState.active
+                    ? FontWeight.w700
+                    : null,
               ),
             ),
           ),
@@ -675,8 +701,7 @@ class _FailedHead extends StatelessWidget {
                 ],
                 const SizedBox(height: 6),
                 const Text('失败任务的积分已自动返还',
-                    style:
-                        TextStyle(fontSize: 11.5, color: Colors.white38)),
+                    style: TextStyle(fontSize: 11.5, color: Colors.white38)),
                 if (blocked) ...[
                   const SizedBox(height: 6),
                   const Text(

@@ -70,7 +70,8 @@ class TaskBrief {
         // 要素卡是给人看的，必须翻回中文——用户在 chips 上点的是「国风」「合成器」，
         // 这里不能让他看到另一个世界的词。目录外的自由补充原样显示，不编造翻译。
         if (tags.isNotEmpty)
-          TaskFact('风格', tags.map((t) => StyleCatalog.fallback.zhFor(t)).join(' / ')),
+          TaskFact('风格',
+              tags.map((t) => StyleCatalog.fallback.zhFor(t)).join(' / ')),
         if (genre != null && genre!.isNotEmpty) TaskFact('流派', genre!),
         if (vocal != null && vocal!.isNotEmpty) TaskFact('人声', vocal!),
         if (bpm != null) TaskFact('速度 BPM', '$bpm'),
@@ -208,8 +209,8 @@ class TaskBrief {
         seed: m['seed'] == null ? null : int.tryParse('${m['seed']}'),
         modelLabel: m['model']?.toString(),
         intentId: m['intent_id']?.toString(),
-        extra:
-            (m['extra'] as Map? ?? const {}).map((k, v) => MapEntry('$k', '$v')),
+        extra: (m['extra'] as Map? ?? const {})
+            .map((k, v) => MapEntry('$k', '$v')),
       );
 
   static List<String> _strList(dynamic v) => v is List
@@ -321,6 +322,24 @@ class ShelfNotifier extends StateNotifier<List<ShelfSession>> {
   }
 
   final LocalDb _db;
+  final Map<String, Future<String?> Function()> _retryHandlers = {};
+
+  void registerRetry(String jobId, Future<String?> Function() handler) {
+    _retryHandlers[jobId] = handler;
+  }
+
+  Future<String?> Function()? retryHandler(String jobId) =>
+      _retryHandlers[jobId];
+
+  Future<String?> retry(String jobId) async {
+    final handler = _retryHandlers[jobId];
+    if (handler == null) return null;
+    final next = await handler();
+    if (next != null && next.isNotEmpty) {
+      _retryHandlers[next] = handler;
+    }
+    return next;
+  }
 
   Future<void> _load() async {
     try {
@@ -360,11 +379,9 @@ class ShelfNotifier extends StateNotifier<List<ShelfSession>> {
     final row = await _db.shelfRow(jobId);
     if (row == null) return;
     final cur = ShelfSession.fromRow(row);
-    await _db.saveShelfRow(cur
-        .copyWith(
-            adopted: {...cur.adopted, candidateId: workId},
-            updatedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000)
-        .toRow());
+    await _db.saveShelfRow(cur.copyWith(
+        adopted: {...cur.adopted, candidateId: workId},
+        updatedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000).toRow());
     await _load();
   }
 

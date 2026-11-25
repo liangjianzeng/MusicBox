@@ -9,6 +9,9 @@ import '../../core/state.dart';
 import '../../core/ws_client.dart';
 import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/primary_button.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_state.dart';
+import '../assistant/assistant_surface.dart';
 import 'intent_card_view.dart';
 import 'intent_sync.dart';
 import 'music_assistant_sheet.dart';
@@ -22,16 +25,19 @@ class IntentFlowPanel extends ConsumerStatefulWidget {
     super.key,
     required this.intentId,
     required this.easy,
+    this.stickyActions = false,
     this.onGenerated,
   });
 
   final String intentId;
   final bool easy;
+  final bool stickyActions;
 
   /// 生成成功回调（跳进度页）。默认行为：push Replacement 进度页。
   /// 一并交出本次任务要素与「原参数重交」闭包，供进度页显示与重试。
-  final void Function(String jobId, TaskBrief brief,
-      Future<String?> Function() retry)? onGenerated;
+  final void Function(
+          String jobId, TaskBrief brief, Future<String?> Function() retry)?
+      onGenerated;
 
   @override
   ConsumerState<IntentFlowPanel> createState() => _IntentFlowPanelState();
@@ -54,6 +60,9 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _setAssistantContext();
+    });
     _q = intentQueueFor(ref, widget.intentId);
     _q.owner = this;
     _q.onStatus = (s) {
@@ -80,8 +89,46 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
         .listen((_) => _fetch());
   }
 
+  void _setAssistantContext() {
+    ref.read(assistantContextProvider.notifier).state = AssistantContext(
+      surface: 'create',
+      refs: [AssistantRef('intent', widget.intentId)],
+      title: _intent?.sceneDesc ?? '灵感卡',
+    );
+  }
+
+  bool get _ownsAssistantContext {
+    final current = ref.read(assistantContextProvider);
+    return current.surface == 'create' &&
+        current.refs.length == 1 &&
+        current.refs.single.type == 'intent' &&
+        current.refs.single.id == widget.intentId;
+  }
+
+  @override
+  void didUpdateWidget(covariant IntentFlowPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.intentId != widget.intentId) {
+      final current = ref.read(assistantContextProvider);
+      if (current.surface == 'create' &&
+          current.refs.length == 1 &&
+          current.refs.single.type == 'intent' &&
+          current.refs.single.id == oldWidget.intentId) {
+        ref.read(assistantContextProvider.notifier).state =
+            const AssistantContext(surface: 'create');
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _setAssistantContext();
+      });
+    }
+  }
+
   @override
   void dispose() {
+    if (_ownsAssistantContext) {
+      ref.read(assistantContextProvider.notifier).state =
+          const AssistantContext(surface: 'create');
+    }
     _poll?.cancel();
     _wsSub?.cancel();
     if (_q.owner == this) {
@@ -97,7 +144,9 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
   void _syncPickedGenres(mdl.Intent i) {
     final all = i.genreHypotheses.toSet();
     final cur = _pickedGenres;
-    if (cur == null || !cur.toSet().every(all.contains) || cur.length != all.length) {
+    if (cur == null ||
+        !cur.toSet().every(all.contains) ||
+        cur.length != all.length) {
       _pickedGenres = all;
     }
   }
@@ -108,12 +157,14 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
       if (!mounted) return;
       setState(() {
         _server = i;
-        final editing =
-            _patchStatus == IntentPatchStatus.saving || _q.hasPending || _q.busy;
+        final editing = _patchStatus == IntentPatchStatus.saving ||
+            _q.hasPending ||
+            _q.busy;
         if (!editing) _intent = i;
         _error = null;
         _syncPickedGenres(i);
       });
+      if (_ownsAssistantContext) _setAssistantContext();
       if (i.ready || i.consumed) _poll?.cancel();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.zh);
@@ -143,7 +194,7 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
 
   bool get _editing {
     final i = _intent;
-    return i != null && !i.consumed;
+    return i != null && !i.consumed && !_sending;
   }
 
   /// 卡面点改：乐观更新 + 落库（契约 v2.19）
@@ -283,7 +334,9 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
             icon: Icons.sync, text: '保存中…', color: Colors.white38);
       case IntentPatchStatus.saved:
         return const _CardBadge(
-            icon: Icons.check_circle_outline, text: '已按你的修改', color: Colors.tealAccent);
+            icon: Icons.check_circle_outline,
+            text: '已按你的修改',
+            color: Colors.tealAccent);
       case IntentPatchStatus.failed:
         return InkWell(
           onTap: () async {
@@ -338,60 +391,53 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
         ),
       );
     }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IntentCardView(
-          intent: i,
-          maxQuestions: widget.easy ? 1 : null,
-          answers: _answers,
-          onAnswer: (qIdx, opt) => setState(() => _answers[qIdx] = opt),
-          onSkipQuestion: widget.easy
-              ? null
-              : (qIdx) {
-                  // 跳过=采用该题推荐项
-                  final q = i.questions.firstWhere((e) => e.qIdx == qIdx);
-                  setState(() => _answers[qIdx] = q.recommendedIdx ?? 0);
-                },
-          onMoodChanged: _editing
-              ? (m) => _edit({'mood': m}, i.copyWith(mood: m))
-              : null,
-          moodSuggestions: kMoodOptions,
-          onSceneDescEdited: _editing ? () => _editSceneDesc(i) : null,
-          selectedGenres: _pickedGenres?.toList() ?? i.genreHypotheses,
-          onGenreToggled: _editing
-              ? (g, sel) {
-                  final next = {...?_pickedGenres};
-                  if (sel) {
-                    next.add(g);
-                  } else {
-                    next.remove(g);
-                  }
-                  _pickedGenres = next;
-                  _edit({'genre_hypotheses': next.toList()},
-                      i.copyWith(genreHypotheses: next.toList()));
-                }
-              : null,
-          onVocalToggled: _editing
-              ? () {
-                  final next =
-                      i.vocal == 'instrumental' ? 'song' : 'instrumental';
-                  _edit({'vocal': next}, i.copyWith(vocal: next));
-                }
-              : null,
-          headerTrailing: _saveBadge,
-        ),
-        const SizedBox(height: 16),
-        if (widget.easy)
-          PrimaryButton(
+    final card = IntentCardView(
+      intent: i,
+      maxQuestions: widget.easy ? 1 : null,
+      answers: _answers,
+      onAnswer:
+          _sending ? null : (qIdx, opt) => setState(() => _answers[qIdx] = opt),
+      onSkipQuestion: widget.easy || _sending
+          ? null
+          : (qIdx) {
+              final q = i.questions.firstWhere((e) => e.qIdx == qIdx);
+              setState(() => _answers[qIdx] = q.recommendedIdx ?? 0);
+            },
+      onMoodChanged:
+          _editing ? (m) => _edit({'mood': m}, i.copyWith(mood: m)) : null,
+      moodSuggestions: kMoodOptions,
+      onSceneDescEdited: _editing ? () => _editSceneDesc(i) : null,
+      selectedGenres: _pickedGenres?.toList() ?? i.genreHypotheses,
+      onGenreToggled: _editing
+          ? (g, sel) {
+              final next = {...?_pickedGenres};
+              if (sel) {
+                next.add(g);
+              } else {
+                next.remove(g);
+              }
+              _pickedGenres = next;
+              _edit({'genre_hypotheses': next.toList()},
+                  i.copyWith(genreHypotheses: next.toList()));
+            }
+          : null,
+      onVocalToggled: _editing
+          ? () {
+              final next = i.vocal == 'instrumental' ? 'song' : 'instrumental';
+              _edit({'vocal': next}, i.copyWith(vocal: next));
+            }
+          : null,
+      headerTrailing: _saveBadge,
+    );
+    final actions = widget.easy
+        ? PrimaryButton(
             text: '直接生成',
             big: true,
             icon: Icons.auto_awesome,
             loading: _sending,
             onPressed: i.consumed ? null : () => _generate(direct: true),
           )
-        else
-          Row(
+        : Row(
             children: [
               Expanded(
                 child: PrimaryButton(
@@ -411,13 +457,56 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
                 ),
               ),
             ],
-          ),
-        if (widget.easy && i.clarifying && i.questions.isNotEmpty)
-          const Padding(
+          );
+    final hint = widget.easy && i.clarifying && i.questions.isNotEmpty
+        ? const Padding(
             padding: EdgeInsets.only(top: 8),
-            child: Text('不想答？点上面「直接生成」就好',
+            child: Text('不想答？点下方「直接生成」就好',
                 style: TextStyle(color: Colors.white38, fontSize: 12)),
+          )
+        : null;
+    const assistantSuggestion = AssistantSuggestionCard(
+      title: '帮我改意图卡',
+      prompt: '请基于当前灵感卡上下文，给我一些修改建议；我想先确认调整内容，再走现有的保存和生成流程',
+      icon: Icons.edit_note_outlined,
+    );
+    if (!widget.stickyActions) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          card,
+          assistantSuggestion,
+          const SizedBox(height: 16),
+          actions,
+          if (hint != null) hint,
+        ],
+      );
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [card, assistantSuggestion, if (hint != null) hint],
+            ),
           ),
+        ),
+        Container(
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            border: Border(top: BorderSide(color: scheme.outlineVariant)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              child: actions,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -458,6 +547,7 @@ class IntentFlowPage extends ConsumerWidget {
     final assistantOn = (rc?.musicAssistant ?? false) || kMusicAssistantForce;
     return Scaffold(
       appBar: AppBar(title: const Text('灵感理解')),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
       floatingActionButton: assistantOn
           ? FloatingActionButton.small(
               heroTag: 'music_assistant_fab_intent',
@@ -469,12 +559,11 @@ class IntentFlowPage extends ConsumerWidget {
               child: const Icon(Icons.smart_toy_outlined, size: 20),
             )
           : null,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+      body: SafeArea(
         child: IntentFlowPanel(
           intentId: intentId,
           easy: easy,
-          // 不给回调：走面板默认行为（带任务要素与重试闭包跳进度页）
+          stickyActions: true,
         ),
       ),
     );

@@ -25,6 +25,7 @@ class IntentPatchQueue {
   final String intentId;
 
   final Map<String, dynamic> _pending = {};
+  final Map<String, int> _versions = {};
   Timer? _timer;
 
   /// 「上一次发送是否结束」信号（永不带错误完成——错误由 flush 自己消化，
@@ -42,7 +43,10 @@ class IntentPatchQueue {
 
   /// 提交一次点改（延迟合并发送）
   void submit(Map<String, dynamic> patch, {int delayMs = 420}) {
-    _pending.addAll(patch);
+    patch.forEach((key, value) {
+      _pending[key] = value;
+      _versions[key] = (_versions[key] ?? 0) + 1;
+    });
     _emit(IntentPatchStatus.saving);
     _timer?.cancel();
     _timer = Timer(Duration(milliseconds: delayMs), flush);
@@ -58,6 +62,8 @@ class IntentPatchQueue {
     }
     if (_pending.isEmpty) return null;
     final payload = Map<String, dynamic>.from(_pending);
+    final sentVersions = Map<String, int>.fromEntries(
+        payload.keys.map((key) => MapEntry(key, _versions[key]!)));
     _pending.clear();
     _emit(IntentPatchStatus.saving);
     final c = Completer<void>();
@@ -67,12 +73,18 @@ class IntentPatchQueue {
       c.complete();
       _flight = null;
       onApplied?.call(latest);
-      _emit(_pending.isEmpty ? IntentPatchStatus.saved : IntentPatchStatus.saving);
+      _emit(_pending.isEmpty
+          ? IntentPatchStatus.saved
+          : IntentPatchStatus.saving);
       return latest;
     } catch (_) {
       c.complete(); // 失败不外泄：状态已置 failed，改动留在 _pending 等重试
       _flight = null;
-      _pending.addAll(payload); // 留着，点「重试」直接再发
+      payload.forEach((key, value) {
+        if (_versions[key] == sentVersions[key]) {
+          _pending.putIfAbsent(key, () => value);
+        }
+      });
       _emit(IntentPatchStatus.failed);
       return null;
     }
@@ -121,7 +133,8 @@ IntentPatchQueue intentQueueFor(WidgetRef ref, String intentId) {
 /// ```
 /// 面板与这里共用同一 intentId 的队列：连拖 slider 只会发一次 PATCH，
 /// 且面板「生成」前会统一 flush，不会漏掉最后一次拖动。
-void syncIntentParams(WidgetRef ref, String? intentId, Map<String, dynamic> patch) {
+void syncIntentParams(
+    WidgetRef ref, String? intentId, Map<String, dynamic> patch) {
   if (intentId == null || intentId.isEmpty || patch.isEmpty) return;
   intentQueueFor(ref, intentId).submit(patch);
 }

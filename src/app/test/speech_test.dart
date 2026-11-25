@@ -1,11 +1,28 @@
 // 端侧语音层单测（不依赖真机/网络）：WAV 往返、诚实字段、档位偏好、下载清单纪律。
+import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:musicbox/core/speech/asr_engine.dart';
 import 'package:musicbox/core/speech/speech_model_manager.dart';
 import 'package:musicbox/core/speech/speech_settings.dart';
 import 'package:musicbox/core/speech/wav_util.dart';
+import 'package:musicbox/shared/widgets/speech_model_download.dart';
+
+Future<BuildContext> _pumpHost(WidgetTester tester) async {
+  late BuildContext context;
+  await tester.pumpWidget(MaterialApp(
+    home: Scaffold(
+      body: Builder(builder: (value) {
+        context = value;
+        return const SizedBox();
+      }),
+    ),
+  ));
+  return context;
+}
 
 void main() {
   group('WAV 工具', () {
@@ -168,6 +185,108 @@ void main() {
       expect(tts.files.containsKey('lexicon.txt'), isTrue, reason: '中文声库缺 lexicon 会念错');
       expect(tts.files.keys.any((k) => k.startsWith('dict/')), isTrue,
           reason: '中文分词 dict 必须在清单里');
+    });
+  });
+
+  group('首次模型准备', () {
+    testWidgets('先确认再下载，成功后本次不直接开录', (tester) async {
+      final context = await _pumpHost(tester);
+      var downloads = 0;
+      final result = prepareSpeechModel(
+        context,
+        model: SpeechModel.asrStreaming,
+        allowServerFallback: true,
+        download: (_) async => downloads++,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('160 MB'), findsOneWidget);
+      expect(find.text('下次用服务端'), findsOneWidget);
+      expect(downloads, 0);
+      await tester.tap(find.text('下载模型'));
+      await tester.pumpAndSettle();
+
+      expect(await result, SpeechModelPreparation.ready);
+      expect(downloads, 1);
+      expect(find.byType(AlertDialog), findsNothing);
+    });
+
+    testWidgets('创作页可选择服务端，MV 助手不显示该选项', (tester) async {
+      final context = await _pumpHost(tester);
+      var downloads = 0;
+      final fallback = prepareSpeechModel(
+        context,
+        model: SpeechModel.asrStreaming,
+        allowServerFallback: true,
+        download: (_) async => downloads++,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下次用服务端'));
+      await tester.pumpAndSettle();
+      expect(await fallback, SpeechModelPreparation.serverFallback);
+      expect(downloads, 0);
+
+      final blocked = prepareSpeechModel(
+        context,
+        model: SpeechModel.asrStreaming,
+        allowServerFallback: false,
+        download: (_) async => downloads++,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('下次用服务端'), findsNothing);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(await blocked, SpeechModelPreparation.canceled);
+      expect(downloads, 0);
+    });
+
+    testWidgets('下载失败显示原因并可重试', (tester) async {
+      final context = await _pumpHost(tester);
+      var attempts = 0;
+      final result = prepareSpeechModel(
+        context,
+        model: SpeechModel.asrStreaming,
+        allowServerFallback: true,
+        download: (_) async {
+          attempts++;
+          if (attempts == 1) throw const SpeechModelException('网络连接失败');
+        },
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下载模型'));
+      await tester.pumpAndSettle();
+      expect(find.text('网络连接失败'), findsOneWidget);
+
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(await result, SpeechModelPreparation.ready);
+      expect(attempts, 2);
+    });
+
+    testWidgets('下载中取消会通知下载器并保持未就绪', (tester) async {
+      final context = await _pumpHost(tester);
+      final finishing = Completer<void>();
+      CancelToken? token;
+      final result = prepareSpeechModel(
+        context,
+        model: SpeechModel.asrStreaming,
+        allowServerFallback: false,
+        download: (value) {
+          token = value;
+          return finishing.future;
+        },
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下载模型'));
+      await tester.pump();
+      await tester.tap(find.text('取消下载'));
+      await tester.pumpAndSettle();
+
+      expect(await result, SpeechModelPreparation.canceled);
+      expect(token?.isCancelled, isTrue);
+      expect(find.byType(Scaffold), findsOneWidget);
+      finishing.complete();
+      await tester.pump();
     });
   });
 }

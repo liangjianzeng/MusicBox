@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/speech/asr_engine.dart';
 import '../../core/speech/speech_service.dart';
 import '../../core/speech/speech_settings.dart';
+import '../../shared/widgets/speech_model_download.dart';
 import '../player/player_provider.dart';
 import 'mv_models.dart';
 import 'mv_state.dart';
@@ -20,7 +21,8 @@ import 'mv_state.dart';
 const bool kMvAssistantEnabled = false;
 
 /// 打开制片助手（入口按钮一律在 assistantOn 判定后调用）
-Future<void> showMvAssistant(BuildContext context, {
+Future<void> showMvAssistant(
+  BuildContext context, {
   required String projectId,
   String projectTitle = '',
   String? shotLabel,
@@ -80,6 +82,7 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
   StreamingAsrSession? _asr;
   SpeechService? _svc; // dispose 里要用，先抓住，避免在 dispose 里读 provider
   bool _listening = false;
+  bool _preparing = false;
   bool _speaking = false;
   String? _talkError;
 
@@ -99,21 +102,35 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
       );
 
   Future<void> _startTalk() async {
-    if (_listening) return;
+    if (_listening || _preparing) return;
     final svc = ref.read(speechServiceProvider);
     _svc = svc;
     setState(() {
-      _listening = true;
+      _preparing = true;
       _talkError = null;
     });
     try {
+      final resolved = await svc.resolveEngine();
+      if (!mounted) return;
+      if (resolved.modelMissing) {
+        final preparation = await prepareSpeechModel(
+          context,
+          model: svc.selectedAsrModel,
+          allowServerFallback: false,
+        );
+        if (!mounted) return;
+        setState(() => _preparing = false);
+        if (preparation == SpeechModelPreparation.canceled) return;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('模型已就位，再按住说话')));
+        return;
+      }
       final s = await svc.createSession();
       if (s == null) {
-        // 档位是服务端：助手对话没有服务端听写这条路，给明确出路而不是空转
         if (mounted) {
           setState(() {
-            _listening = false;
-            _talkError = '语音输入用的是本机识别，请先到「我的 · 语音能力」下载模型，或直接用打字';
+            _preparing = false;
+            _talkError = '语音输入用的是本机识别，请在「我的 · 语音能力」选择即时或精听，或直接用打字';
           });
         }
         return;
@@ -123,9 +140,15 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
         if (mounted) _input.text = t;
       });
       await s.start();
+      if (!mounted) return;
+      setState(() {
+        _preparing = false;
+        _listening = true;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        _preparing = false;
         _listening = false;
         _talkError = '听不了：$e';
       });
@@ -232,10 +255,9 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: (widget.chatEnabled
-                                ? Colors.teal
-                                : Colors.blueGrey)
-                            .withOpacity(0.18),
+                        color:
+                            (widget.chatEnabled ? Colors.teal : Colors.blueGrey)
+                                .withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
@@ -269,8 +291,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                       TextButton.icon(
                         onPressed: () => setState(() => _attachProject = true),
                         icon: const Icon(Icons.push_pin_outlined, size: 14),
-                        label: const Text('挂回项目',
-                            style: TextStyle(fontSize: 11)),
+                        label:
+                            const Text('挂回项目', style: TextStyle(fontSize: 11)),
                       ),
                   ],
                 ),
@@ -279,8 +301,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
               if (st.rulesMode)
                 Container(
                   margin: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color: Colors.amber.withValues(alpha: .07),
                     borderRadius: BorderRadius.circular(10),
@@ -293,7 +315,8 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                           size: 14, color: Colors.amberAccent),
                       SizedBox(width: 6),
                       Expanded(
-                        child: Text('当前为规则助手模式 —— AI 对话未启用，'
+                        child: Text(
+                            '当前为规则助手模式 —— AI 对话未启用，'
                             '可用下方快捷指令，主流程不受影响。',
                             style: TextStyle(
                                 fontSize: 11,
@@ -348,16 +371,13 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                   children: [
                     _QuickChip(
                         label: '基调建议',
-                        onTap: st.sending
-                            ? null
-                            : () => n.quickTone()),
+                        onTap: st.sending ? null : () => n.quickTone()),
                     _QuickChip(
                         label: '让它改改',
                         onTap: st.sending
                             ? null
                             : () => n.quickSuggest(
-                                '整体润色这版分镜：强化情绪连贯与画面记忆点',
-                                '让它改改')),
+                                '整体润色这版分镜：强化情绪连贯与画面记忆点', '让它改改')),
                     _QuickChip(
                         label: '运动改写',
                         onTap: st.sending
@@ -396,12 +416,20 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                               ? Theme.of(context).colorScheme.errorContainer
                               : Colors.white.withValues(alpha: .08),
                         ),
-                        child: Icon(
-                            _listening
-                                ? Icons.graphic_eq_rounded
-                                : Icons.mic_rounded,
-                            size: 20,
-                            color: Colors.white),
+                        child: _preparing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(
+                                _listening
+                                    ? Icons.graphic_eq_rounded
+                                    : Icons.mic_rounded,
+                                size: 20,
+                                color: Colors.white,
+                              ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -413,7 +441,9 @@ class _MvAssistantSheetState extends ConsumerState<MvAssistantSheet> {
                         textInputAction: TextInputAction.send,
                         onSubmitted: (_) => _send(),
                         decoration: InputDecoration(
-                          hintText: _listening ? '我在听…' : '和助手说…（它只引路，拍板在你）',
+                          hintText: _preparing
+                              ? '正在准备语音模型…'
+                              : (_listening ? '我在听…' : '和助手说…（它只引路，拍板在你）'),
                           isDense: true,
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 10),
@@ -486,8 +516,8 @@ class _ContextChip extends StatelessWidget {
               child: Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(fontSize: 10.5, color: Colors.tealAccent)),
+                  style: const TextStyle(
+                      fontSize: 10.5, color: Colors.tealAccent)),
             ),
             const SizedBox(width: 3),
             const Icon(Icons.close, size: 11, color: Colors.tealAccent),
@@ -582,8 +612,7 @@ class _Bubble extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4)),
-                  child: const Text('采纳这版',
-                      style: TextStyle(fontSize: 11.5)),
+                  child: const Text('采纳这版', style: TextStyle(fontSize: 11.5)),
                 ),
               ),
             // 确认票（批准/拒绝；一票一次防重复）
@@ -621,8 +650,8 @@ class _Bubble extends StatelessWidget {
                                 : () => notifier.denyTicket(msg),
                             style: TextButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10)),
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 10)),
                             child: const Text('拒绝',
                                 style: TextStyle(
                                     fontSize: 12, color: Colors.white54)),
@@ -634,8 +663,8 @@ class _Bubble extends StatelessWidget {
                                 : () => notifier.approveTicket(msg),
                             style: FilledButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12)),
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 12)),
                             child: Text(msg.ticketHandled ? '已处理' : '批准',
                                 style: const TextStyle(fontSize: 12)),
                           ),

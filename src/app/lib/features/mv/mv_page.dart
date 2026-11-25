@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/state.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_state.dart';
+import '../assistant/assistant_surface.dart';
 import 'mv_detail_page.dart';
 import 'mv_models.dart';
 import 'mv_reveal_page.dart';
@@ -20,17 +23,69 @@ class MvPage extends ConsumerStatefulWidget {
 }
 
 class _MvPageState extends ConsumerState<MvPage> {
+  MvSummary? _selectedProject;
+
   @override
   void initState() {
     super.initState();
+    ref.listen<AssistantContext>(assistantContextProvider, (_, next) {
+      if (next.surface != 'mv' && _selectedProject != null) {
+        setState(() => _selectedProject = null);
+      }
+    });
+    ref.listen<MvListState>(mvProjectsProvider, (_, next) {
+      final selected = _selectedProject;
+      if (selected == null) return;
+      final updated = next.items.where((p) => p.id == selected.id);
+      if (updated.isEmpty) return;
+      final project = updated.first;
+      if (project.title != selected.title ||
+          project.status != selected.status) {
+        setState(() => _selectedProject = project);
+      }
+      // 只有仍属于本页选中项目时才刷新上下文，避免覆盖路由页的上下文。
+      if (_ownsSelectedProjectContext()) _setProjectContext(project);
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(mvProjectsProvider.notifier).load();
       ref.read(mvCandidatesProvider.notifier).load();
     });
   }
 
-  void _openWizard({String? workId, int initialStep = 0}) {
-    MvWizardPage.push(context, workId: workId, initialStep: initialStep);
+  bool _ownsSelectedProjectContext() {
+    final selected = _selectedProject;
+    if (selected == null) return false;
+    final current = ref.read(assistantContextProvider);
+    return current.surface == 'mv' &&
+        current.refs.length == 1 &&
+        current.refs.single.type == 'project' &&
+        current.refs.single.id == selected.id;
+  }
+
+  void _setProjectContext(MvSummary project) {
+    ref.read(assistantContextProvider.notifier).state = AssistantContext(
+      surface: 'mv',
+      refs: [AssistantRef('project', project.id)],
+      title: project.title,
+    );
+  }
+
+  void _selectProject(MvSummary project) {
+    setState(() => _selectedProject = project);
+    _setProjectContext(project);
+  }
+
+  Future<void> _openWizard({String? workId, int initialStep = 0}) async {
+    final before = ref.read(mvProjectsProvider).items.map((p) => p.id).toSet();
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => MvWizardPage(workId: workId, initialStep: initialStep),
+    ));
+    if (!mounted) return;
+    await ref.read(mvProjectsProvider.notifier).load();
+    if (!mounted) return;
+    final created =
+        ref.read(mvProjectsProvider).items.where((p) => !before.contains(p.id));
+    if (created.isNotEmpty) _selectProject(created.first);
   }
 
   @override
@@ -46,10 +101,12 @@ class _MvPageState extends ConsumerState<MvPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.movie_creation_outlined, size: 48, color: Colors.white38),
+                Icon(Icons.movie_creation_outlined,
+                    size: 48, color: Colors.white38),
                 SizedBox(height: 12),
                 Text('MV 剧场暂未开放',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                 SizedBox(height: 6),
                 Text('该功能正在灰度中，敬请期待',
                     style: TextStyle(fontSize: 13, color: Colors.white54)),
@@ -89,6 +146,13 @@ class _MvPageState extends ConsumerState<MvPage> {
             const Text('给好歌配大片：选曲 → 选角 → 定妆 → 剧本 → 开机 → 成片',
                 style: TextStyle(fontSize: 12, color: Colors.white38)),
             const SizedBox(height: 14),
+            AssistantSuggestionCard(
+              title: '看看这部片子的下一步',
+              prompt: _selectedProject == null
+                  ? '我想拍一部 MV，请帮我梳理从选曲到成片的下一步'
+                  : '请基于当前 MV 项目上下文，看看这部片子的下一步，并说明需要准备或确认什么',
+              icon: Icons.movie_filter_outlined,
+            ),
             // 我的 MV 列表
             const _SectionTitle('我的 MV'),
             const SizedBox(height: 8),
@@ -96,21 +160,24 @@ class _MvPageState extends ConsumerState<MvPage> {
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Center(
-                    child:
-                        SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 2.5))),
+                    child: SizedBox(
+                        width: 26,
+                        height: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.5))),
               )
             else if (list.error != null)
               _OfflineBanner(
-                  text: list.error!, onRetry: () => ref.read(mvProjectsProvider.notifier).load()),
+                  text: list.error!,
+                  onRetry: () => ref.read(mvProjectsProvider.notifier).load()),
             if (list.items.isEmpty && !list.loading && list.error == null)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
                 child: Text('还没有 MV，从下面挑一首歌开拍',
                     style: TextStyle(color: Colors.white38, fontSize: 13)),
               ),
-            ...list.items.map(_MvCard.new).map((w) => Padding(
+            ...list.items.map((mv) => Padding(
                   padding: const EdgeInsets.only(bottom: 10),
-                  child: w,
+                  child: _MvCard(mv, onSelected: () => _selectProject(mv)),
                 )),
             if (list.cursor != null)
               Center(
@@ -128,13 +195,16 @@ class _MvPageState extends ConsumerState<MvPage> {
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Center(
-                    child:
-                        SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 2.5))),
+                    child: SizedBox(
+                        width: 26,
+                        height: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.5))),
               )
             else if (cands.error != null)
               _OfflineBanner(
                   text: cands.error!,
-                  onRetry: () => ref.read(mvCandidatesProvider.notifier).load()),
+                  onRetry: () =>
+                      ref.read(mvCandidatesProvider.notifier).load()),
             if (cands.items.isEmpty && !cands.loading && cands.error == null)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
@@ -161,7 +231,8 @@ class _MvPageState extends ConsumerState<MvPage> {
                         if (w.genres.isNotEmpty) w.genres.take(2).join('/'),
                         _fmtSec(w.durationSec),
                       ].join(' · '),
-                      style: const TextStyle(fontSize: 11, color: Colors.white38),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white38),
                     ),
                     trailing: const Icon(Icons.movie_creation_outlined,
                         size: 20, color: Colors.white38),
@@ -187,8 +258,8 @@ class _SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(text,
-        style:
-            const TextStyle(fontWeight: FontWeight.w700, color: Colors.white70));
+        style: const TextStyle(
+            fontWeight: FontWeight.w700, color: Colors.white70));
   }
 }
 
@@ -236,10 +307,11 @@ class _OfflineBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
               child: Text(text,
-                  style:
-                      const TextStyle(fontSize: 12, color: Colors.orangeAccent))),
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.orangeAccent))),
           TextButton(
-              onPressed: onRetry, child: const Text('重试', style: TextStyle(fontSize: 12))),
+              onPressed: onRetry,
+              child: const Text('重试', style: TextStyle(fontSize: 12))),
         ],
       ),
     );
@@ -248,8 +320,9 @@ class _OfflineBanner extends StatelessWidget {
 
 /// 我的 MV 卡：封面/标题/状态/进度入口 + 完成播片
 class _MvCard extends ConsumerWidget {
-  const _MvCard(this.mv);
+  const _MvCard(this.mv, {required this.onSelected});
   final MvSummary mv;
+  final VoidCallback onSelected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -260,9 +333,14 @@ class _MvCard extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         // 成片走详情页（播放器+母 work 谱系+音画报告），进度中走通告板
-        onTap: () => done
-            ? MvDetailPage.push(context, mvId: mv.id)
-            : MvProgressPage.push(context, projectId: mv.id),
+        onTap: () {
+          onSelected();
+          if (done) {
+            MvDetailPage.push(context, mvId: mv.id);
+          } else {
+            MvProgressPage.push(context, projectId: mv.id);
+          }
+        },
         child: Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -275,8 +353,7 @@ class _MvCard extends ConsumerWidget {
               Row(
                 children: [
                   Expanded(
-                    child: Text(
-                        mv.title.isEmpty ? '未命名 MV' : mv.title,
+                    child: Text(mv.title.isEmpty ? '未命名 MV' : mv.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -289,23 +366,28 @@ class _MvCard extends ConsumerWidget {
               Row(
                 children: [
                   Text(mvKindLabel(mv.kind),
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white38)),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white38)),
                   const SizedBox(width: 8),
                   Text(_fmt(mv.durationSec),
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white38)),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white38)),
                   const Spacer(),
                   if (done && (mv.videoUrl ?? '').isNotEmpty)
                     TextButton.icon(
-                      onPressed: () => _play(context),
+                      onPressed: () {
+                        onSelected();
+                        _play(context);
+                      },
                       icon: const Icon(Icons.play_circle_outline, size: 18),
                       label: const Text('看成片', style: TextStyle(fontSize: 12)),
                     )
                   else
                     TextButton.icon(
-                      onPressed: () =>
-                          MvProgressPage.push(context, projectId: mv.id),
+                      onPressed: () {
+                        onSelected();
+                        MvProgressPage.push(context, projectId: mv.id);
+                      },
                       icon: const Icon(Icons.local_movies_outlined, size: 18),
                       label: const Text('看进度', style: TextStyle(fontSize: 12)),
                     ),

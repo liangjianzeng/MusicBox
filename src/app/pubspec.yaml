@@ -24,6 +24,7 @@ dependencies:
   # 录音/拍照（5.x 的 record_linux 传递依赖过旧会导致编译失败，故用 6.x）
   record: ^6.2.1
   image_picker: ^1.0.0
+  url_launcher: ^6.3.1
   # MV 成片播放（竖屏 9:16）
   video_player: ^2.9.2
   # 端侧语音：官方 dart:ffi 包，原生 .so 由平台 AAR 自带（无需 NDK/额外 maven）

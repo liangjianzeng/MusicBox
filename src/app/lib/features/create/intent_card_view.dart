@@ -66,18 +66,16 @@ class IntentCardView extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Icon(Icons.psychology_alt_outlined,
                     size: 18, color: scheme.primary),
-                const SizedBox(width: 6),
                 const Text('AI 推测 · 可点改',
                     style: TextStyle(fontWeight: FontWeight.w700)),
-                const Spacer(),
-                if (headerTrailing != null) ...[
-                  headerTrailing!,
-                  const SizedBox(width: 6),
-                ],
+                if (headerTrailing != null) headerTrailing!,
                 if (intent.sourceKind == 'voice')
                   const Icon(Icons.record_voice_over_outlined, size: 16)
                 else if (intent.sourceKind == 'image')
@@ -101,7 +99,8 @@ class IntentCardView extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
                   'AI 还不太确定你想听什么——答下面 ${intent.questions.length} 道题会准很多',
-                  style: const TextStyle(fontSize: 11, color: Colors.amberAccent),
+                  style:
+                      const TextStyle(fontSize: 11, color: Colors.amberAccent),
                 ),
               ),
             if (intent.sceneDesc != null && intent.sceneDesc!.isNotEmpty) ...[
@@ -114,12 +113,15 @@ class IntentCardView extends StatelessWidget {
                         style: const TextStyle(fontSize: 13, height: 1.4)),
                   ),
                   if (onSceneDescEdited != null)
-                    InkWell(
-                      onTap: onSceneDescEdited,
-                      child: const Padding(
-                        padding: EdgeInsets.only(left: 6, top: 1),
-                        child: Icon(Icons.edit_outlined,
-                            size: 15, color: Colors.white38),
+                    SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: IconButton(
+                        onPressed: onSceneDescEdited,
+                        tooltip: '修改灵感描述',
+                        padding: EdgeInsets.zero,
+                        icon: const Icon(Icons.edit_outlined,
+                            size: 18, color: Colors.white54),
                       ),
                     ),
                 ],
@@ -180,47 +182,52 @@ class IntentCardView extends StatelessWidget {
                 child: Wrap(
                   spacing: 6,
                   runSpacing: 6,
-                  children: intent.genreHypotheses
-                      .map((g) {
-                        final zh = StyleCatalog.fallback.zhFor(g);
-                        final showEn = zh != g;
-                        return FilterChip(
-                          label: Text(
-                              showEn ? '$zh（$g）' : g,
-                              style: const TextStyle(fontSize: 12)),
-                          visualDensity: VisualDensity.compact,
-                          selected: selectedGenres?.contains(g) ?? true,
-                          onSelected: onGenreToggled == null
-                              ? null
-                              : (v) => onGenreToggled!(g, v),
-                        );
-                      })
-                      .toList(),
+                  children: intent.genreHypotheses.map((g) {
+                    final zh = StyleCatalog.fallback.zhFor(g);
+                    final showEn = zh != g;
+                    return FilterChip(
+                      label: Text(showEn ? '$zh（$g）' : g,
+                          style: const TextStyle(fontSize: 12)),
+                      visualDensity: VisualDensity.compact,
+                      selected: selectedGenres?.contains(g) ?? true,
+                      onSelected: onGenreToggled == null
+                          ? null
+                          : (v) => onGenreToggled!(g, v),
+                    );
+                  }).toList(),
                 ),
               ),
 
             _Section(
               label: '演绎方式',
-              child: InkWell(
-                onTap: onVocalToggled,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(_vocalLabel,
-                        style: const TextStyle(fontSize: 13)),
-                    if (onVocalToggled != null)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 4),
-                        child: Icon(Icons.swap_horiz, size: 14),
-                      ),
-                  ],
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: InkWell(
+                  onTap: onVocalToggled,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_vocalLabel, style: const TextStyle(fontSize: 13)),
+                        if (onVocalToggled != null)
+                          const Padding(
+                            padding: EdgeInsets.only(left: 4),
+                            child: Icon(Icons.swap_horiz, size: 14),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
-            if (intent.durationHint != null &&
-                intent.durationHint!.isNotEmpty)
-              _Section(label: '时长倾向', child: Text(intent.durationHint!,
-                  style: const TextStyle(fontSize: 13))),
+            if (intent.durationHint != null && intent.durationHint!.isNotEmpty)
+              _Section(
+                  label: '时长倾向',
+                  child: Text(intent.durationHint!,
+                      style: const TextStyle(fontSize: 13))),
             // 澄清题
             ...questions.asMap().entries.map((entry) {
               final q = entry.value;

@@ -262,6 +262,48 @@ ALTER TABLE intent_cards ADD COLUMN source_text TEXT;
 ALTER TABLE intent_cards ADD COLUMN degraded INT DEFAULT 0;
 `,
   },
+  {
+    // v12 · 统一创作助手（契约 v4.0）：只增量扩展 chat_*，不触碰 mv_chat_*/mv_tickets。
+    version: 12,
+    sql: `
+ALTER TABLE chat_sessions ADD COLUMN title TEXT;
+ALTER TABLE chat_sessions ADD COLUMN surface TEXT DEFAULT 'global';
+ALTER TABLE chat_sessions ADD COLUMN updated_at TEXT;
+ALTER TABLE chat_messages ADD COLUMN seq INTEGER;
+ALTER TABLE chat_messages ADD COLUMN client_msg_id TEXT;
+ALTER TABLE chat_tickets ADD COLUMN session_id TEXT;
+ALTER TABLE chat_tickets ADD COLUMN meta_json TEXT;
+ALTER TABLE chat_tickets ADD COLUMN job_id TEXT;
+ALTER TABLE chat_tickets ADD COLUMN reply TEXT;
+ALTER TABLE chat_tickets ADD COLUMN expires_at TEXT;
+ALTER TABLE chat_tickets ADD COLUMN started_at TEXT;
+ALTER TABLE chat_tickets ADD COLUMN finished_at TEXT;
+ALTER TABLE chat_tickets ADD COLUMN failure_code TEXT;
+CREATE TABLE assistant_events(
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  type TEXT NOT NULL, payload TEXT, created_at TEXT NOT NULL);
+CREATE UNIQUE INDEX idx_assistant_events_user_seq ON assistant_events(user_id,seq);
+CREATE TABLE assistant_metrics(
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT,
+  surface TEXT, tool TEXT, mode TEXT, status TEXT, kind TEXT,
+  latency_ms INTEGER, credits INTEGER DEFAULT 0, created_at TEXT NOT NULL);
+CREATE INDEX idx_assistant_metrics_created ON assistant_metrics(created_at);
+CREATE INDEX idx_assistant_metrics_tool ON assistant_metrics(tool,created_at);
+-- 历史消息按会话创建顺序回填连续 seq；result 角色与内容原样保留。
+WITH ordered AS (
+  SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at,rowid) AS seq
+  FROM chat_messages
+)
+UPDATE chat_messages SET seq=(SELECT seq FROM ordered WHERE ordered.id=chat_messages.id)
+WHERE seq IS NULL;
+UPDATE chat_sessions SET updated_at=created_at WHERE updated_at IS NULL;
+UPDATE chat_tickets SET expires_at=ttl_expire_at WHERE expires_at IS NULL;
+CREATE UNIQUE INDEX idx_chat_messages_session_seq ON chat_messages(session_id,seq);
+CREATE UNIQUE INDEX idx_chat_messages_client_idem ON chat_messages(session_id,client_msg_id)
+WHERE client_msg_id IS NOT NULL;
+CREATE INDEX idx_chat_tickets_assistant_user ON chat_tickets(user_id,scope,created_at);
+`,
+  },
 ];
 
 function init() {

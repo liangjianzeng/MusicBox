@@ -200,7 +200,7 @@ function listWorks(ctx) {
   if (q.public === '1') {
     where.push("visibility='public'");
   } else {
-    const u = auth.requireUser(ctx);
+    const u = ctx.user || auth.requireUser(ctx); // 内部助手复用同一可见性检索，HTTP 仍走原鉴权
     where.push('user_id=?'); args.push(u.id);
   }
   if (q.genre) { where.push('genres LIKE ?'); args.push('%' + String(q.genre).slice(0, 30) + '%'); }
@@ -255,7 +255,10 @@ function detail(ctx) {
 function patchWork(ctx) {
   const user = auth.requireUser(ctx); ctx.user = user;
   const w = ownWork(ctx, ctx.params.id);
-  const b = ctx.body || {};
+  return patchWorkInternal(user, w, ctx.body || {});
+}
+// 作品点改内核：PATCH 与统一助手确认票共用，避免另起一套写库/审核/审计通道。
+function patchWorkInternal(user, w, b) {
   const sets = []; const args = [];
   if (b.title !== undefined) { rules.moderateFields([b.title]); sets.push('title=?'); args.push(String(b.title).slice(0, 80)); }
   if (b.mood !== undefined) { rules.moderateFields([b.mood]); sets.push('mood=?'); args.push(String(b.mood).slice(0, 20)); }
@@ -410,7 +413,7 @@ function report(ctx) {
 }
 
 module.exports = {
-  dispatchMusic, buildMusicPayload, normalizeForIdem, variationBase,
+  dispatchMusic, buildMusicPayload, normalizeForIdem, variationBase, listWorks, patchWorkInternal,
   routes: [
     { m: 'POST', p: '/v1/works/generate', h: generate },
     { m: 'GET', p: '/v1/jobs/:id', h: getJob },

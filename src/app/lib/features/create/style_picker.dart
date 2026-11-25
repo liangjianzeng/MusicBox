@@ -71,7 +71,8 @@ class StylePicker extends ConsumerWidget {
           selected: selected,
           max: maxGenres,
           groupLabel: '曲风',
-          onToggle: (wire, on) => _toggle(context, cat.genres, wire, on, maxGenres, '曲风'),
+          onToggle: (wire, on) =>
+              _toggle(context, cat.genres, wire, on, maxGenres, '曲风'),
         ),
         const SizedBox(height: 12),
         _Group(
@@ -112,14 +113,16 @@ class _Group extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
+        Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text('$title（最多 $max 个）',
                 style: const TextStyle(
                     fontWeight: FontWeight.w700,
                     fontSize: 13,
                     color: Colors.white70)),
-            const SizedBox(width: 6),
             if (picked > 0)
               Text('$picked/$max',
                   style: const TextStyle(fontSize: 11, color: Colors.white38)),

@@ -44,15 +44,25 @@ Future<void> showMusicAssistant(
 String _human(String s) {
   var t = s;
   const pairs = <String, String>{
-    'comfyui': '画面引擎', 'qwen': '大模型', 'minimax': '生成模型',
-    'lipsync': '对口型', 'facegate': '人脸门禁', 'ace-step': '编曲模型',
-    'sense-voice': '语音识别', 'seed': '随机种子', 'prompt': '描述词',
+    'comfyui': '画面引擎',
+    'qwen': '大模型',
+    'minimax': '生成模型',
+    'lipsync': '对口型',
+    'facegate': '人脸门禁',
+    'ace-step': '编曲模型',
+    'sense-voice': '语音识别',
+    'seed': '随机种子',
+    'prompt': '描述词',
   };
   pairs.forEach((k, v) => t = t.replaceAll(RegExp(k, caseSensitive: false), v));
   return t;
 }
 
 // —— 票面模型（确认面板数据源；服务端已在票响应带 ver/hash）——
+enum MusicTicketStatus { pending, processing, success, failed, expired }
+
+enum MusicTicketFailure { approve, deny }
+
 class MusicTicket {
   MusicTicket({
     required this.id,
@@ -61,6 +71,8 @@ class MusicTicket {
     required this.hash,
     required this.estCredits,
     required this.estMinutes,
+    this.status = MusicTicketStatus.pending,
+    this.failure,
   });
   final String id;
   final String action;
@@ -68,17 +80,36 @@ class MusicTicket {
   final String hash;
   final int estCredits;
   final int estMinutes;
-  final String status = 'pending';
+  final MusicTicketStatus status;
+  final MusicTicketFailure? failure;
+
+  bool get canAct =>
+      status == MusicTicketStatus.pending || status == MusicTicketStatus.failed;
+
+  MusicTicket copyWith(
+          {MusicTicketStatus? status, MusicTicketFailure? failure}) =>
+      MusicTicket(
+        id: id,
+        action: action,
+        ver: ver,
+        hash: hash,
+        estCredits: estCredits,
+        estMinutes: estMinutes,
+        status: status ?? this.status,
+        failure: failure,
+      );
 
   factory MusicTicket.fromMap(Map m) => MusicTicket(
         id: '${m['ticket_id'] ?? m['id'] ?? ''}',
         action: '${m['action'] ?? ''}',
         ver: '${m['ver'] ?? ''}',
         hash: '${m['hash'] ?? ''}',
-        estCredits: (m['est'] is Map ? (m['est']['credits']) : m['est_credits']) is num
+        estCredits: (m['est'] is Map ? (m['est']['credits']) : m['est_credits'])
+                is num
             ? (m['est'] is Map ? m['est']['credits'] : m['est_credits']).toInt()
             : 0,
-        estMinutes: (m['est'] is Map ? (m['est']['minutes']) : m['est_minutes']) is num
+        estMinutes: (m['est'] is Map ? (m['est']['minutes']) : m['est_minutes'])
+                is num
             ? (m['est'] is Map ? m['est']['minutes'] : m['est_minutes']).toInt()
             : 0,
       );
@@ -89,18 +120,15 @@ class MusicChatMsg {
     required this.role, // user|ai|sys
     required this.text,
     this.ticket,
-    this.ticketHandled = false,
   });
   final String role;
   final String text;
   final MusicTicket? ticket;
-  final bool ticketHandled;
 
-  MusicChatMsg copyWith({bool? ticketHandled}) => MusicChatMsg(
+  MusicChatMsg copyWith({MusicTicket? ticket}) => MusicChatMsg(
         role: role,
         text: text,
-        ticket: ticket,
-        ticketHandled: ticketHandled ?? this.ticketHandled,
+        ticket: ticket ?? this.ticket,
       );
 }
 
@@ -136,9 +164,11 @@ class MusicAssistantState {
 }
 
 class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
-  MusicAssistantNotifier(this._ref, this._chips) : super(const MusicAssistantState());
+  MusicAssistantNotifier(this._ref, this._chips)
+      : super(const MusicAssistantState());
   final Ref _ref;
   final List<Map<String, dynamic>> _chips;
+  final Set<String> _ticketFlights = {};
 
   ApiClient get _api => _ref.read(apiClientProvider);
 
@@ -154,7 +184,7 @@ class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
       final r = await _api.musicAssistantMessages(
         sessionId: state.sessionId,
         text: t,
-        chips: (chips == null || chips.isEmpty) ? _chips : chips,
+        chips: chips ?? _chips,
       );
       final sid = r['session_id']?.toString();
       if (sid != null && sid.isNotEmpty) state = state.copyWith(sessionId: sid);
@@ -170,9 +200,8 @@ class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
       final reply = r['reply']?.toString();
       _push(MusicChatMsg(
           role: 'ai',
-          text: _human((reply ?? '').trim().isEmpty
-              ? '（助手没返回内容，换个说法再试）'
-              : reply!)));
+          text: _human(
+              (reply ?? '').trim().isEmpty ? '（助手没返回内容，换个说法再试）' : reply!)));
     } on ApiException catch (e) {
       state = state.copyWith(sending: false);
       if (e.code == 'NOT_FOUND') {
@@ -186,41 +215,81 @@ class MusicAssistantNotifier extends StateNotifier<MusicAssistantState> {
   }
 
   Future<void> approveTicket(MusicChatMsg msg) async {
-    final t = msg.ticket;
-    if (t == null || t.id.isEmpty) return;
-    _replace(msg, msg.copyWith(ticketHandled: true));
+    final current = _ticketMessage(msg.ticket?.id);
+    final t = current?.ticket;
+    if (t == null || t.id.isEmpty || !t.canAct || !_beginTicket(t.id)) {
+      return;
+    }
+    _setTicketStatus(t.id, MusicTicketStatus.processing);
     try {
       final r = await _api.musicConfirmTicket(t.id, ver: t.ver, hash: t.hash);
       final charged = r['credits_charged'];
       final n = charged is num ? charged.toInt() : 0;
+      _setTicketStatus(t.id, MusicTicketStatus.success);
       _push(MusicChatMsg(
-          role: 'sys',
-          text: n > 0 ? '已批准，开始执行（扣 $n ⚡）。' : '已批准，开始执行。'));
+          role: 'sys', text: n > 0 ? '已批准，开始执行（扣 $n ⚡）。' : '已批准，开始执行。'));
     } on ApiException catch (e) {
+      final expired = e.code == 'TICKET_UNUSABLE' || e.code == 'NOT_FOUND';
+      _setTicketStatus(
+          t.id, expired ? MusicTicketStatus.expired : MusicTicketStatus.failed,
+          failure: expired ? null : MusicTicketFailure.approve);
       _push(MusicChatMsg(
           role: 'sys',
-          text: (e.code == 'TICKET_UNUSABLE' || e.code == 'NOT_FOUND')
-              ? '这张票已失效（过期或已处理），未执行任何操作。'
-              : _friendly(e)));
+          text: expired ? '这张票已失效（过期或已处理），未执行任何操作。' : _friendly(e)));
+    } catch (_) {
+      _setTicketStatus(t.id, MusicTicketStatus.failed,
+          failure: MusicTicketFailure.approve);
+      _push(MusicChatMsg(role: 'sys', text: '确认失败，请重试。'));
+    } finally {
+      _ticketFlights.remove(t.id);
     }
   }
 
   Future<void> denyTicket(MusicChatMsg msg) async {
-    final t = msg.ticket;
-    if (t == null || t.id.isEmpty) return;
-    _replace(msg, msg.copyWith(ticketHandled: true));
+    final current = _ticketMessage(msg.ticket?.id);
+    final t = current?.ticket;
+    if (t == null || t.id.isEmpty || !t.canAct || !_beginTicket(t.id)) {
+      return;
+    }
+    _setTicketStatus(t.id, MusicTicketStatus.processing);
     try {
       await _api.musicDenyTicket(t.id);
+      _setTicketStatus(t.id, MusicTicketStatus.success);
       _push(MusicChatMsg(role: 'sys', text: '已拒绝这张票，未执行任何操作。'));
     } on ApiException catch (e) {
-      _push(MusicChatMsg(role: 'sys', text: _friendly(e)));
+      final expired = e.code == 'TICKET_UNUSABLE' || e.code == 'NOT_FOUND';
+      _setTicketStatus(
+          t.id, expired ? MusicTicketStatus.expired : MusicTicketStatus.failed,
+          failure: expired ? null : MusicTicketFailure.deny);
+      _push(MusicChatMsg(
+          role: 'sys', text: expired ? '这张票已失效（过期或已处理）。' : _friendly(e)));
+    } catch (_) {
+      _setTicketStatus(t.id, MusicTicketStatus.failed,
+          failure: MusicTicketFailure.deny);
+      _push(MusicChatMsg(role: 'sys', text: '取消失败，请重试。'));
+    } finally {
+      _ticketFlights.remove(t.id);
     }
   }
 
-  void _replace(MusicChatMsg old, MusicChatMsg next) {
+  bool _beginTicket(String id) => _ticketFlights.add(id);
+
+  MusicChatMsg? _ticketMessage(String? id) {
+    for (final msg in state.messages) {
+      if (msg.ticket?.id == id) return msg;
+    }
+    return null;
+  }
+
+  void _setTicketStatus(String id, MusicTicketStatus status,
+      {MusicTicketFailure? failure}) {
+    final current = _ticketMessage(id);
+    final ticket = current?.ticket;
+    if (current == null || ticket == null) return;
     final list = [...state.messages];
-    final i = list.indexOf(old);
-    if (i >= 0) list[i] = next;
+    final i = list.indexOf(current);
+    list[i] = current.copyWith(
+        ticket: ticket.copyWith(status: status, failure: failure));
     state = state.copyWith(messages: list);
   }
 
@@ -264,11 +333,13 @@ class MusicAssistantSheet extends ConsumerStatefulWidget {
   final String? modeHint;
 
   @override
-  ConsumerState<MusicAssistantSheet> createState() => _MusicAssistantSheetState();
+  ConsumerState<MusicAssistantSheet> createState() =>
+      _MusicAssistantSheetState();
 }
 
 class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
   final _input = TextEditingController();
+  final _scroll = ScrollController();
   bool _attach = true;
 
   String get _key => '${widget.subjectType}:${widget.subjectId}';
@@ -276,10 +347,20 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
   @override
   void dispose() {
     _input.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
-  void _send(String text) => ref.read(musicAssistantProvider(_key).notifier).send(text);
+  void _send(String text) => ref
+      .read(musicAssistantProvider(_key).notifier)
+      .send(text, chips: _attach ? null : const []);
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    });
+  }
 
   List<String> get _quick => widget.subjectType == 'intent'
       ? ['改成纯音乐', '出 2 首', 'BPM 110', '现在什么状态']
@@ -287,7 +368,11 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final st = ref.watch(musicAssistantProvider(_key));
+    final provider = musicAssistantProvider(_key);
+    final st = ref.watch(provider);
+    ref.listen<MusicAssistantState>(provider, (previous, next) {
+      if (previous?.messages.length != next.messages.length) _scrollToBottom();
+    });
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final isWork = widget.subjectType == 'work';
 
@@ -316,10 +401,9 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: (widget.chatEnabled
-                                ? Colors.teal
-                                : Colors.blueGrey)
-                            .withValues(alpha: .18),
+                        color:
+                            (widget.chatEnabled ? Colors.teal : Colors.blueGrey)
+                                .withValues(alpha: .18),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
@@ -335,18 +419,21 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                     const Spacer(),
                     if (_attach)
                       _ContextChip(
-                        icon: isWork ? Icons.music_note : Icons.lightbulb_outline,
+                        icon:
+                            isWork ? Icons.music_note : Icons.lightbulb_outline,
                         label: widget.subjectLabel.isEmpty
                             ? (isWork ? '本作品' : '本灵感卡')
-                            : (isWork ? '《${widget.subjectLabel}》' : widget.subjectLabel),
+                            : (isWork
+                                ? '《${widget.subjectLabel}》'
+                                : widget.subjectLabel),
                         onDetach: () => setState(() => _attach = false),
                       ),
                     if (!_attach)
                       TextButton.icon(
                         onPressed: () => setState(() => _attach = true),
                         icon: const Icon(Icons.push_pin_outlined, size: 14),
-                        label: const Text('挂回上下文',
-                            style: TextStyle(fontSize: 11)),
+                        label:
+                            const Text('挂回上下文', style: TextStyle(fontSize: 11)),
                       ),
                   ],
                 ),
@@ -368,7 +455,8 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                           size: 14, color: Colors.amberAccent),
                       SizedBox(width: 6),
                       Expanded(
-                        child: Text('当前为规则助手模式 —— AI 对话未启用；'
+                        child: Text(
+                            '当前为规则助手模式 —— AI 对话未启用；'
                             '可用下方快捷指令，花钱的动作一律先给你确认票。',
                             style: TextStyle(
                                 fontSize: 11,
@@ -390,19 +478,18 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                                   '点改完可直接照这版出曲。',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.white24,
-                              height: 1.6),
+                              fontSize: 12, color: Colors.white24, height: 1.6),
                         ),
                       )
                     : ListView.builder(
+                        controller: _scroll,
                         shrinkWrap: true,
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                         itemCount: st.messages.length,
                         itemBuilder: (_, i) => _Bubble(
                             msg: st.messages[i],
-                            notifier:
-                                ref.read(musicAssistantProvider(_key).notifier)),
+                            notifier: ref
+                                .read(musicAssistantProvider(_key).notifier)),
                       ),
               ),
               if (st.sending)
@@ -421,8 +508,7 @@ class _MusicAssistantSheetState extends ConsumerState<MusicAssistantSheet> {
                   children: [
                     for (final q in _quick)
                       _QuickChip(
-                          label: q,
-                          onTap: st.sending ? null : () => _send(q)),
+                          label: q, onTap: st.sending ? null : () => _send(q)),
                   ],
                 ),
               ),
@@ -504,7 +590,8 @@ class _ContextChip extends StatelessWidget {
               child: Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 10.5, color: Colors.tealAccent)),
+                  style: const TextStyle(
+                      fontSize: 10.5, color: Colors.tealAccent)),
             ),
             const SizedBox(width: 3),
             const Icon(Icons.close, size: 11, color: Colors.tealAccent),
@@ -549,6 +636,8 @@ class _Bubble extends StatelessWidget {
       );
     }
     final me = msg.role == 'user';
+    final ticket = msg.ticket;
+    final actionable = ticket?.canAct == true;
     return Align(
       alignment: me ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -567,9 +656,9 @@ class _Bubble extends StatelessWidget {
               me ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             Text(_human(msg.text),
-                style:
-                    const TextStyle(fontSize: 13, color: Colors.white, height: 1.45)),
-            if (msg.ticket != null)
+                style: const TextStyle(
+                    fontSize: 13, color: Colors.white, height: 1.45)),
+            if (ticket != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Container(
@@ -584,13 +673,15 @@ class _Bubble extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('确认票 · ${_actionLabel(msg.ticket!.action)}',
+                      Text('确认票 · ${_actionLabel(ticket.action)}',
                           style: const TextStyle(
                               fontSize: 12, fontWeight: FontWeight.w700)),
                       const SizedBox(height: 2),
                       Text(
-                          '约 ${msg.ticket!.estCredits} ⚡ · '
-                          '${msg.ticket!.estMinutes} 分钟 · 60 秒内有效',
+                          ticket.status == MusicTicketStatus.processing
+                              ? '处理中，请勿重复操作…'
+                              : '约 ${ticket.estCredits} ⚡ · '
+                                  '${ticket.estMinutes} 分钟 · 60 秒内有效',
                           style: const TextStyle(
                               fontSize: 11, color: Colors.white54)),
                       const SizedBox(height: 6),
@@ -598,27 +689,32 @@ class _Bubble extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
                           TextButton(
-                            onPressed: msg.ticketHandled
-                                ? null
-                                : () => notifier.denyTicket(msg),
+                            onPressed: actionable
+                                ? () => notifier.denyTicket(msg)
+                                : null,
                             style: TextButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10)),
-                            child: const Text('拒绝',
-                                style: TextStyle(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 10)),
+                            child: Text(
+                                ticket.failure == MusicTicketFailure.deny &&
+                                        ticket.status ==
+                                            MusicTicketStatus.failed
+                                    ? '重试拒绝'
+                                    : '拒绝',
+                                style: const TextStyle(
                                     fontSize: 12, color: Colors.white54)),
                           ),
                           const SizedBox(width: 6),
                           FilledButton(
-                            onPressed: msg.ticketHandled
-                                ? null
-                                : () => notifier.approveTicket(msg),
+                            onPressed: actionable
+                                ? () => notifier.approveTicket(msg)
+                                : null,
                             style: FilledButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12)),
-                            child: Text(msg.ticketHandled ? '已处理' : '批准',
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 12)),
+                            child: Text(_ticketActionLabel(ticket),
                                 style: const TextStyle(fontSize: 12)),
                           ),
                         ],
@@ -632,6 +728,16 @@ class _Bubble extends StatelessWidget {
       ),
     );
   }
+
+  static String _ticketActionLabel(MusicTicket ticket) =>
+      switch (ticket.status) {
+        MusicTicketStatus.pending => '批准',
+        MusicTicketStatus.processing => '处理中',
+        MusicTicketStatus.success => '已处理',
+        MusicTicketStatus.failed =>
+          ticket.failure == MusicTicketFailure.deny ? '改为批准' : '重试批准',
+        MusicTicketStatus.expired => '已失效',
+      };
 
   static String _actionLabel(String a) {
     const m = {

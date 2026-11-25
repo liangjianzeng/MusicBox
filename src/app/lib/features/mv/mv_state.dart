@@ -98,7 +98,8 @@ class MvWizardState {
         imageName: imageName ?? this.imageName,
         imageId: imageId ?? this.imageId,
         authorized: authorized ?? this.authorized,
-        uploadError: clearUploadError ? null : (uploadError ?? this.uploadError),
+        uploadError:
+            clearUploadError ? null : (uploadError ?? this.uploadError),
         submitting: submitting ?? this.submitting,
         submitError:
             clearSubmitError ? null : (submitError ?? this.submitError),
@@ -120,8 +121,8 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
 
   MvApiClient get _api => _ref.read(mvApiClientProvider);
 
-  void setWork(Work w) => state = state.copyWith(
-      workId: w.id, work: w, clearSubmitError: true);
+  void setWork(Work w) =>
+      state = state.copyWith(workId: w.id, work: w, clearSubmitError: true);
   void setBrief(String? v) => state = state.copyWith(brief: v);
   void setGender(String g) => state = state.copyWith(gender: g);
 
@@ -180,8 +181,7 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
         }
         final uploaded = await _api.uploadImage(path);
         if (uploaded.isEmpty) {
-          throw ApiException(
-              code: 'INTERNAL', message: '照片上传未返回凭据，请重试');
+          throw ApiException(code: 'INTERNAL', message: '照片上传未返回凭据，请重试');
         }
         imageId = uploaded;
         state = state.copyWith(imageId: uploaded);
@@ -233,7 +233,8 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
       final detail = MvProjectDetail.fromMap(d);
       if (detail.characters.isEmpty) return false;
       final c = detail.characters.first;
-      final url = (castImageUrl.isNotEmpty ? castImageUrl : c.castImageUrl) ?? '';
+      final url =
+          (castImageUrl.isNotEmpty ? castImageUrl : c.castImageUrl) ?? '';
       if (url.isEmpty) return false;
       await _api.confirmCast(
         projectId: p.id,
@@ -257,12 +258,13 @@ class MvWizardNotifier extends StateNotifier<MvWizardState> {
     final p = state.project;
     if (p == null || castImageUrl.isEmpty) return '请先挑选定妆照';
     try {
-      final r =
-          await _api.createJob(p.id, 'cast_video', {'cast_image_url': castImageUrl});
+      final r = await _api
+          .createJob(p.id, 'cast_video', {'cast_image_url': castImageUrl});
       final charged = r['credits_charged'];
       final n = charged is num ? charged.toInt() : 0;
       state = state.copyWith(
-          jobNote: n > 0 ? '定妆视频任务已提交（扣 $n ⚡），约需 5 分钟' : '定妆视频任务已提交（幂等命中，未重复扣分）');
+          jobNote:
+              n > 0 ? '定妆视频任务已提交（扣 $n ⚡），约需 5 分钟' : '定妆视频任务已提交（幂等命中，未重复扣分）');
       return null;
     } on ApiException catch (e) {
       return mvFriendlyError(e);
@@ -296,7 +298,8 @@ class MvDetailState {
 /// 开机（boot）结果分类：UI 按 code 分支呈现诚实对话
 class MvBootOutcome {
   MvBootOutcome(this.code, {this.message, this.charged = 0, this.jobs = 0});
-  final String code; // OK|EST_STALE|NOT_READY|BUDGET_EXCEEDED|CREDITS_NOT_ENOUGH|ERR
+  final String
+      code; // OK|EST_STALE|NOT_READY|BUDGET_EXCEEDED|CREDITS_NOT_ENOUGH|ERR
   final String? message;
   final int charged;
   final int jobs;
@@ -327,8 +330,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
   // ---------- wave-3 动作（全部经 MvApiClient；错误如实返回，不伪造成功） ----------
 
   /// 派单（jobs）：cast_image/cast_video/storyboard/preview/shoot/compose
-  Future<(bool ok, String? err, int charged)> dispatchJob(
-      String type, [Map<String, dynamic>? params]) async {
+  Future<(bool ok, String? err, int charged)> dispatchJob(String type,
+      [Map<String, dynamic>? params]) async {
     try {
       final r = await _api.createJob(projectId, type, params);
       final charged = r['credits_charged'];
@@ -377,9 +380,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
     final scriptJson = <String, dynamic>{
       'shots': edited.map((s) => s.toScriptShot()).toList(),
     };
-    final err =
-        await _casPatch((ver) => _api.patchProject(projectId,
-            ver: ver, scriptJson: scriptJson));
+    final err = await _casPatch((ver) =>
+        _api.patchProject(projectId, ver: ver, scriptJson: scriptJson));
     if (err != null) return err;
     final old = state.detail;
     if (old != null) {
@@ -397,15 +399,16 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
                 camera: e.camera));
       }
       final verBump = old.project.copyWithScriptVer(old.project.scriptVer + 1);
-      state = MvDetailState(detail: MvProjectDetail(
-          project: verBump,
-          characters: old.characters,
-          shots: merged,
-          tickets: old.tickets,
-          assistantEnabled: old.assistantEnabled,
-          assistantChat: old.assistantChat,
-          assistantModeHint: old.assistantModeHint,
-          aiReview: old.aiReview));
+      state = MvDetailState(
+          detail: MvProjectDetail(
+              project: verBump,
+              characters: old.characters,
+              shots: merged,
+              tickets: old.tickets,
+              assistantEnabled: old.assistantEnabled,
+              assistantChat: old.assistantChat,
+              assistantModeHint: old.assistantModeHint,
+              aiReview: old.aiReview));
     }
     return null;
   }
@@ -424,7 +427,10 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
           charged: charged is num ? charged.toInt() : 0, jobs: jobs.length);
     } on ApiException catch (e) {
       const known = {
-        'EST_STALE', 'NOT_READY', 'BUDGET_EXCEEDED', 'CREDITS_NOT_ENOUGH'
+        'EST_STALE',
+        'NOT_READY',
+        'BUDGET_EXCEEDED',
+        'CREDITS_NOT_ENOUGH'
       };
       await refresh(quiet: true); // 状态可能已变（如 paused），如实刷新
       return MvBootOutcome(known.contains(e.code) ? e.code : 'ERR',
@@ -447,8 +453,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
   }
 
   /// 「让它改改」：409 NOT_READY → notReady=true，UI 退回手动编辑（不装忙）
-  Future<(MvSuggest? suggest, String? err, bool notReady)>
-      suggestScript(String note) async {
+  Future<(MvSuggest? suggest, String? err, bool notReady)> suggestScript(
+      String note) async {
     try {
       final r = await _api.suggestScript(projectId, note);
       final s = (r['suggest'] as Map?);
@@ -464,8 +470,8 @@ class MvProjectDetailNotifier extends StateNotifier<MvDetailState> {
 
   /// 采纳建议（suggest/apply，ver CAS + STALE retry-once）
   Future<String?> applySuggest(MvSuggest s) async {
-    final err = await _casPatch((ver) =>
-        _api.applySuggest(projectId, s.id, ver));
+    final err =
+        await _casPatch((ver) => _api.applySuggest(projectId, s.id, ver));
     if (err == null) await refresh(quiet: true);
     return err;
   }
@@ -575,7 +581,8 @@ class MvAssistantState {
 }
 
 class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
-  MvAssistantNotifier(this._ref, this.projectId) : super(const MvAssistantState());
+  MvAssistantNotifier(this._ref, this.projectId)
+      : super(const MvAssistantState());
 
   final Ref _ref;
   final String projectId;
@@ -586,8 +593,7 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       state = state.copyWith(messages: [...state.messages, m]);
 
   /// 发送对话消息：MV_NOT_READY / chat-off → 规则模式 + 诚实横幅
-  Future<void> send(String text,
-      {List<Map<String, dynamic>> chips = const []}) async {
+  Future<void> send(String text, {List<Map<String, dynamic>>? chips}) async {
     final t = text.trim();
     if (t.isEmpty || state.sending) return;
     _push(MvChatMsg(role: 'user', text: t));
@@ -596,11 +602,10 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       final r = await _api.assistantMessages(
         sessionId: state.sessionId,
         text: t,
-        chips: chips.isEmpty
-            ? [
-                {'type': 'project', 'id': projectId},
-              ]
-            : chips,
+        chips: chips ??
+            [
+              {'type': 'project', 'id': projectId},
+            ],
       );
       final sid = r['session_id']?.toString();
       if (sid != null && sid.isNotEmpty) {
@@ -680,9 +685,8 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
       final r = await _api.tone(projectId);
       state = state.copyWith(sending: false);
       final ts = (r['tone_suggest'] as Map?);
-      final opts = (ts?['options'] as List? ?? const [])
-          .whereType<Map>()
-          .toList();
+      final opts =
+          (ts?['options'] as List? ?? const []).whereType<Map>().toList();
       final mode = ((r['assist'] as Map?)?['mode'])?.toString();
       if (opts.isEmpty) {
         _push(MvChatMsg(role: 'ai', text: '这次没给出基调建议，稍后再试或手动定基调。'));
@@ -717,28 +721,13 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
   Future<void> quickMotion(String? shotId) async {
     if (state.sending) return;
     if (shotId == null || shotId.isEmpty) {
-      _push(MvChatMsg(
-          role: 'sys',
-          text: '运动改写针对具体某镜：请在镜头清单里长按这镜，选「运动改写」。'));
+      _push(MvChatMsg(role: 'sys', text: '运动改写针对具体某镜：请在镜头清单里长按这镜，选「运动改写」。'));
       return;
     }
-    _push(MvChatMsg(role: 'user', text: '【运动改写】'));
-    state = state.copyWith(sending: true, clearError: true);
-    try {
-      final r = await _api.shotJob(shotId,
-          type: 'reshoot', reason: mvHuman('动作不对'));
-      state = state.copyWith(sending: false);
-      final charged = r['credits_charged'];
-      final n = charged is num ? charged.toInt() : 0;
-      _push(MvChatMsg(
-          role: 'ai',
-          text: n > 0
-              ? '已按你的反馈改写这镜动作并重新开拍（扣 $n ⚡）。'
-              : '已改写这镜动作并重新开拍（系统补拍免费）。'));
-    } on ApiException catch (e) {
-      state = state.copyWith(sending: false);
-      _push(MvChatMsg(role: 'sys', text: mvFriendlyError(e)));
-    }
+    await send('请重拍这镜，原因：动作不对', chips: [
+      {'type': 'project', 'id': projectId},
+      {'type': 'shot', 'id': shotId},
+    ]);
   }
 
   /// 采纳挂起的建议草稿（ver CAS：失配如实提示后重试，不静默）
@@ -748,8 +737,8 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
     final n = _ref.read(mvProjectDetailProvider(projectId).notifier);
     String? err;
     try {
-      final r = await _api.applySuggest(projectId, suggestId,
-          await _currentVer(n));
+      final r =
+          await _api.applySuggest(projectId, suggestId, await _currentVer(n));
       final p = r['project'] as Map?;
       err = p == null ? '采纳未生效，请稍后再试' : null;
     } on ApiException catch (e) {
@@ -770,10 +759,7 @@ class MvAssistantNotifier extends StateNotifier<MvAssistantState> {
     await n.refresh(quiet: true);
     state = state.copyWith(sending: false);
     _push(MvChatMsg(
-        role: 'sys',
-        text: err == null
-            ? '已采纳这版建议并同步到剧本。'
-            : '采纳失败：$err'));
+        role: 'sys', text: err == null ? '已采纳这版建议并同步到剧本。' : '采纳失败：$err'));
   }
 
   Future<int> _currentVer(MvProjectDetailNotifier n) async {
