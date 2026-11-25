@@ -9,6 +9,6 @@ flutter build apk --release    # 签名读 android/key.properties（本地自建
 flutter test
 ```
 
-目录：`lib/core`（api/ws/状态/配置）、`lib/features`（auth/create/library/persona/player/me，create 含傻瓜/标准/深度三档壳与意图流）、`lib/shared`（波形画布/AI 徽章/同意书等）。
+目录：`lib/core`（api/ws/状态/配置）、`lib/features`（auth/create/library/persona/player/me，create 含简约/标准/深度三档壳与意图流）、`lib/shared`（波形画布/AI 徽章/同意书等）。
 
 后台播放三件套（白屏教训，2026-11-23）：`MainActivity extends AudioServiceActivity` + Manifest 声明 `AudioService`(mediaPlayback FGS)/`MediaButtonReceiver` + `FOREGROUND_SERVICE(_MEDIA_PLAYBACK)` 权限，缺一即 `AudioService.init` 抛异常导致 runApp 不执行。

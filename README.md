@@ -12,6 +12,16 @@
 
 **[CONTRACTS.md](CONTRACTS.md) = 冻结契约 v1，是多智能体并行施工的唯一接口真源**（REST/WSS/执行器拉单协议/积分口径/文件归属）。任何接口改动必须先改 CONTRACTS.md，再改代码，再回归 `test/acceptance/`。
 
+### 二期（MV 创作）三文档地图
+
+| 顺序 | 文档 | 回答什么 |
+|---|---|---|
+| 1 | [docs/musicbox-phase2-mv-plan.md](docs/musicbox-phase2-mv-plan.md) | 做什么：MV 产品定义 / 六步向导 / 引擎矩阵 / **AI 辅助体系** / 积分 / **§11 决策已全部落定（2026-11-23）** |
+| 2 | [docs/musicbox-phase2-architecture-design.md](docs/musicbox-phase2-architecture-design.md) | 怎么做：全 Spark 拓扑 / 端口与内存仲裁 / DDL / **契约 v2 素材** / 序列 S5–S11 / ADR-MV-1..12 |
+| 3 | [docs/musicbox-phase2-construction-plan.md](docs/musicbox-phase2-construction-plan.md) | 何时做谁做：Spike SP-MV-1..6 / N0–N2 WBS / **§6 验收 V13–V16 细则** / 首日清单 |
+
+二期契约增量（/v1/mv* + WSS mv.* + mv_* job payload）冻结后并入 CONTRACTS.md **v2**；GPU 重活全量迁 DGX Spark（一期 5060 Ti 保留音乐线与调测）。
+
 ## 快速开始
 
 ```bash
@@ -63,6 +73,8 @@ node --test --test-concurrency=1 "test/acceptance/*.test.js"
 | 8190 | ACE-Step 1.5 生乐服务 | 剧场现有，**只读复用**，`MB_MUSIC_URL` |
 | 8191 | SenseVoice ASR（CPU） | 执行器同机，`MB_SENSEVOICE_URL` |
 | 8090 | 多模态 LLM/VLM | DGX Spark 托管 qwen38-fp4（OpenAI 兼容，**实测真值 `http://192.168.1.10:8090/v1`**，见 CONTRACTS.md §0），`MB_LLM_VLM_URL`；不可达→服务端确定性启发式兜底 |
+| 8188 | ComfyUI（剧场所有） | 二期**共用队列**（ADR-MV-4：只发任务+观测，永不 /free/kill）；逃生口自建 :8288；`MB_COMFY_URL` |
+| 8390 / 8391 / 8395 | MV 微服务（二期·规划） | lipsync（EchoMimicV3-Flash，懒加载）/ SenseVoice 时间戳对齐（CPU）/ facegate（ArcFace）；仅回环监听，executor 独占调用 |
 
 > **真机部署必配**：`MB_PUBLIC_BASE_URL` 必须设为**手机可达**的地址（如局域网 IP / Tailscale IP），
 > 因为 `audio_url`/`audio_master_url`/`waveform_url` 全部由它拼接生成；留默认 `http://127.0.0.1:7900` 则真机播放必挂（2026-11-23 K90 实测坑）。
@@ -100,6 +112,9 @@ MusicBox/
 | M0 生成闭环 | server 骨架/auth+积分/任务引擎+执行器/works API/ffmpeg lane/Flutter 骨架/播放/曲库/VPS+真机 V1–V5 | server 主体已落（api/core/engine/lanes/prompts）；executor/app 施工中；V1/V2/V4/V8/V11 套件就绪 |
 | M1 多模态+工具 | intent 线/澄清 Agent/意图卡 UI/微调/人格谱系/DSP/对话壳；V6–V9 | 服务端 intent/adjust 已具雏形；真机与 GPU 项 skip 登记在 skipped 套件 |
 | M2 深度+社区 | 歌词编辑器/视频/社区/翻唱/挑战商店/分发；V10–V12 | 未开工；断言清单已登记（skipped 套件） |
+| **N0 MV 无口型闭环** | tab→选曲→选角双通道→定妆照+定妆视频→拍板固化；V13（mock） | **非算力项完工（2026-11-24）**：契约 v2.0–v2.17 冻结、DDL v3/v4、api/mv.js 全链、V13 16/16 绿；真机项 skip 登记 |
+| **N1 纯音乐 MV 全链** | 剧本/分镜/样片/报价/开机/通告板/成片 + 辅助 v1 规则版；V14 真机 | **非算力项完工**：剧本编译（LLM+规则兜底）/报价 CAS/boot/自动 compose（§4.2 全量 filter 链自测 49/49）/app 六步全接；V14 登记（4 绿+11 skip） |
+| **N2 歌唱 MV** | 歌词对齐/lip-sync（EchoMimicV3-Flash）/质量门/兜底/双人 + 助手对话版灰度；V15+V16 | **非算力项完工**：align 派发/timings/父子链+质量门+免费补样/l2mv 治理（白名单 7 工具/确认票/双熔断）/app 助手面板灰度；V16 9/9 绿、V15 登记（3 绿+5 skip）；**真机遗留**：SP-MV-1..6、V14/V15 真机、lipsync 权重（E2） |
 
 待装环境（施工计划 §2）：Android SDK/keystore、Spark 权重（已由 DGX 托管 qwen38-fp4 替代自建 vLLM）、**ffmpeg 二进制（执行器机）**。
 
@@ -115,7 +130,7 @@ MusicBox/
 | 揭晓页 | ✅ | 真波形渲染、时长/格式/AI 徽章、微调输入框 |
 | 播放（audio_service） | ✅ | `media_session` PLAYING、buffered=整曲；产物 URL 走公网基址可下载 |
 | 后台/锁屏播控 | ✅ | HOME+LOCK 后续播；媒体键 85 翻转 PLAYING↔PAUSED；MediaButtonReceiver 注册 |
-| 三档模式 | ✅ | 傻瓜/标准/深度切换与标准档参数面板实操 |
+| 三档模式 | ✅ | 简约/标准/深度切换与标准档参数面板实操 |
 | adopt → 曲库 | ✅ | adopt 200（ai_label/lineage/seed 完整）；白屏修复（audio_service 三件套，见 MainActivity/Manifest）后渲染正常 |
 
 发布包：`builds/MusicBox-v0.1.0+1-release.apk`（**不入仓**，构建产物；`flutter build apk --release`，签名走 `android/key.properties`→外部 keystore，**密钥文件不入仓**）。

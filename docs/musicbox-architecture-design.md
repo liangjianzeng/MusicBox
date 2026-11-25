@@ -66,7 +66,7 @@ lib/
 | 本地库 | drift（SQLite） | 离线作品镜像/草稿箱/缓存 LRU |
 | 最低系统 | Android 8.0（API 26）+，targetSdk 35 | 覆盖率与商店合规双满足 |
 
-**三档外壳（§产品方案 §7）落位**：`create/` 内三个 shell 组件共享同一 `CreationSession` 状态树；傻瓜级=对话流 shell，标准级=意图卡+轻参数 shell，深度级=全参数表单 shell。
+**三档外壳（§产品方案 §7）落位**：`create/` 内三个 shell 组件共享同一 `CreationSession` 状态树；简约级=对话流 shell，标准级=意图卡+轻参数 shell，深度级=全参数表单 shell。
 
 ## 3. 服务端架构（零依赖 Node，延续剧场纪律）
 

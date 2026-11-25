@@ -7,12 +7,16 @@ import '../../core/api_client.dart';
 import '../../core/models.dart' as mdl;
 import '../../core/state.dart';
 import '../../core/ws_client.dart';
+import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/primary_button.dart';
 import 'intent_card_view.dart';
+import 'intent_sync.dart';
+import 'music_assistant_sheet.dart';
 import 'progress_page.dart';
+import 'shelf_store.dart';
 
-/// 意图流面板：轮询 + WSS 加速刷新 + 澄清答题 + 生成
-/// 傻瓜级 easy=true：只显示第 1 题 + 大号“直接生成”
+/// 意图流面板：轮询 + WSS 加速刷新 + 澄清答题 + 卡面点改落库 + 生成
+/// 简约级 easy=true：只显示第 1 题 + 大号"直接生成"
 class IntentFlowPanel extends ConsumerStatefulWidget {
   const IntentFlowPanel({
     super.key,
@@ -24,26 +28,46 @@ class IntentFlowPanel extends ConsumerStatefulWidget {
   final String intentId;
   final bool easy;
 
-  /// 生成成功回调（跳进度页）。默认行为：push Replacement 进度页
-  final void Function(String jobId)? onGenerated;
+  /// 生成成功回调（跳进度页）。默认行为：push Replacement 进度页。
+  /// 一并交出本次任务要素与「原参数重交」闭包，供进度页显示与重试。
+  final void Function(String jobId, TaskBrief brief,
+      Future<String?> Function() retry)? onGenerated;
 
   @override
   ConsumerState<IntentFlowPanel> createState() => _IntentFlowPanelState();
 }
 
 class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
-  mdl.Intent? _intent;
+  mdl.Intent? _intent; // 展示值（含乐观改动）
+  mdl.Intent? _server; // 最后一次服务端确认值（回滚基准 / 状态判定源）
   String? _error;
   bool _sending = false;
+  IntentPatchStatus _patchStatus = IntentPatchStatus.idle;
+  Set<String>? _pickedGenres; // 流派假设里用户选中的（null=全部）
   Timer? _poll;
   StreamSubscription<WsEvent>? _wsSub;
   final Map<int, int> _answers = {};
+  late final IntentPatchQueue _q;
 
   ApiClient get _api => ref.read(apiClientProvider);
 
   @override
   void initState() {
     super.initState();
+    _q = intentQueueFor(ref, widget.intentId);
+    _q.owner = this;
+    _q.onStatus = (s) {
+      if (mounted) setState(() => _patchStatus = s);
+    };
+    _q.onApplied = (i) {
+      if (!mounted) return;
+      setState(() {
+        _server = i;
+        // 期间用户又点了新的 → 保留乐观值，等下一次 PATCH 收口
+        if (!_q.hasPending) _intent = i;
+        _syncPickedGenres(i);
+      });
+    };
     _fetch();
     _poll = Timer.periodic(const Duration(milliseconds: 2500), (_) {
       final i = _intent;
@@ -60,7 +84,22 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
   void dispose() {
     _poll?.cancel();
     _wsSub?.cancel();
+    if (_q.owner == this) {
+      _q.owner = null;
+      _q.onStatus = null;
+      _q.onApplied = null;
+    }
+    // 离开面板前把没发出去的点改补发，不装丢
+    unawaited(_q.flush());
     super.dispose();
+  }
+
+  void _syncPickedGenres(mdl.Intent i) {
+    final all = i.genreHypotheses.toSet();
+    final cur = _pickedGenres;
+    if (cur == null || !cur.toSet().every(all.contains) || cur.length != all.length) {
+      _pickedGenres = all;
+    }
   }
 
   Future<void> _fetch() async {
@@ -68,8 +107,12 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
       final i = await _api.intent(widget.intentId);
       if (!mounted) return;
       setState(() {
-        _intent = i;
+        _server = i;
+        final editing =
+            _patchStatus == IntentPatchStatus.saving || _q.hasPending || _q.busy;
+        if (!editing) _intent = i;
         _error = null;
+        _syncPickedGenres(i);
       });
       if (i.ready || i.consumed) _poll?.cancel();
     } on ApiException catch (e) {
@@ -79,16 +122,86 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
     }
   }
 
-  void _toast(String msg) {
+  void _toast(String msg, {bool withRetry = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    final m = ScaffoldMessenger.of(context);
+    m.removeCurrentSnackBar();
+    m.showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 4),
+      action: withRetry
+          ? SnackBarAction(
+              label: '重试',
+              onPressed: () async {
+                final r = await _q.retry();
+                if (r != null && mounted) _toast('已保存你的修改');
+              },
+            )
+          : null,
+    ));
   }
 
-  /// 生成：傻瓜级/直接生成用推荐答案补齐澄清题（≤2 轮），再调 intent generate
+  bool get _editing {
+    final i = _intent;
+    return i != null && !i.consumed;
+  }
+
+  /// 卡面点改：乐观更新 + 落库（契约 v2.19）
+  void _edit(Map<String, dynamic> patch, mdl.Intent optimistic) {
+    if (!_editing) {
+      _toast('这张卡已经用过啦，回到创建页再来一次');
+      return;
+    }
+    setState(() => _intent = optimistic);
+    _q.submit(patch);
+  }
+
+  Future<void> _editSceneDesc(mdl.Intent i) async {
+    if (!_editing) return;
+    final ctrl = TextEditingController(text: i.sceneDesc ?? '');
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('改一改灵感描述'),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 4,
+            minLines: 2,
+            maxLength: 300,
+            decoration: const InputDecoration(
+              hintText: '想要的画面/情绪/乐器',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (v == null || v == (i.sceneDesc ?? '')) return;
+    _edit({'scene_desc': v}, i.copyWith(sceneDesc: v));
+  }
+
+  /// 生成：简约级/直接生成用推荐答案补齐澄清题（≤2 轮），再调 intent generate
   Future<void> _generate({bool direct = false}) async {
     if (_sending) return;
     setState(() => _sending = true);
     try {
+      // 点改必须先落库，否则"最后一下改动"会被 generate 静默忽略（契约 v2.19）
+      final flushed = await _q.flush();
+      if (flushed == null && _q.hasPending) {
+        if (!mounted) return;
+        _toast('你的修改还没保存上，先点「重试」再生成', withRetry: true);
+        return;
+      }
       var cur = _intent;
       int rounds = 0;
       while (cur != null && !cur.ready && rounds < 3) {
@@ -107,17 +220,49 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
         if (pending.isEmpty) break;
         cur = await _api.intentAnswer(widget.intentId, pending);
         if (!mounted) return;
-        setState(() => _intent = cur);
+        setState(() {
+          _intent = cur;
+          _server = cur;
+        });
         rounds++;
       }
-      cur = _intent;
-      if (cur != null && cur.ready) {
+      final ready = (_server ?? cur)?.ready ?? false;
+      if (ready) {
         final jobId = await _api.intentGenerate(widget.intentId);
         if (!mounted) return;
+        final it = _server ?? cur;
+        final genres = _pickedGenres != null && _pickedGenres!.isNotEmpty
+            ? _pickedGenres!.join(' / ')
+            : ((it?.genreHypotheses.isNotEmpty ?? false)
+                ? it!.genreHypotheses.join(' / ')
+                : null);
+        final brief = TaskBrief(
+          action: '生成',
+          tierLabel: widget.easy ? '简约' : '标准',
+          sourceLabel: switch (it?.sourceKind ?? 'text') {
+            'voice' => '按住说话',
+            'image' => '拍一张',
+            _ => '一句话',
+          },
+          mood: it?.mood ?? const [],
+          vocal: it?.vocal == 'instrumental' ? '纯音乐' : '人声演唱',
+          genre: genres,
+          count: 3,
+          intentId: widget.intentId,
+        );
+        Future<String?> retry() async {
+          try {
+            return await _api.intentGenerate(widget.intentId);
+          } catch (_) {
+            return null;
+          }
+        }
+
         if (widget.onGenerated != null) {
-          widget.onGenerated!(jobId);
+          widget.onGenerated!(jobId, brief, retry);
         } else {
-          ProgressPage.pushReplacement(context, jobId);
+          ProgressPage.pushReplacement(context, jobId,
+              brief: brief, plannedCount: 3, onRetry: retry);
         }
       } else {
         _toast('再答一题就更准；也可以直接生成，我们用推荐答案');
@@ -128,6 +273,30 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
       _toast('操作失败，请重试');
     } finally {
       if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Widget get _saveBadge {
+    switch (_patchStatus) {
+      case IntentPatchStatus.saving:
+        return const _CardBadge(
+            icon: Icons.sync, text: '保存中…', color: Colors.white38);
+      case IntentPatchStatus.saved:
+        return const _CardBadge(
+            icon: Icons.check_circle_outline, text: '已按你的修改', color: Colors.tealAccent);
+      case IntentPatchStatus.failed:
+        return InkWell(
+          onTap: () async {
+            final r = await _q.retry();
+            if (r != null && mounted) _toast('已保存你的修改');
+          },
+          child: const _CardBadge(
+              icon: Icons.error_outline,
+              text: '保存失败·点重试',
+              color: Colors.amberAccent),
+        );
+      case IntentPatchStatus.idle:
+        return const SizedBox.shrink();
     }
   }
 
@@ -182,12 +351,35 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
               : (qIdx) {
                   // 跳过=采用该题推荐项
                   final q = i.questions.firstWhere((e) => e.qIdx == qIdx);
-                  setState(() =>
-                      _answers[qIdx] = q.recommendedIdx ?? 0);
+                  setState(() => _answers[qIdx] = q.recommendedIdx ?? 0);
                 },
-          onMoodChanged: (m) => setState(() => _intent = i.copyWith(mood: m)),
-          onVocalToggled: () => setState(() => _intent = i.copyWith(
-              vocal: i.vocal == 'instrumental' ? 'song' : 'instrumental')),
+          onMoodChanged: _editing
+              ? (m) => _edit({'mood': m}, i.copyWith(mood: m))
+              : null,
+          moodSuggestions: kMoodOptions,
+          onSceneDescEdited: _editing ? () => _editSceneDesc(i) : null,
+          selectedGenres: _pickedGenres?.toList() ?? i.genreHypotheses,
+          onGenreToggled: _editing
+              ? (g, sel) {
+                  final next = {...?_pickedGenres};
+                  if (sel) {
+                    next.add(g);
+                  } else {
+                    next.remove(g);
+                  }
+                  _pickedGenres = next;
+                  _edit({'genre_hypotheses': next.toList()},
+                      i.copyWith(genreHypotheses: next.toList()));
+                }
+              : null,
+          onVocalToggled: _editing
+              ? () {
+                  final next =
+                      i.vocal == 'instrumental' ? 'song' : 'instrumental';
+                  _edit({'vocal': next}, i.copyWith(vocal: next));
+                }
+              : null,
+          headerTrailing: _saveBadge,
         ),
         const SizedBox(height: 16),
         if (widget.easy)
@@ -212,8 +404,9 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton(
-                  onPressed:
-                      i.consumed || _sending ? null : () => _generate(direct: true),
+                  onPressed: i.consumed || _sending
+                      ? null
+                      : () => _generate(direct: true),
                   child: const Text('按推荐直接生成'),
                 ),
               ),
@@ -230,7 +423,29 @@ class _IntentFlowPanelState extends ConsumerState<IntentFlowPanel> {
   }
 }
 
-/// 傻瓜级全屏意图流
+/// 卡头保存态徽标
+class _CardBadge extends StatelessWidget {
+  const _CardBadge(
+      {required this.icon, required this.text, required this.color});
+
+  final IconData icon;
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 13, color: color),
+        const SizedBox(width: 3),
+        Text(text, style: TextStyle(fontSize: 11, color: color)),
+      ],
+    );
+  }
+}
+
+/// 简约级全屏意图流
 class IntentFlowPage extends ConsumerWidget {
   const IntentFlowPage({super.key, required this.intentId, this.easy = true});
 
@@ -239,15 +454,27 @@ class IntentFlowPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final rc = ref.watch(remoteConfigProvider);
+    final assistantOn = (rc?.musicAssistant ?? false) || kMusicAssistantForce;
     return Scaffold(
       appBar: AppBar(title: const Text('灵感理解')),
+      floatingActionButton: assistantOn
+          ? FloatingActionButton.small(
+              heroTag: 'music_assistant_fab_intent',
+              tooltip: '音乐助手',
+              onPressed: () => showMusicAssistant(context,
+                  subjectType: 'intent',
+                  subjectId: intentId,
+                  chatEnabled: rc?.assistantChatMusic ?? false),
+              child: const Icon(Icons.smart_toy_outlined, size: 20),
+            )
+          : null,
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: IntentFlowPanel(
           intentId: intentId,
           easy: easy,
-          onGenerated: (jobId) =>
-              ProgressPage.pushReplacement(context, jobId),
+          // 不给回调：走面板默认行为（带任务要素与重试闭包跳进度页）
         ),
       ),
     );

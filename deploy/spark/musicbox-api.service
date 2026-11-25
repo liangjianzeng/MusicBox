@@ -1,0 +1,29 @@
+# MusicBox API（Spark 本机部署草案）—— Node ≥22 零依赖服务端（2026-11-24）
+# 草案纪律：本文件仅为交付草案，禁止在本阶段 systemctl enable/run（需宿主协调 E#，见 construction-plan §2.1 S6）。
+# 安装（真机窗口）：cp 到 /etc/systemd/system/ 后 systemctl enable --now musicbox-api
+[Unit]
+Description=MusicBox API (Node zero-dep, Spark host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbox
+Group=musicbox
+WorkingDirectory=/opt/musicbox/src
+ExecStart=/opt/musicbox/node/bin/node src/server/index.js
+Environment=NODE_ENV=production
+Environment=PORT=7900
+EnvironmentFile=-/etc/musicbox/spark.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/musicbox/var
+PrivateTmp=true
+MemoryHigh=1200M
+MemoryMax=1600M
+
+[Install]
+WantedBy=multi-user.target

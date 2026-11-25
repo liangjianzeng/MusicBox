@@ -37,6 +37,20 @@ class CreditDeltaEvent extends WsEvent {
   final int balanceAfter;
 }
 
+/// 契约 v2（文档态）：{type:"mv.progress", project_id, status, progress,
+/// note, shots:[{id,status}]}。server 侧 MV 路由尚未上线，先按文档解析，
+/// 收到即更新，不伪造事件。
+class MvProgressEvent extends WsEvent {
+  MvProgressEvent(this.projectId, this.status, this.progress, this.note,
+      this.shots)
+      : super('mv.progress');
+  final String projectId;
+  final String status;
+  final int progress;
+  final String? note;
+  final List<Map> shots; // [{id,status}]
+}
+
 enum WsStatus { disconnected, connecting, connected }
 
 /// /ws?token= 客户端：指数退避重连 + 事件分发（Riverpod 侧监听 events 流）
@@ -114,6 +128,16 @@ class WsClient {
           break;
         case 'credit.delta':
           ev = CreditDeltaEvent(_asInt(m['delta']), _asInt(m['balance_after']));
+          break;
+        case 'mv.progress':
+          ev = MvProgressEvent(
+              '${m['project_id']}',
+              '${m['status'] ?? ''}',
+              _asInt(m['progress']),
+              m['note']?.toString(),
+              (m['shots'] as List? ?? const [])
+                  .whereType<Map>()
+                  .toList());
           break;
       }
       if (ev != null && !_events.isClosed) _events.add(ev);

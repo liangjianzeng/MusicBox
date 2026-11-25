@@ -4,9 +4,9 @@
 |---|---|
 | 文档 | docs/musicbox-phase2-mv-plan.md |
 | 日期 | 2026-11-23 |
-| 输入 | 一期三文档（评估/架构/施工）+ CONTRACTS.md v1；X-Theater 剧场实现调研（流程/引擎/合规实证）；DGX Spark 实机勘探（SURVEY/EVIDENCE，2026-11-21/22）；发起人三期指示（①二期后台 Linux 部署直接上 DGX，5060 Ti 扛不住二期模型算力；②MiniMax 全家桶首选、Spark 上已有 ACE-Step 1.5、其他模型暂不考虑、LLM 助手待 :8090 vLLM 换装 Inkling-2-Mini 后启用；③MusicBox 是纯独立项目仅做安卓手机端，借鉴剧场经验但外部 ComfyUI 等算力与模型共用） |
-| 范围 | MV 产品定义 / 创作流程 / 引擎矩阵 / 数据模型 / API 契约增量（草案）/ 执行器扩展 / App 扩展 / 部署拓扑 / 积分口径 / Spike / WBS / 验收 V13–V15 / 风险 / 待拍板 |
-| 状态 | 待拍板（§10 决策清单）；拍板后 CONTRACTS.md 升 v2 冻结，端云并行施工 |
+| 输入 | 一期三文档（评估/架构/施工）+ CONTRACTS.md v1；X-Theater 剧场实现调研（流程/引擎/合规/AI 辅助实证）；DGX Spark 实机勘探（SURVEY/EVIDENCE，2026-11-21/22）；发起人三期指示（①二期后台 Linux 部署直接上 DGX，5060 Ti 扛不住二期模型算力；②MiniMax 全家桶首选、Spark 上已有 ACE-Step 1.5、其他模型暂不考虑、LLM 助手待 :8090 vLLM 换装 Inkling-2-Mini 后启用；③MusicBox 是纯独立项目仅做安卓手机端，借鉴剧场经验但外部 ComfyUI 等算力与模型共用）+ 终局裁决（共用 :8188、EchoMimicV3-Flash 首选、N1 单主演、选角双通道硬性要求、其余照准建议——§11） |
+| 范围 | MV 产品定义 / 创作流程 / 引擎矩阵 / 数据模型 / API 契约增量（草案）/ 执行器扩展 / App 扩展 / 部署拓扑 / **AI 辅助体系（二期重点）** / 积分口径 / Spike / WBS / 验收 V13–V16 / 风险 / 待拍板 |
+| 状态 | **决策已全部落定（§11，2026-11-23）**；CONTRACTS.md 升 v2 冻结后端云并行施工。架构细节见 [musicbox-phase2-architecture-design.md](musicbox-phase2-architecture-design.md)，排程与验收细则见 [musicbox-phase2-construction-plan.md](musicbox-phase2-construction-plan.md) |
 | 前置 | 一期调测收尾不阻塞二期设计；N0 开工只需契约冻结 |
 
 ---
@@ -18,7 +18,8 @@
 3. **借鉴剧场，不耦合剧场**：纯独立项目，零代码依赖；**复用三层**——①流程与纪律（八阶段「先案头后生产」、样片优先、报价卡、试妆试镜身份链、facegate 评分门、重拍 chips、免费自动重试）；②协议范式（ComfyUI 四元组锁 tmpl_sha16、h3ir 六段式 IR、降级梯子、worker_type 诚实标注）；③**算力与模型共用**（Spark 上的 ComfyUI `:8188` 队列、H3/LTX/TE 权重热集、`:8090` vLLM LLM 端点、Spark 上的 ACE-Step 1.5）。剧场服务器与代码零改动，沿用「只读复用」红线。
 4. **部署**：二期 MusicBox 后台（server `:7900` + 执行器）整体部署到 **Spark（Linux）**；5060 Ti 只保留一期现状（ACE-Step `:8190` 共用 + 开发调测机），二期不新增任何模型。App 仍连同一 API（VPS/Nginx 前置不变），**安卓手机端是唯一前端**。
 5. **口型主链路（本方案核心设计）**：分镜时按歌词↔时间窗逐镜分配唱段 → `mv_align` 音轨强制对齐出逐句时间戳 → 角色镜 i2v 只拍「对镜演唱」表演画面（原生声画丢弃）→ 按镜头时间窗切已制曲音轨 → lip-sync 引擎按指定音频驱动口型 → 合成时全片统一铺已制曲 master。辅以前置依赖：**歌词↔时间轴强制对齐**（SP-MV-2）。
-6. **节奏**：Spike 前置（SP-MV-1 口型质量 = 全案最大风险）→ **N0 无口型闭环**（tab→选曲→上传人像→定妆照+定妆视频，~1.5 周）→ **N1 纯音乐 MV 全链**（剧本/报价/开机/合成，~2 周）→ **N2 歌唱 MV**（对齐+口型+质量门，~2 周）。验收续编 **V13–V15**，mock 先行真机后置（一期纪律）。
+6. **AI 辅助体系（二期重点，§5）**：剧场实证的核心结论是**「辅助好不好用，关键不在模型，在治理层」**——工具白名单、昂贵动作确认票（hash/TTL/一票一次）、注入红线、预算熔断、「拍板权在人、助手只引路」、一切 LLM 点 fail-open + 诚实标注，全部照搬骨架；六步向导逐步落辅助点（选角导演人像预检 / 编剧「改一版」建议 / 卡流多人格 AI 审 / 制片主任报价护栏 / 后期制片诊断卡 / 音乐监制音画报告）+ 手机端 bottom-sheet「制片助手」对话（7 工具白名单 MVP）。**重拍 chips→诊断卡→系统动作**的反馈翻译层在剧场是未落地的设计态（仅原型），**二期领先实现**（§5.3）。
+7. **节奏**：Spike 前置（SP-MV-1 口型质量 = 全案最大风险）→ **N0 无口型闭环**（tab→选曲→上传人像→定妆照+定妆视频，~1.5 周）→ **N1 纯音乐 MV 全链**（剧本/报价/开机/合成 + 辅助 v1，~2 周）→ **N2 歌唱 MV**（对齐+口型+质量门 + 助手对话版，~2.5 周）。验收续编 **V13–V16**，mock 先行真机后置（一期纪律）。
 
 ---
 
@@ -60,8 +61,14 @@
 | 规避策略：口型不达标期「画外音+空镜+字幕」（FR-607） | master-plan FR-607 | 口型失败兜底形态（§4.7.4） |
 | `/api/studio/mv/build`：选曲+≤12 图→ffmpeg zoompan 轮播 MV | `api/library.js` | **免费预览样片**档（§3 步 5「先看片」），零 GPU 成本 |
 | 语音/人脸 PIPL 纪律：consent、72h TTL、最小化 | 一期 contracts §8 + `consent.dart` | 人像上传全套继承 + 「AI 生成歌手」免人脸选项 |
+| 制片助手**治理层**：工具白名单 31 项、注入红线（11 条正则+账本留痕）、参数域黑名单键、预算熔断（>120% 会话 broken）、昂贵动作确认票（hash/TTL60s/ver CAS/一票一次）、「拍板权在人，助手只引路」（芯片只描述状态、拍板动作绝不进芯片） | `src/server/l2/{facade,governance,adapter,advisor}.js`、`client/js/views/copilot.js` | MV 助手 MVP 的治理骨架（§5.2） |
+| 卡流**多人格 AI 审**：先规则机检（编剧/观众/选角导演/摄影/制片等视角+每卡 rubric），LLM 在线时同人格叠加 `llm_findings`，engine 标签随实态诚实标注 | `dag/workers/aireview.js`、`prompts/index.js buildAireviewSys` | MV 剧本/开机卡审（§5.1④⑤） |
+| **suggest 与拍板解耦**：建议只挂草稿不 ver++，apply 才落卡重审；LLM 离线明确 NOT_READY 不装忙 | `api/cards.js:1354-1403`、`l2/tools.js:425-444` | 剧本「让它改改」（§5.1④） |
+| **报价/护栏**：分档单价按实测均值（快速≈3min/镜、高价值≈5min/镜）、estimate_ver hash→开机 CAS、>120% 预算 paused 需人工恢复 | `api/episodes.js:22-103`、`rules/budget.js`、`dag/engine.js:308-350` | 报价卡与预算护栏（§3⑤、§5.1⑤） |
+| **语言纪律**：单一禁词表（take/seed/prompt/i2v/模型名正则…）＋服务端出话强制 sanitize＋客户端二次幂等过滤＋CI 扫 `/state` | `rules/langlint.js`、`api/state.js:5`、`util.js:54-66` | `rules/mv_lexicon.js`（§5.4） |
+| **scriptgen fail-open**：LLM 不可达→工内重试 1 次（带首轮输出回显收紧）→占位分场+FALLBACK_NOTE 如实标注，流程绝不卡死；键名别名容错解析 | `dag/workers/scriptgen.js:11-13、148-225` | mv_script 编译同纪律（§5.1④） |
 
-**剧场最大缺口 = MV 最大难点**：剧场 lipsync lane 是 TODO（EchoMimicV3-Flash 选型未接线），一期靠原生声画规避台词口型；MV 的「演唱对口型」不可规避——这是二期唯一必须新建的引擎能力（§4.7）。
+**剧场两处「设计领先于实现」的缺口 = 二期领先补齐点**：① lipsync lane 是 TODO（EchoMimicV3-Flash 选型未接线），剧场靠原生声画规避台词口型，而 MV 的「演唱对口型」不可规避——二期唯一必须新建的引擎能力（§4.7）；② **反馈翻译层（重拍 chips→系统动作、「脸不像」诊断卡、同因 ≥2 升人工/免费）在剧场生产代码中仅存在于设计与 html-prototype**（`theater-ux-design.md` §3.4 vs `html-prototype/screens-2.js:72,135`；生产实际=自由文本打回+失败梯子）——二期自研落地（§5.3），这恰是手机端「一句话重拍」体验的胜负手。
 
 ### 1.4 许可与商用口径（对齐剧场 ADR-001 §4-8 白名单纪律）
 
@@ -105,6 +112,7 @@
 4. **提交即离开**：安卓长任务纪律——MV 制作是 30–120 分钟级异步工程，提交后可杀 App，完成靠 **一期既有通知栈**（WSS 前台 + 前台服务通知）拉回验收；进度墙做成「剧组通告板」（每镜 TaskChip 5 态）。
 5. **永不失控**：任何时刻可暂停/取消（canceled 未拍镜全额退）；重拍原因 chips 一键发起；**同镜同因系统自动补拍 ≤2 次且免费**（剧场纪律），同因 2 次不过诚实呈现+人工兜底入口（report）。
 6. **抽卡仪式感**：成片揭晓复用一期「卡带翻转」视觉语言 → MV 版「首映礼」动画（片名+主演+海报，点击拉幕播放）。
+7. **拍板权在人，辅助只引路**（治理条款，§5）：定妆确认/报价/开机/验收永远是用户手动按钮，助手永不代拍板；昂贵动作必过**确认票**（人话报价+TTL 60s+一票一次）；项目级**预算护栏**（默认 1200⚡，>120% 自动暂停待人工调高）；一切辅助产物**诚实标注**（规则/LLM 叠加），禁静默重扣、禁虚构「模型意见」。
 
 ### 2.4 入口与导航（App 挂点已实证）
 
@@ -125,7 +133,7 @@
 
 **① 选曲**：曲库列表/详情页发起；带出歌名/时长/mood/歌词（有则）/是否纯音乐。已制曲 = 唯一音轨真源（成片音轨 = audio master，不用模型再唱一遍——这是与剧场原生声画路线的分水岭）。
 
-**② 选角**：选「男/女主演」各 0–1（合计 1–2）；每个角色三选一：**(a) 上传照片 / 拍一张**（consent 弹窗「仅用于本次角色生成，不用于训练」+ 72h TTL，一期范式）；**(b) AI 生成歌手**（不传真人照，H3-Image 原创脸——降 PIPL 面与入口门槛，推荐默认露出）；**(c) 复用已有角色**（角色卡沉淀，见 §4.3 mv_characters 复用 `used_by`）。
+**② 选角**：N1 单主演（男或女，1 人）；**(a) 拍照/上传照片**（consent 弹窗「仅用于本次角色生成，不用于训练」+ 72h TTL，一期范式）与 **(b) AI 生成歌手**（不传真人照，H3-Image 原创脸——降 PIPL 面与入口门槛）**为发起人明确要求的两条硬通道，向导默认并列露出、不分主次**；(c) 复用已有角色（角色卡沉淀，§4.3 `used_by`）为增值项。含真人脸成片强制「本人或已获授权」勾选。N2 起支持双人（可对唱，D3）。
 
 **③ 定妆**（复刻剧场试妆试镜流，发起人点名「i2v 生成定妆视频」）：
 - `mv_cast_image`：H3-Image cast（864×1536 半身棚拍 3 候选，~15s/图）——传照者带 identity reference，AI 脸者按性别+风格描述生成；
@@ -144,7 +152,18 @@
 - `mv_shot`×N：角色镜 H3-REF2VA（viewRefs refs≤3 保脸 + 演唱表演 prompt「对镜歌唱、唇随旋律自然开合」），剧情镜 H3-FL2VA（关键帧为首帧）；**拍摄产物原生声画丢弃**（合成期剥离，防串音）；
 - （歌唱曲）`mv_lipsync`：按镜头唱段时间窗从 master 切音频 → lip-sync 引擎驱动主演口型 → **sync 自检分**（SyncNet 置信），<阈值自动补样 ×1（免费）；
 - `mv_compose`：best-take 归一 → 转场 → **全片铺已制曲 master（唯一音轨）** → 可选歌词字幕（逐句时间戳 drawtext，默认开）→ 片名卡 + AI 角标水印 → mp4；
-- 完成通知 → 「首映礼」揭晓 → 采纳（mv 作品入库）/ 重拍单镜（chips：脸不像/动作不对/不像在唱/景别不对/节奏不对 → 诊断卡→免费补拍或重派）。
+- 完成通知 → 「首映礼」揭晓 → 采纳（mv 作品入库）/ 重拍单镜（chips → 诊断卡 → 系统动作，§5.3）。
+
+**每步 AI 辅助点速览**（实现细则与治理见 §5，此处只标「谁在哪一步帮你什么」）：
+
+| 步 | 辅助人格 | 帮你什么 | 拍板权 |
+|---|---|---|---|
+| ① 选曲 | 🎵 音乐监制 | 依据歌词/mood 给「画面基调建议」3 chips（如：雨夜霓虹/公路日出/海边回忆） | 用户可全无视 |
+| ② 选角 | 🎭 选角导演 | 人像质量预检（正脸/光线/遮挡→人话提示重拍建议）；风格服装建议 | 定妆确认手动 |
+| ③ 定妆 | （克制不主动）| 帧格只标注 facegate 分与「更像你的角度」排序，不评美丑 | 勾选+拍板手动 |
+| ④ 剧本/分镜 | 🖋 编剧 + 🎬 分镜师 | 整卡「让它改改」、单镜导演阐述改写、节拍硬校验（首镜钩子/副歌给主演/唱段全覆盖）、卡流 AI 审 | 「改一版」只挂草稿，采纳才生效 |
+| ⑤ 报价开机 | 📋 制片主任 | 报价卡（实测均值估价）、预算护栏、档位建议 | **开机永远手动** |
+| ⑥ 拍摄成片 | 🎥 摄制组 + ✂️ 后期 + 🎵 音乐监制 | 进度/位次/ETA 人话、重拍 chips→诊断卡→动作、音画对齐报告（句点命中/sync 分布/字幕健康） | 重拍走确认票（用户发起计费时） |
 
 ---
 
@@ -197,7 +216,7 @@
 | 口型同步（**MiniMax 体系外唯一新增**） | **EchoMimicV3-Flash**（Apache，~12GB，剧场选型未接线）→ SP-MV-1 定档；**MuseTalk**（MIT）快档/兜底；LatentSync 仅调测 | `:8390` 常驻懒加载 | 待测 |
 | 歌词↔时间轴对齐 | **SenseVoice**（CPU，转写+时间戳）+ 规则对齐 | `:8391` | 待测（SP-MV-2） |
 | 质量门 | facegate ArcFace（`:8395` /score /swap-inswapper）+ SyncNet sync 分（lipsync-svc 内） | onnx CPU | 剧场 gate 0.6 标定沿用 |
-| 合成 | **ffmpeg**（executor ffmpeg lane 视频扩展，§4.5.4） | CPU | 一期基建 |
+| 合成 | **ffmpeg**（executor ffmpeg lane 视频扩展，§4.5-4） | CPU | 一期基建 |
 | 剧本文案 LLM | **`:8090` vLLM**：现阶段 qwen38-fp4（编译兜底可用）；**AI 助手（对话改稿/创意扩写）待 Inkling-2-Mini 部署后启用**（D4） | OpenAI 兼容端点，`MB_LLM_VLM_MODEL` 跟随 `/models` | 一期 intent 同构 |
 
 **明确暂不引入**：Wan2.2、LTX-2.5、CogVideoX、S2V-14B（S2V 作为 N3 观察项：若 lip-sync 双引擎 SP 实测都不达标，再议「音频驱动整片」路线，不阻塞二期）。协议纪律：白名单照旧，新增仅 EchoMimic(Apache)/MuseTalk(MIT)。
@@ -268,6 +287,16 @@ type="mv_preview"    {board_urls[], audio_master, seg_sec}                     �
 type="mv_compose"    {takes[{video,start_sec,strip_audio}], audio_master, title, subtitles?}
      # → files{mv_video:mp4, cover:png}（片名卡/字幕/AI 角标/首帧封面）
 # ComfyUI 模板：模板 JSON 入 MusicBox 仓 templates/ + manifest tmpl_sha16 锁（四元组纪律移植）
+
+# AI 辅助（契约 v2 增补，治理细则 §5.2）
+POST /v1/mv/projects/:id/suggest   {note}                    → 200 {suggest} | 409 NOT_READY（LLM 离线不装忙）
+POST /v1/mv/projects/:id/suggest/apply {suggest_id, ver}     → 200 {project}   # 建议挂草稿不 ver++，apply 才落盘重审
+POST /v1/mv/assistant/messages     {session_id?, text, chips:[{type:"project",id}]}
+                                                               → 200 {session_id, reply}|{ticket}|{intent, clarify}
+POST /v1/mv/tickets/:id/confirm    {ver, hash}               → 200 {executed}  # TTL60s/一票一次/CAS
+POST /v1/mv/tickets/:id/deny                                   → 200 {ok}
+GET  /v1/mv/projects/:id/report     → 200 {align_report, sync_dist, phrase_hit, degraded_shots[]}
+# 机检字段（face_score/sync_score/ai_review）只读，PATCH 白名单外拒写（§5.5）
 ```
 
 ### 4.5 执行器扩展（`src/executor`，范式全继承）
@@ -314,11 +343,72 @@ type="mv_compose"    {takes[{video,start_sec,strip_audio}], audio_master, title,
 
 ---
 
-## 5. 积分口径（config.credits 扩展；可调，先扣后派单+失败 refund）
+## 5. AI 辅助体系（二期重点）
+
+> **剧场实证的第一性结论**（`l2/` 治理层 9 文件 + `aireview.js` + `langlint.js` 调研实录）：对话式 AI 辅助能不能用，取决于**治理层**而非模型强弱——助手「能办事」的关键是白名单+参数域+预算熔断+确认票+「拍板权在人」；所有 LLM 点 fail-open + 诚实标注，规则兜底必须独立撑起闭环。MusicBox 一期已具同款地基（`prompts/intent.js` 的 chatCompletionWithRetry/extractJson/词典兜底、`prompts/adjust.js` 的 LLM+20 余条启发式双通道、澄清纪律服务端强制），二期 MV 辅助**复用这套范式做「小而确定」的白名单辅助，不做通用 agent**。
+
+### 5.1 六步向导的辅助点（人格化，规则打底、LLM 叠加、全部白名单）
+
+| 步 | 辅助点 | 输入→输出 | 实现（LLM 优先/规则兜底） | 治理属性 |
+|---|---|---|---|---|
+| ① 选曲 | 音乐监制·画面基调建议 | work（lyrics/mood/bpm/genre）→ 3 组基调 chips + 一句话理由 | `prompts/mv_assist.js buildToneSuggest`（音乐总监人格；离线→mood→基调词典 `MOOD_TONE` 确定性映射） | 只读 |
+| ② 选角 | 选角导演·人像预检 | 上传照 → 正脸/光照/遮挡/分辨率四项人话反馈 + 重拍引导 | facegate 检测 + 规则分档（**LLM 只润色措辞，分数永远机检**） | 只读 |
+| ③ 定妆 | 帧格排序（克制） | 抽帧 → facegate 分排序 +「更像你的角度」标星，**不评美丑、不写观感意见** | 纯机检 | 只读 |
+| ④ 剧本 | 编剧·「让它改改」 | 现剧本+用户 note → 修改建议挂 `script.suggest`（**不 ver++**），「采纳」才落盘 ver++ 重审（剧场 suggest 纪律） | `buildScriptSuggest`；**LLM 离线 → 409 NOT_READY**，前端退回手动编辑（不装忙） | 建议≠拍板 |
+| ④ 剧本 | 编剧·结构化硬校验 | 镜数↔时长、首镜钩子、副歌必配主演对镜、唱段全覆盖（每句歌词有镜可唱）、cast 引用合法、sec 钳制 | 确定性校验器（`mv_validator.js`，借 scriptgen 容错解析：键名别名/枚举外丢弃/独角回填） | 只读（warn 不 fail） |
+| ④⑤ 卡流 | 多人格卡审 | 剧本卡/开机卡就绪 → findings（每条=真实规则检查结果，**绝不虚构模型意见**；LLM 在线追加 `llm_findings`），engine 标「规则机检」/「LLM 审查＋规则机检」 | `mv_aireview` job（`initiated_by=system, free:true`，pending 卡免重派） | 只读+免费 |
+| ⑤ 开机 | 制片主任·报价护栏 | shots×档位×实测均值（生图 15s/拍摄 290s/口型 ~240s/合成 180s，常数表随真机刷新）→ `est{minutes,credits}`；**estimate_ver hash → 开机 CAS**；项目预算护栏默认 1200⚡，>120% paused（人工调高恢复，不自动） | 纯规则（不依赖 LLM） | 确认票 |
+| ⑥ 拍摄 | 摄制组·进度人话 | jobs 账本 → 「拍摄中 7/12 · 已 23 分钟 · 预计还需约 24 分钟」（**已完成镜实测均值×剩余**，无样本→静态表「每镜约 5 分钟（Spark 串行）」）；排队位次=同 lane FIFO；失败=原因人话（错误码→文案 `HUMAN` 映射表） | 纯规则 | 只读 |
+| ⑥ 重拍 | 后期制片·诊断卡 | chips → 诊断卡（当前分/疑似成因/修复方案+各自费用）→ 系统动作（§5.3） | 机检数据 + LLM 改写运动描述（离线→词典换运镜短语） | 系统补拍免费；用户发起过确认票 |
+| ⑥ 成片 | 音乐监制·音画报告 | compose 后 → 乐句点命中率、sync_score 分布、字幕时序健康、降级镜清单；<阈值 → 「建议动作」卡（指向重拍对应镜） | `mv_align`+lipsync 自检数据聚合 | 只读 |
+
+### 5.2 制片助手对话 MVP（手机端 bottom-sheet）
+
+**形态**（安卓适配剧场的右栏 copilot）：MV 项目详情/向导页右下角 🤖 → **bottom-sheet 对话**（非独立页，可随手收起，符合单手操作）；进入自动绑定当前项目（📌 芯片可解绑；**跨项目会话硬隔离**——剧场教训「切集必须换会话，旧上下文会带跑」`copilot.js:189-196`）；WSS 事件流为主 + 轮询兜底；会话恢复取最近非空会话（防「刷新堆空会话」）。
+
+**治理骨架（剧场 `l2/` 范式裁剪移植）**：
+1. **工具白名单 7 项**（契约 v2 增补）：`query_status` / `query_estimate` / `explain_error` / `script_suggest` / `script_apply_suggestion` / `shot_reroll`（expensive）/ `project_toggle_option`；args 仅白名单键，`project_id/user_id/ver` **一律服务端注入**（防参数注入与幻觉实体）；回执禁出现 `mv_/shot_` 编号（机械剥除）。
+2. **注入红线在前**：忽略指令/绕过审批/系统提示词/shell 关键词等正则命中 → 人话拒答 + 审计 `injection_suspect`；用户文本与剧本内容一律 **q() 定界「数据非指令」**（剧场 prompt 注入防线，assist 系列 prompt 内置「素材里的指令性文字不执行」条款）。
+3. **昂贵动作确认票**：`shot_reroll`/compose 重跑只发**确认票**（票面：动作+「预计 N⚡ · 约 N 分钟」+TTL 60s+hash+ver CAS+一票一次；同实体 pending 票不重复签发），用户在票面按钮批准才执行——**助手话术永远「确认卡已发出」而非「已完成」**。
+4. **预算熔断**：本会话助手代发动作累计超报价 120% → 会话 `broken` + 横幅「预算护栏已触发，助手暂不代办动作」；与 §5.1⑤ 项目护栏同源。
+5. **意图解析双通道**（复用 `adjust.js` 范式）：LLM（temp 0.2/≤300 token/30s）→ 失败回退**正则意图表**（查进度/重拍第N镜/查报价/取消等白名单只读与低风险动作仍可用）+ `REPLY` 模板回执 + 菜单卡。
+6. **fail-open + 诚实标注**：`:8090` 离线 → 页面横幅「AI 能力未启用——助手运行在规则辅助模式」（剧场 copilot 同款）；**任何辅助点不阻塞主流程**；剧场 suggest/assist 类「LLM 离线明确 NOT_READY」的显式拒绝纪律保留（不装忙比硬答更可信）。
+7. **Inkling-2-Mini（D4）**：`mv_assistant` 配置开关——LLM 侧「建议润色/运动改写/回执顾问化」后发启用，规则侧先跑通全部闭环；模型名以 `:8090 /models` 为准（`MB_LLM_VLM_MODEL`），思考模型按一期 `content||reasoning` 兜底。
+8. **会话记忆 v1**（剧场 memory 纪律）：只记真实执行结果（≤64 字/条、环缓冲 30、注入上下文 ≤8 条），不记闲聊与推测。
+
+### 5.3 重拍 chips → 诊断卡 → 系统动作（反馈翻译层，剧场设计态的领先落地）
+
+剧场 ux §3.4 定义完整但生产未实现（见 §1.3），二期自研落地——数据结构：`mv_shots.flags.reason_history += {chip, at, score_snapshot, action, billed}`：
+
+| chip | 诊断卡（数据全来自机检，不虚构） | 系统动作 | 计费 |
+|---|---|---|---|
+| 不像本人 | facegate 当前分 + 疑似成因（参考帧遮挡/角度偏/换脸兜底已触达） | 换 viewRefs 高分帧重拍 → inswapper /swap×2 → 2 次不过 `IDENTITY_GATE_FAIL` 转 report | 系统补拍免费 ≤2 |
+| 不像在唱 | sync_score + 口部遮挡率（lipsync 自检） | 自动补样×1；仍不过 → 换 B-roll+字幕降级并**明示**（§4.7.2 兜底） | 系统免费 |
+| 动作不对 | 该镜运动描述快照 | **LLM 改写运动描述**重拍（离线→词典换运镜短语） | 用户发起=计费（过确认票） |
+| 景别不对 | 当前景别枚举 | 该镜景别 chips 改 → 重拍 | 用户发起=计费 |
+| 节奏太慢 | 镜 sec ↔ 乐句点映射图 | **回剧本改镜时长，不改视频**（文本编辑免费；改后受影响镜标 stale） | 免费（文本） |
+| 太贵了 | 报价明细行 | 减镜/取消剩余镜（未拍全额退）/（N3 有 fast 档时）降档建议 | — |
+
+**铁律**：同镜同因 ≥2 次自动转 report 人工通道，**禁静默重扣费**（剧场 ux §3.4 明文，此处首次成为生产代码）；系统发起的补拍一律 `initiated_by=system, credits_cost=0` 且在通告板明示（一期 refund/账本诚信纪律同源）。
+
+### 5.4 语言纪律（把契约 §0「引擎名不上用户面」做成可执行代码）
+
+- **单一禁词表** `src/server/rules/mv_lexicon.js`（剧场 langlint 移植）：`take→重拍历史 / seed→复刻编号 / prompt→导演阐述 / i2v→开机拍摄 / lipsync→口型校准 / 抽帧→选镜 / LoRA→签名档`；模型名正则（MiniMax|H3|EchoMimic|MuseTalk|SenseVoice|ACE-Step|ComfyUI|vLLM|GGUF|nvfp4|int8|MXFP8…）→「自部署·高品质档」；ASCII 词带词边界，CJK 子串直替。
+- **三层净化**：服务端一切用户面出话（助手回执/卡 note/错误文案/WSS note）强制 `sanitize()`；App 端二次幂等过滤；**V16 CI**：GET /v1/mvs* 全部字符串值断言 clean + 正常文案不误伤（防「mistake 含 take」式假阳）。
+- H3 商用「UI 显著标注」义务与本条的冲突处理仍走 §1.4 备忘（meta.ai_label 元数据路线 + 公测前法务）。
+
+### 5.5 辅助元数据与审计（诚实标注纪律）
+
+一切辅助产物挂 `assist:{mode:"rule"|"llm+rule"|"off", ts, persona}`；审计记录 `initiated_by: user|system|assistant` 三态；**机检结论（ai_review/sync_score/face_score）只允许机检管线写入**，请求体注入即剥（剧场 `delete payload.ai_review` 防伪造「机检通过」纪律）；V16 断言这些字段不可被 PATCH 伪造。
+
+---
+
+## 6. 积分口径（config.credits 扩展；可调，先扣后派单+失败 refund）
 
 | 项 | 值 | 说明 |
 |---|---|---|
-| mv_script / mv_preview / mv_align | **0** | 案头与样片免费（样片优先的体验前提） |
+| mv_script / mv_preview | **0** | 案头与样片免费（样片优先的体验前提） |
+| mv_align | **5** | 歌词↔时间轴对齐（v2 勘误 2026-11-24：原 0→5，对齐架构 §6 与契约 v2 定价表） |
 | mv_cast_image | 10/角色 | H3-Image ×3 候选 |
 | mv_cast_video | 20/角色 | 定妆视频+抽帧评分 |
 | mv_storyboard | 5/镜 | 关键帧 |
@@ -327,11 +417,11 @@ type="mv_compose"    {takes[{video,start_sec,strip_audio}], audio_master, title,
 | mv_compose | 10 | |
 | 系统自动补拍 | **0**（≤2 次，`initiated_by=system`） | 剧场免费纪律 |
 
-示例：歌唱曲 45s·12 镜（8 演唱镜）≈ 10+20+60+480+160+10 = **740 ⚡**（单主演）；纯音乐 8 镜 ≈ **400 ⚡**。对照每日免费 50 → MV 是「深度玩法/付费向」定位，定价与免费额度关系列 D5 待拍板（可选：注册送大额体验券/首支 5 折）。
+示例：歌唱曲 45s·12 镜（8 演唱镜）≈ 10+20+60+480+160+5+10 = **745 ⚡**（单主演，含 align 5）；纯音乐 8 镜 ≈ **400 ⚡**。对照每日免费 50 → MV 是「深度玩法/付费向」定位，定价与免费额度关系列 D5 待拍板（可选：注册送大额体验券/首支 5 折）。
 
 ---
 
-## 6. Spike 预研（N0 期间穿插；SP-MV-1 最高风险先打）
+## 7. Spike 预研（N0 期间穿插；SP-MV-1 最高风险先打）
 
 | # | 内容 | 通过标准 | 产出 |
 |---|---|---|---|
@@ -343,51 +433,36 @@ type="mv_compose"    {takes[{video,start_sec,strip_audio}], audio_master, title,
 
 ---
 
-## 7. WBS 与里程碑（1 人 + agent 协作口径；括号=传统人日）
+## 8. WBS 与里程碑（概览）
 
-### N0 · 无口型闭环 —— 「定妆能看」　净 ~1.5 周（8 人日）
-| WBS | 内容 | 工期 |
-|---|---|---|
-| N0-1 | CONTRACTS v2 冻结（§4.4/§4.5 草案转正）+ config/lanes 注册 + mock 假 mp4 桩 | 1d |
-| N0-2 | server `api/mv.js`：projects/image/jobs/cancel + `completeMv*`（仿 completeDsp 回填+入库）+ MIGRATIONS v3 | 1.5d |
-| N0-3 | executor `lib/comfy.js`+`lib/h3ir.js`+`lanes/mv.js`（cast_image/cast_video + 抽帧 + facegate）+ 模板入库 sha16 锁 | 2d |
-| N0-4 | App：MV tab + 向导壳（步①②③：选曲/选角上传/定妆）+ consent/TTL 复用 | 2.5d |
-| N0-5 | Spark 部署（systemd/Node/ffmpeg/`deploy/spark/` 脚本）+ V13 套件真机跑 | 1d |
+> **权威排程（含每项 DoD/依赖/施工方/回归节点/关键路径）已迁至 [musicbox-phase2-construction-plan.md](musicbox-phase2-construction-plan.md) §3–§5**，本文只留里程碑概览，避免双处漂移。
 
-### N1 · 纯音乐 MV 全链 —— 「能出一部片」　净 ~2 周（10 人日）
-| WBS | 内容 | 工期 |
-|---|---|---|
-| N1-1 | `mv_script` LLM 编译（prompts/ 新增 mv 模板 + 确定性分场模板兜底）+ 剧本编辑 PATCH/CAS | 2d |
-| N1-2 | `mv_storyboard`（edit 只换背景壳 + t2i）+ viewRefs 链 + swap 兜底 | 1.5d |
-| N1-3 | `mv_preview` 样片 + 报价卡 + `mv_shot`×N 批量派单/进度墙（mv.progress） | 2.5d |
-| N1-4 | ffmpeg `mv_compose`（concat/xfade/铺 master/字幕/片名卡/封面）+ 成片入库/首映礼/重拍 chips | 2.5d |
-| N1-5 | V14 真机（真 Spark）+ 回归 V1–V13 | 1.5d |
+| 里程碑 | 目标 | 净工期（1 人 + agent） | 出口门 |
+|---|---|---|---|
+| **N0 · 无口型闭环**「定妆能看」 | MV tab→选曲→选角（**双通道：拍照/上传 + AI 生成歌手**，D6）→定妆照+定妆视频（facegate 评分→拍板固化） | ~1.5 周（8 人日） | V13 全绿（mock）+ Spark 部署完成 |
+| **N1 · 纯音乐 MV 全链**「能出一部片」 | 剧本/分镜/免费样片/报价卡/开机/进度墙/成片 + **辅助 v1（规则版）** | ~2 周（11.5 人日） | V14 真机全绿 + 内测轨道发布（D10） |
+| **N2 · 歌唱 MV**「口型对上」 | 对齐/lip-sync（**EchoMimicV3-Flash**，D2）/SyncNet 门/兜底降级/双人（D3）+ **辅助 v2（对话版灰度 20%，D11）** | ~2.5 周（13 人日） | V15+V16 全绿 + 公测包 |
+| N3（观察项） | fast 档、S2V 档、角色卡社区、音乐 lane 并机 Spark（D7）、分享切片 | 按数据决策 | — |
 
-### N2 · 歌唱 MV —— 「口型对上」　净 ~2 周（10 人日）
-| WBS | 内容 | 工期 |
-|---|---|---|
-| N2-1 | `mv_align`（SenseVoice sidecar + 对齐规则）（SP-MV-2 结论） | 1.5d |
-| N2-2 | `mv-lipsync-svc`（:8390，SP-MV-1 定档引擎）+ `mv_lipsync` runner + SyncNet 自检门 | 3d |
-| N2-3 | 剧本演唱镜规则（唱段分配/副歌对镜/B-roll 穿插）+ 镜界卡乐句点 | 1.5d |
-| N2-4 | 兜底降级链（侧背远景+字幕）+ sync 质量观测 sidecar + V15 | 2.5d |
-| N2-5 | 公测包（AI 标注/合规文案/隐私政策增补人脸条款复核）+ 回归 | 1.5d |
-
-**N3（观察项，按数据决策）**：fast 档（LTX-2.5 属「暂不考虑」需再拍板）· S2V 音频驱动档 · 角色卡社区复用 · 音乐 lane 并机 Spark（5060 Ti 退役调测）· 分享面板 mp4 切片。
+**Spike 前置**：SP-MV-1（口型横评，全案最大风险）、SP-MV-2（对齐精度）、SP-MV-3（演唱镜 i2v 质量）、SP-MV-4（定妆复刻+共宿主内存预算）、SP-MV-5（Inkling-2-Mini 冒烟）、SP-MV-6（助手治理红队）——细则见施工计划 §3。
 
 ---
 
-## 8. 验收（续编 V13–V15，验收驱动施工；套件模式仿一期：自举 server + FakeExecutor 加 `_mv*` 分支）
+## 9. 验收（续编 V13–V16，验收驱动施工；套件模式仿一期：自举 server + FakeExecutor 加 `_mv*` 分支）
 
 | 套件 | 断言（节选） | 期 |
 |---|---|---|
 | **V13 MV 契约与账本**（mock Spark 可全跑） | 幂等：同参重复 shoot 只一 job 只扣一次；报价卡未 accept 不扣分；取消未拍镜全额 refund；系统补拍零扣（`credits_cost=0`）；mv 产物 `ai_label` 恒 1；人像上传 72h TTL 白盒验证 + consent；`laneOf` 新类型正确路由；mock mp4 可播 | N0 |
 | **V14 纯音乐 MV 全链**（真 Spark） | 选曲→定妆（facegate 过门）→剧本（JSON 契约合格率）→样片先出→报价卡→12 镜→成片 mp4（时长=歌长 ±0.5s、音轨=master SHA 一致、竖屏 9:16、AI 角标在）；断点续作（App 杀进程后 project 状态完好）；单并发不 OOM 且与剧场任务共存 | N1 |
 | **V15 歌唱 MV 口型**（真 Spark） | 对齐抽检逐句 ±150ms ≥90%；演唱镜 sync_score ≥阈值占比 ≥80%；sync 不过自动免费补样 ≤2；兜底降级镜不阻塞成片；全片音画不同步漂移 ≤±80ms（尾段实测） | N2 |
+| **V16 AI 辅助与治理**（mock 可全跑） | 白名单外工具到不了执行层；参数注入（请求体塞 project_id/ver/机检字段）必剥除或拒写；注入红线样例集 11 条全拒答且审计 `injection_suspect`；确认票生命周期（签发→同实体不重复→TTL60 过期→hash/ver 失配拒执行→一票一次）；预算熔断 >120% 会话 broken + 横幅；LLM 离线：suggest→NOT_READY 不装忙、助手回退规则模式横幅可见、主流程（定妆→拍摄→成片）零阻塞；`mv_lexicon` CI：/v1/mvs* 返回全串 clean + 白名单正常文案零误伤；系统补拍 `credits_cost=0` 且通告板明示 | N2 |
 | 回归 | V1–V12 每期全绿才收口（一期纪律） | 全部 |
+
+> 套件文件划分、helpers.js/FakeExecutor 改造清单、真机前置与 skip 纪律见施工计划 §6。
 
 ---
 
-## 9. 风险登记
+## 10. 风险登记
 
 | 风险 | 等级 | 对冲 |
 |---|---|---|
@@ -397,34 +472,44 @@ type="mv_compose"    {takes[{video,start_sec,strip_audio}], audio_master, title,
 | 共宿主内存/队列冲突（剧场 :8188、:8090、ACE-Step 同机） | ★★ | MusicBox executor 单并发 + 懒加载释放 + `ram_free` 观测挂起；逃生口=自有 ComfyUI `:8288` 共 models 目录（D1）；绝不 /free/kill 铁律入 executor 代码审查清单 |
 | H3 许可义务（商用 UI 标注/营收门槛/区域）与契约「引擎名不上用户面」冲突 | ★★ | 内测口径继承剧场先例（license 元数据+meta.ai_label，用户面匿名化）；公测前法务核（§1.4 备忘），必要时切 Apache 档（届时另行拍板） |
 | 人脸/肖像 PIPL（敏感个人信息） | ★★ | consent（限定用途+不训练）/72h TTL/一键删除；**AI 生成歌手**选项分流（D6，推荐默认露出）；成片含真人脸需用户显式勾选「本人或已获授权」 |
-| Inkling-2-Mini 未就位/换装抖动 | ★ | 剧本编译走确定性分场模板兜底（一期 LLM 可选性纪律）；助手 flag 开闸（D4），`/models` 跟随模型名 |
+| Inkling-2-Mini 未就位/换装抖动（LLM 单点影响全部辅助点） | ★ | **辅助体系设计前提=「LLM 是增强不是依赖」**：规则侧独立撑起闭环（§5.1 每点都有规则兜底列）；suggest/润色类离线显式 NOT_READY；助手降「规则辅助模式」横幅可见；剧本编译走确定性分场模板兜底；换装冒烟 SP-MV-5 后才开闸（D4），`/models` 跟随模型名 |
 | 视频带宽/存储（成片 30–100MB，takes 更多） | ★★ | takes TTL 72h 清理（仿 asset_drafts）；成片限流播放 720p 档；公测前 CDN |
 | App 视频栈（新增 video 依赖）拖包体/兼容 | ★ | video_player 官方件；低端机解码失败降级「海报+音频预览」 |
 | 一期调测未收口双开战线 | ★★ | 文件面隔离（契约 §5 归属表 + MV 全新增文件为主）；每周五全量回归；N0 不碰 works/intent 既有路径 |
+| 助手误操作/提示注入（对话式辅助的固有风险） | ★★ | 剧场治理层全套移植（§5.2）：白名单+参数域+注入红线+确认票+预算熔断+拍板权在人；V16 专项断言；LLM 幻觉实体（编造 shot_id/数字）→args 白名单键+服务端注入+回执机械剥编号 |
+| AI 辅助范围膨胀（做成通用 agent 拖垮工期） | ★★ | 白名单 7 工具封顶（§5.2），新工具必须过契约评审；「规则先行、LLM 后开」次序（D4）；copilot 剧场有 9 文件治理层的前车之鉴——按裁剪版执行 |
+| 诊断卡/chips 自研无剧场生产先例（剧场仅设计态） | ★ | 数据结构从简（flags.reason_history 单一真源）；每 chip 的系统动作全部映射到既有 job 类型，不发明新执行路径；V16 覆盖 |
 
 ---
 
-## 10. 待拍板决策清单
+## 11. 决策清单（已裁决 · 2026-11-23）
 
-| # | 决策点 | 建议 |
-|---|---|---|
-| D1 | ComfyUI 形态：与剧场共用 `:8188` 队列 vs MusicBox 自建 `:8288` 共 models 目录 | **先共用 :8188**（发起人已许共算力；省显存省盘），SP-MV-4 若互扰则切 :8288（executor 仅换 base_url） |
-| D2 | 口型引擎定档 | EchoMimicV3-Flash 首选（剧场选型）+ MuseTalk 兜底，SP-MV-1 横评后锁定；**这是二期唯一新增模型**（MiniMax 体系无对口型能力）——请确认 |
-| D3 | 双人可对唱 MV 是否 N2 内交付 | 建议 **N1 单主演、N2 顺双人**（REF2VA 双人锚剧场已验）；砍则双人→N3 |
-| D4 | AI 助手（对话式改剧本/创意扩写）启用时点 | 跟随 Inkling-2-Mini 上 :8090（SP-MV-5 冒烟过后开 `mv_assistant` 开关；此前仅结构化剧本卡+模板兜底） |
-| D5 | 积分定价（§5 表）与免费体验策略 | 建议定价表照案 + 「新用户首支 MV 5 折券」拉新；付费位（订阅含 MV 分）留公测 |
-| D6 | 「AI 生成歌手」（免真人照片） | 建议开且默认露出（降门槛+降 PIPL 面）；含真人脸成片强制授权勾选 |
-| D7 | 音乐 lane 并机：Spark 上的 ACE-Step 是否接管（5060 Ti 纯调测化） | **N3 再做**（二期 MV 不依赖；动它要重跑 V2 全回归，别和二期搅一起） |
-| D8 | mv 独立资源 vs works 扩 kind | **独立 mv 资源**（§4.3），曲库按 kind 过滤展示（音频 work 形状已被契约/端侧多处钉死，动它回归面大） |
-| D9 | 预览样片免费档每项目 1 次是否够 | 建议 1 次免费 + 重出 5⚡（防白嫖轮播图） |
-| D10 | 公测范围 | 建议 N1 完成即发内测轨道（纯音乐 MV），N2 完成上公测（歌唱 MV）——对齐一期「Google Play 内测先行」口径 |
+> 裁决来源：「发起人拍板」= 当日会话明示；「照准建议」= 发起人授权「其他按照你建议最优选择」。**本表即定案**，改动需再走裁决。
+
+| # | 决策点 | 裁决 | 来源 |
+|---|---|---|---|
+| D1 | ComfyUI 形态 | **与剧场共用 `:8188` 队列**（只发任务+观测，永不 /free/kill）；逃生口=自建 `:8288` 共 models 目录，SP-MV-4 互扰超标才启用（executor 仅换 base_url） | 发起人拍板 |
+| D2 | 口型引擎 | **EchoMimicV3-Flash 首选**（剧场选型，Apache）+ MuseTalk（MIT）兜底，SP-MV-1 横评锁定权重档；二期唯一新增模型 | 发起人拍板 |
+| D3 | 主演规模 | **N1 单主演；双人（可对唱）N2 交付**（REF2VA 双人锚剧场已验） | 发起人拍板 |
+| D4 | AI 助手启用时点 | 规则版辅助点随 N1 上；对话式改剧本/创意扩写**跟随 Inkling-2-Mini 上 :8090**（SP-MV-5 冒烟过后开 `mv_assistant` 开关） | 照准建议 |
+| D5 | 积分定价与体验 | §6 定价表照案 + 「新用户首支 MV 5 折券」；订阅含 MV 留公测 | 照准建议 |
+| D6 | 选角通道 | **「AI 生成歌手」与「拍照/上传照片」双通道都是硬性要求**，向导默认并露；含真人脸成片强制授权勾选 | 发起人拍板（明确要求） |
+| D7 | 音乐 lane 并机 Spark | N3 再做（二期不依赖，避免与一期回归搅动） | 照准建议 |
+| D8 | MV 存储形态 | 独立 mv 资源（§4.3/架构 §5），曲库按 kind 过滤展示 | 照准建议 |
+| D9 | 预览样片额度 | 每项目 1 次免费 + 重出 5⚡ | 照准建议 |
+| D10 | 公测范围 | N1 完成发内测轨道（纯音乐 MV），N2 完成上公测（歌唱 MV） | 照准建议 |
+| D11 | 助手对话版发布 | N1 只上规则版；N2 对话版灰度 20% 起观察；`mv_assistant.chat=false` 可整体关闭不影响主流程 | 照准建议 |
+| D12 | 反馈翻译层完整度 | N2 全量 6 类 chips+诊断卡；N2 吃紧降级序：先保「不像本人/不像在唱/太贵了」 | 照准建议 |
+| D13 | 预算护栏 | 项目级默认 1200⚡，>120% 暂停仅人工调高恢复；助手代发动作单独 120% 熔断 | 照准建议 |
 
 ---
 
-## 11. 调研与证据来源
+## 12. 调研与证据来源
 
 - **一期基线**：`docs/musicbox-assessment-and-plan.md`、`docs/musicbox-architecture-design.md`、`docs/musicbox-construction-plan.md`、`CONTRACTS.md`；App/服务端触碰文件清单见本次 Explore 调研（root_shell/create shells/work_detail/engine/lanes/api_client/acceptance 模式）。
-- **剧场实证**：`X-Theater/docs/theater-product-master-plan.md`（八阶段/卡流/护栏）、`theater-ux-design.md`（体验宪法/报价卡/重拍 chips）、`theater-infer-backend-adr.md`（白名单/许可/毕业机制/Spark 定位）、`theater-mode-plan.md`、`docs/h3-diagram-2-identity.html`（身份链）、`src/server/dag/engine.js`、`dag/adapters/comfy.js`+`h3ir.js`、`dag/workers/{t2v,compose,tts,lipsync}.js`、`api/{episodes,library,postprod}.js`、`runtime/facegate/server.py`。
+- **剧场实证（流程/引擎）**：`X-Theater/docs/theater-product-master-plan.md`（八阶段/卡流/护栏）、`theater-ux-design.md`（体验宪法/报价卡/重拍 chips/§7 语言表/§12 lint）、`theater-infer-backend-adr.md`（白名单/许可/毕业机制/Spark 定位）、`theater-mode-plan.md`、`docs/h3-diagram-2-identity.html`（身份链）、`src/server/dag/engine.js`、`dag/adapters/comfy.js`+`h3ir.js`、`dag/workers/{t2v,compose,tts,lipsync}.js`、`api/{episodes,library,postprod}.js`、`runtime/facegate/server.py`。
+- **剧场实证（AI 辅助层，2026-11-23 专项调研）**：治理层 `src/server/l2/{facade,adapter,governance,tools,advisor,llmintent,modeA,modeB,memory}.js`（白名单 31 工具/注入红线/确认票 hash·TTL60·verCAS·一票一次/预算熔断/「拍板权在人」芯片纪律/会话记忆只记执行结果）；多人格卡审 `dag/workers/aireview.js`（规则机检+LLM 叠加、engine 诚实标签、AIREVIEW_RUBRIC）；suggest `api/cards.js:1354-1403`（挂草稿不 ver++）；scriptgen `dag/workers/scriptgen.js`（fail-open+占位如实标注+工内重试回显）；assist 族 `prompts/index.js`（buildScriptgenSys/buildAssistLyricsSys/buildAssistImageSys/buildSuggestSys）+`prompts/validate.js`；报价/护栏 `api/episodes.js:22-103`+`rules/budget.js`+`dag/engine.js:308-350`；语言纪律 `rules/langlint.js`+`api/state.js:5`+`client/js/util.js:54-66`+`test/cases/V8_state_langlint.js`；copilot 前端 `client/js/views/copilot.js`（芯片按状态推导/hint 横幅/审批面板/跨会话边界）；LLM 基建 `src/server/llm/llm.js`（在线监视/不自动拉起/显存互斥闸）；**未实现项实证**：重拍 chips/诊断卡/同因计数仅存在于 `theater-ux-design.md §3.4` 与 `docs/html-prototype/screens-2.js`。
+- **一期 AI 地基**：`src/server/prompts/intent.js`（chatCompletionWithRetry/extractJson/词典兜底/澄清纪律强制）、`prompts/adjust.js`（LLM+20 余条启发式双通道/不识别必追问）、`api/intent.js`（answer 状态机）、`core/rules.js`（审核软门）。
 - **Spark 实机**：`X-Theater/runtime/spark-evidence/SURVEY.md`（硬件/端口/权重台账/脚本）、`EVIDENCE.md`（H3 三模板真跑计时/10/10 回归/许可合规范式/LTX multishot 冒烟）。
 - **引擎公开资料**：MiniMax-H3/H3-Image（ModelScope Comfy-Org 镜像 + LICENSE 条款）、MuseTalk（TMElyralab，MIT，实时中文口型）、LatentSync（bytedance，Apache 文本但许可双源不一致→调测档）、EchoMimic（antgroup，V3-Flash 选型见剧场 ADR）。
 - **待补登记**：Spark ACE-Step 1.5 端口/实例信息、Inkling-2-Mini 换装时间与模型名（:8090 `/models` 为准）。

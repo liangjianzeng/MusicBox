@@ -128,4 +128,37 @@ describe('V2 生成闭环', () => {
       S.executor.transcodeMode = 'park';
     }
   });
+
+  it('V2-⑦ seed/instrumental 显式入参必须落 payload 并进幂等键（契约 §2 文本创作线 2026-11-24 补白名单）', async () => {
+    const payload = (id) => {
+      const r = S.db.all('SELECT payload FROM jobs WHERE id=?', String(id));
+      return r.length ? JSON.parse(r[0].payload) : null;
+    };
+    const g = await S.newGuest();
+    const base = { mode: 'custom', prompt: H.uniq('v2seed'), lyrics: '[Verse]\n验收歌词', bpm: 100, sec: 15, count: 1 };
+    const a = await S.generate(g.token, Object.assign({}, base, { seed: 4242, instrumental: false }));
+    assert.strictEqual(a.status, 202, 'V2-⑦ 带 seed 提交应 202，实际 ' + a.status + ' ' + a.text.slice(0, 150));
+    const b = await S.generate(g.token, Object.assign({}, base, { seed: 4242, instrumental: false }));
+    assert.strictEqual(b.json.job_id, a.json.job_id, 'V2-⑦ 同参同 seed 应命中幂等返回同一 job，实际 ' + b.json.job_id + ' vs ' + a.json.job_id);
+    assert.strictEqual(b.json.idempotent, true, 'V2-⑦ 同参同 seed 重复提交应 idempotent:true 且不重复扣分，实际 ' + JSON.stringify(b.json));
+    const c = await S.generate(g.token, Object.assign({}, base, { seed: 9999, instrumental: false }));
+    assert.notStrictEqual(c.json.job_id, a.json.job_id, 'V2-⑦ 改 seed 必须派新 job——否则 10 分钟幂等窗口把「换个 Seed 再来」吃掉（契约 §2 幂等键含 seed）');
+    const pa = payload(a.json.job_id), pc = payload(c.json.job_id);
+    assert.strictEqual(pa && pa.seed_base, 4242, 'V2-⑦ body.seed 必须写进 payload.seed_base（候选依次 +0/+1/+2），实际 ' + JSON.stringify(pa && pa.seed_base));
+    assert.strictEqual(pc && pc.seed_base, 9999, 'V2-⑦ 第二单 payload.seed_base 应为 9999，实际 ' + JSON.stringify(pc && pc.seed_base));
+    const badSeed = await S.generate(g.token, { mode: 'simple', prompt: H.uniq('v2badseed'), sec: 15, seed: -5 });
+    assert.strictEqual(badSeed.status, 400, 'V2-⑦ 非法 seed（-5）应 400 BAD_REQUEST，实际 ' + badSeed.status + ' ' + badSeed.text.slice(0, 150));
+
+    const g2 = await S.newGuest(); // 独立游客：避开每日 50 积分对多单断言的干扰
+    const i1 = await S.generate(g2.token, { mode: 'simple', prompt: H.uniq('v2inst'), sec: 15, count: 1, instrumental: true });
+    assert.strictEqual(i1.status, 202, 'V2-⑦ instrumental=true 提交应 202，实际 ' + i1.status + ' ' + i1.text.slice(0, 150));
+    const pi = payload(i1.json.job_id);
+    assert.strictEqual(pi && pi.instrumental, true, 'V2-⑦ instrumental=true 必须落 payload（纯音乐不得只靠 tags 里一个「纯音乐」碰运气），实际 ' + JSON.stringify(pi && pi.instrumental));
+    const v1 = await S.generate(g2.token, { mode: 'simple', prompt: H.uniq('v2vocal'), sec: 15, count: 1, instrumental: false });
+    const pv = payload(v1.json.job_id);
+    assert.ok(pv && String(pv.lyrics).trim() === '', 'V2-⑦ 前置：该单应无歌词，实际 ' + JSON.stringify(pv && pv.lyrics));
+    assert.strictEqual(pv.instrumental, false, 'V2-⑦ 显式 instrumental=false 不得被「空歌词即纯音乐」推断覆盖（人声+留空歌词曾被误判纯音乐），实际 ' + JSON.stringify(pv.instrumental));
+    const badInst = await S.generate(g2.token, { mode: 'simple', prompt: H.uniq('v2badinst'), sec: 15, instrumental: 'maybe' });
+    assert.strictEqual(badInst.status, 400, 'V2-⑦ 非法 instrumental 应 400，实际 ' + badInst.status + ' ' + badInst.text.slice(0, 150));
+  });
 });

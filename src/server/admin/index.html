@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MusicBox 运营后台</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --tx:#e6e9ef; --dim:#8b93a7;
+          --pri:#6c8cff; --ok:#3ecf8e; --warn:#f0b429; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:6; }
+  header h1 { font-size:16px; margin:0; font-weight:700; white-space:nowrap; }
+  .sp { flex:1; }
+  nav { display:flex; gap:4px; overflow-x:auto; padding:10px 20px 0; max-width:1240px; margin:0 auto; }
+  nav button { background:transparent; color:var(--dim); border:none; border-bottom:2px solid transparent; padding:8px 14px; cursor:pointer; white-space:nowrap; font-size:13px; }
+  nav button.on { color:var(--tx); border-bottom-color:var(--pri); font-weight:600; }
+  main { padding:18px 20px 60px; max-width:1240px; margin:0 auto; }
+  h2 { font-size:13px; margin:0 0 12px; color:var(--dim); font-weight:600; letter-spacing:.5px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+  .kpi { background:#12151b; border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .kpi b { display:block; font-size:22px; font-weight:800; letter-spacing:.5px; }
+  .kpi span { font-size:12px; color:var(--dim); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 9px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--dim); font-weight:600; font-size:12px; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  code { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#c9d3ff; word-break:break-all; }
+  textarea { width:100%; min-height:200px; background:#0d0f14; color:var(--tx); border:1px solid var(--line); border-radius:8px; padding:10px; font:13px/1.7 ui-monospace,Consolas,monospace; resize:vertical; }
+  button.act { background:var(--pri); color:#fff; border:none; border-radius:6px; padding:7px 13px; font-size:13px; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--tx); border-radius:6px; padding:6px 11px; font-size:12px; cursor:pointer; }
+  button.danger { background:transparent; border:1px solid #4a2a2e; color:var(--bad); border-radius:6px; padding:6px 11px; font-size:12px; cursor:pointer; }
+  input, select { background:#0d0f14; color:var(--tx); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-size:13px; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:var(--pri); }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; }
+  .pill.ok { background:rgba(62,207,142,.15); color:var(--ok); }
+  .pill.bad { background:rgba(255,107,107,.15); color:var(--bad); }
+  .pill.unknown { background:rgba(139,147,167,.15); color:var(--dim); }
+  .pill.warn { background:rgba(240,180,41,.15); color:var(--warn); }
+  .tag { font-size:11px; color:var(--pri); border:1px solid rgba(108,140,255,.35); border-radius:4px; padding:1px 6px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--dim); font-size:12px; }
+  .fld { display:grid; gap:4px; }
+  .fld label { font-size:12px; color:var(--dim); }
+  #login { max-width:340px; margin:12vh auto; }
+  #login input { width:100%; margin-bottom:10px; }
+  #toast { position:fixed; right:20px; bottom:20px; display:flex; flex-direction:column; gap:8px; z-index:30; }
+  .msg { background:#1d222c; border:1px solid var(--line); border-left:3px solid var(--pri); padding:10px 14px; border-radius:6px; font-size:13px; max-width:360px; }
+  .msg.err { border-left-color:var(--bad); }
+  .hide { display:none !important; }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:20; }
+  .pre { font:12px/1.7 ui-monospace,Consolas,monospace; color:var(--dim); white-space:pre-wrap; word-break:break-all; max-height:280px; overflow:auto; background:#0d0f14; border:1px solid var(--line); border-radius:8px; padding:10px; }
+</style>
+</head>
+<body>
+
+<div id="login" class="card hide">
+  <h2>管理员登录</h2>
+  <input id="lu" placeholder="用户名" autocomplete="username">
+  <input id="lp" type="password" placeholder="密码" autocomplete="current-password">
+  <button class="act" id="btnLogin" style="width:100%" onclick="doLogin()">登录</button>
+  <p class="muted" id="loginHint" style="margin:12px 0 0">生产环境请用 MB_ADMIN_USERNAME / MB_ADMIN_PASSWORD 覆盖默认凭据</p>
+</div>
+
+<div id="fatal" class="hide" style="position:fixed;left:0;right:0;top:0;z-index:99;background:#5a1418;color:#ffd7da;padding:10px 16px;font:12px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap"></div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>MusicBox 运营后台</h1>
+    <span class="muted" id="ver">v2026.11.24-3</span>
+    <span class="sp"></span>
+    <span id="who" class="muted"></span>
+    <button class="ghost" onclick="reloadTab()">刷新</button>
+    <button class="ghost" onclick="logout()">退出</button>
+  </header>
+  <nav id="tabs"></nav>
+  <main id="pane"></main>
+</div>
+
+<div id="modal" class="hide"><div class="card" id="modalBody" style="width:460px;margin:0"></div></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+// 页面构建号：与服务端文件同步。旧标签页（内存里驻留旧脚本）一旦回到前台会自动重载，杜绝"点了没反应"
+const PAGE_BUILD = 'v2026.11.24-4';
+const KINDS = ['music','asr','llm','comfy','lipsync','facegate','mv_asr'];
+const KIND_LABEL = { music:'音乐生成', asr:'语音识别', llm:'LLM/VLM', comfy:'ComfyUI(图/视频)', lipsync:'口型对齐', facegate:'人脸门禁', mv_asr:'MV 语音对齐' };
+const TABS = [
+  ['dash','运营看板'], ['nodes','模型节点'], ['config','运营配置'], ['flags','功能开关'],
+  ['audit_mod','内容审核'], ['users','用户运营'], ['audit','审计日志'],
+];
+let TOKEN = localStorage.getItem('mb_admin_token') || '';
+let TAB = 'dash';
+let NODES = [], HEALTH = [], EDIT_ID = null;
+
+// ————— 基础设施 —————
+function toast(t, isErr) {
+  const d = document.createElement('div'); d.className = 'msg' + (isErr ? ' err' : ''); d.textContent = t;
+  document.getElementById('toast').appendChild(d); setTimeout(() => d.remove(), 4000);
+}
+async function api(method, path, body) {
+  const h = { 'content-type': 'application/json' };
+  if (TOKEN) h['authorization'] = 'Bearer ' + TOKEN;
+  const r = await fetch(path, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { logout(); throw new Error(j.message || '登录已过期'); }
+  if (!r.ok) throw new Error(j.message || ('请求失败(' + r.status + ')'));
+  return j;
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+function fmt(n) { return (n == null) ? '-' : (typeof n === 'number' ? n.toLocaleString('zh-CN') : n); }
+function pill(txt, cls) { return '<span class="pill ' + cls + '">' + esc(txt) + '</span>'; }
+function kpi(label, val, sub) { return '<div class="kpi"><b>' + esc(val) + '</b><span>' + esc(label) + (sub ? ' · ' + esc(sub) : '') + '</span></div>'; }
+
+// ————— 登录 —————
+let LOGIN_BUSY = false;
+async function doLogin() {
+  if (LOGIN_BUSY) return;
+  LOGIN_BUSY = true;
+  const btn = document.getElementById('btnLogin');
+  if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+  try {
+    const r = await api('POST', '/admin/login', { username: document.getElementById('lu').value, password: document.getElementById('lp').value });
+    TOKEN = r.token; localStorage.setItem('mb_admin_token', TOKEN);
+    document.getElementById('who').textContent = r.admin.username;
+    boot();
+    // 兜底：若容器仍未显示（旧脚本驻留、渲染异常、DOM 未就绪等），直接重载走冷启动 init 路径
+    setTimeout(function () {
+      try { if (TOKEN && document.getElementById('app').classList.contains('hide')) location.reload(); } catch (e) {}
+    }, 400);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    LOGIN_BUSY = false;
+    if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+  }
+}
+function logout() { TOKEN = ''; localStorage.removeItem('mb_admin_token'); show(false); }
+function show(on) {
+  document.getElementById('app').classList.toggle('hide', !on);
+  document.getElementById('login').classList.toggle('hide', on);
+}
+
+// ————— Tab —————
+function renderTabs() {
+  document.getElementById('tabs').innerHTML = TABS.map(([k, l]) =>
+    '<button class="' + (k === TAB ? 'on' : '') + '" onclick="goTab(\'' + k + '\')">' + l + '</button>').join('');
+}
+function goTab(k) { TAB = k; renderTabs(); reloadTab(); }
+function reloadTab() {
+  const pane = document.getElementById('pane'); pane.innerHTML = '<p class="muted">加载中…</p>';
+  ({ dash: renderDash, nodes: renderNodes, config: renderConfig, flags: renderFlags,
+     audit_mod: renderModeration, users: renderUsers, audit: renderAudit })[TAB]();
+}
+
+// ————— 看板 —————
+async function renderDash() {
+  try {
+    const m = await api('GET', '/admin/metrics/overview?range=' + (document.getElementById('rng') ? document.getElementById('rng').value : 7));
+    const exOn = m.executors.filter(e => e.online).length;
+    document.getElementById('pane').innerHTML =
+      '<div class="card"><h2>运营看板</h2>' +
+      '<div class="row" style="margin-bottom:12px"><select id="rng" onchange="reloadTab()">' +
+        [1, 3, 7, 14, 30].map(d => '<option value="' + d + '"' + (m.range_days === d ? ' selected' : '') + '>近 ' + d + ' 天</option>').join('') +
+      '</select><span class="muted">生成于 ' + esc(m.generated_at) + ' · 配置版本 v' + m.config_version + '</span></div>' +
+      '<div class="grid">' +
+        kpi('用户总数', fmt(m.users.total), '新增 ' + fmt(m.users.new)) +
+        kpi('DAU / MAU', fmt(m.users.dau) + ' / ' + fmt(m.users.mau), '绑手机 ' + fmt(m.users.bound_phone)) +
+        kpi('作品总数', fmt(m.works.total), '公开 ' + fmt(m.works.public)) +
+        kpi('生成任务', fmt(m.jobs.total), '成功率 ' + (m.jobs.success_rate == null ? '-' : m.jobs.success_rate + '%')) +
+        kpi('积分发放/消耗', fmt(m.credits.granted) + ' / ' + fmt(m.credits.consumed), '净 ' + fmt(m.credits.net)) +
+        kpi('MV 项目', fmt(m.mv.projects)) +
+        kpi('待处理举报', fmt(m.moderation.reports_open)) +
+        kpi('执行器在线', exOn + ' / ' + m.executors.length) +
+        kpi('队列 排队/领取/执行', m.jobs.queue.queued + ' / ' + m.jobs.queue.leased + ' / ' + m.jobs.queue.running) +
+        kpi('产物存储', (m.storage.bytes / 1048576).toFixed(1) + ' MB', m.storage.files + ' 文件') +
+      '</div></div>' +
+      '<div class="card"><h2>任务类型（近 ' + m.range_days + ' 天）</h2>' + tableize(['类型','数量','完成','平均耗时(s)'],
+        m.jobs.by_type.map(t => [esc(t.type), t.n, t.done, t.avg_sec == null ? '-' : t.avg_sec])) + '</div>' +
+      (m.jobs.error_top.length ? '<div class="card"><h2>失败 Top 错误码</h2>' + tableize(['错误码','次数'], m.jobs.error_top.map(e => [esc(e.code), e.n])) + '</div>' : '') +
+      '<div class="card"><h2>执行器</h2>' + tableize(['ID','通道','版本','最后心跳','在线'],
+        m.executors.map(e => ['<code>' + esc(e.id) + '</code>', esc((e.lanes || []).join(',')), esc(e.version), esc(e.last_seen), e.online ? pill('在线','ok') : pill('离线','unknown')])) + '</div>';
+  } catch (e) { fail(e); }
+}
+function tableize(heads, rows) {
+  return '<table><thead><tr>' + heads.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
+    (rows.length ? rows.map(r => '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>').join('')
+      : '<tr><td colspan="' + heads.length + '" class="muted">暂无数据</td></tr>') + '</tbody></table>';
+}
+function fail(e) { document.getElementById('pane').innerHTML = '<div class="card"><span class="pill bad">加载失败</span> <span class="muted">' + esc(e.message) + '</span></div>'; }
+
+// ————— 模型节点 —————
+async function renderNodes() {
+  try {
+    const [n, h] = await Promise.all([api('GET', '/admin/model-nodes?limit=500'), api('GET', '/admin/model-nodes/health')]);
+    NODES = n.items || []; HEALTH = h.items || [];
+    let html = '<div class="card"><h2>默认走向（APK 未设置时用此处默认；锁定后不可自选）</h2>' +
+      '<table><thead><tr><th style="width:150px">种类</th><th style="width:34%">默认节点</th><th>端点</th><th style="width:70px">锁定</th><th style="width:80px">操作</th></tr></thead><tbody>';
+    for (const k of KINDS) {
+      const items = NODES.filter(x => x.kind === k);
+      const def = items.find(x => x.is_default) || items[0];
+      const opts = items.map(x => '<option value="' + x.id + '"' + (def && x.id === def.id ? ' selected' : '') + '>' + esc(x.engine) + ' · ' + esc(x.endpoint) + '</option>').join('') || '<option value="">（无可用节点）</option>';
+      html += '<tr><td>' + (KIND_LABEL[k] || k) + '</td><td><select id="d_' + k + '" style="width:100%">' + opts + '</select></td>' +
+        '<td><code>' + esc(def ? def.endpoint : '-') + '</code></td>' +
+        '<td><input type="checkbox" id="l_' + k + '"' + (def && def.locked ? ' checked' : '') + '></td>' +
+        '<td><button class="ghost" onclick="saveRouting(\'' + k + '\')">保存</button></td></tr>';
+    }
+    html += '</tbody></table></div>';
+    html += '<div class="card"><h2>模型节点</h2><div class="row" style="margin-bottom:12px">' +
+      '<select id="fkind"><option value="">全部种类</option>' + KINDS.map(k => '<option value="' + k + '">' + (KIND_LABEL[k] || k) + '</option>').join('') + '</select>' +
+      '<button class="ghost" onclick="reloadTab()">筛选</button>' +
+      '<button class="ghost" id="probeAllBtn" onclick="probeAll()">全部探测</button>' +
+      '<span class="muted" id="probeSum"></span><span class="sp"></span>' +
+      '<button class="act" onclick="openForm()">+ 新建节点</button></div>' +
+      '<table><thead><tr><th>节点 / 说明</th><th>种类</th><th>模型</th><th>端点</th><th>优先级</th><th>权重</th><th>健康</th><th>启用</th><th>标记</th><th style="width:230px">操作</th></tr></thead><tbody>';
+    for (const x of NODES.filter(n2 => !document.getElementById('fkind') || !document.getElementById('fkind').value || n2.kind === document.getElementById('fkind').value)) {
+      html += '<tr><td><b>' + esc(x.label || x.engine) + '</b>' +
+        (x.note ? '<div class="muted" style="max-width:320px">' + esc(x.note) + '</div>' : '') +
+        '<div class="muted">' + esc(x.id) + ' · ' + (x.source === 'seed' ? '部署默认播种' : '后台新增') + '</div></td>' +
+        '<td>' + (KIND_LABEL[x.kind] || x.kind) + '</td><td>' + esc(x.engine) + '</td><td><code>' + esc(x.endpoint) + '</code></td>' +
+        '<td>' + x.priority + '</td><td>' + x.weight + '</td>' +
+        '<td>' + statusPill(x.status) + (x.last_probe_msg ? '<div class="muted">' + esc(x.last_probe_msg) + '</div>' : '') +
+        (x.last_probe_at ? '<div class="muted">' + esc(x.last_probe_at.slice(11, 19)) + ' 探测</div>' : '<div class="muted">未探测</div>') + '</td>' +
+        '<td>' + (x.enabled ? pill('是','ok') : pill('否','unknown')) + '</td>' +
+        '<td>' + (x.is_default ? '<span class="tag">默认</span> ' : '') + (x.locked ? '<span class="tag">锁定</span>' : '') + '</td>' +
+        '<td><div class="row" style="gap:6px">' +
+          '<button class="ghost" onclick="openForm(\'' + x.id + '\')">编辑</button>' +
+          '<button class="ghost" onclick="probe(\'' + x.id + '\')">探测</button>' +
+          '<button class="ghost" onclick="toggle(\'' + x.id + '\',' + (x.enabled ? 0 : 1) + ')">' + (x.enabled ? '禁用' : '启用') + '</button>' +
+          '<button class="danger" onclick="del(\'' + x.id + '\',' + (x.is_default ? 1 : 0) + ')">删除</button></div></td></tr>';
+    }
+    html += '</tbody></table><p class="muted" style="margin:10px 0 0">共 ' + NODES.length + ' 个节点 · 优先级小者优先，默认节点故障时自动降级 · 端点取自部署环境变量（MB_MUSIC_URL / MB_LLM_VLM_URL / MB_COMFY_URL / MB_LIPSYNC_URL …），改后即时对执行器与 APK 生效</p></div>';
+    document.getElementById('pane').innerHTML = html;
+  } catch (e) { fail(e); }
+}
+function statusPill(s) {
+  const map = { healthy:['ok','健康'], degraded:['warn','端口可达'], unhealthy:['bad','不可达'], unreachable:['bad','不可达'], unknown:['unknown','未探测'], fallback:['warn','回退默认'] };
+  const m = map[s] || map.unknown; return pill(m[1], m[0]);
+}
+async function saveRouting(kind) {
+  const nodeId = document.getElementById('d_' + kind).value, locked = document.getElementById('l_' + kind).checked;
+  if (!nodeId) return toast('该种类暂无可用节点', true);
+  try { await api('POST', '/admin/config/routing', { [kind]: { node_id: nodeId, locked } }); toast('已保存' + (locked ? '（已锁定）' : '')); reloadTab(); }
+  catch (e) { toast(e.message, true); }
+}
+function openForm(id) {
+  EDIT_ID = id || null;
+  const n = id ? NODES.find(x => x.id === id) : null;
+  document.getElementById('modalBody').innerHTML =
+    '<h2>' + (id ? '编辑节点' : '新建节点') + '</h2><div style="display:grid;gap:10px">' +
+    '<div class="fld"><label>种类</label><select id="e_kind" style="width:100%"' + (id ? ' disabled' : '') + '>' +
+      KINDS.map(k => '<option value="' + k + '"' + ((n ? n.kind : 'music') === k ? ' selected' : '') + '>' + (KIND_LABEL[k] || k) + '</option>').join('') + '</select></div>' +
+    '<div class="fld"><label>节点名称（运营可读）</label><input id="e_label" style="width:100%" value="' + esc(n ? n.label || '' : '') + '" placeholder="如 口型重绘 · EchoMimicV3-Flash"></div>' +
+    '<div class="fld"><label>模型/引擎名</label><input id="e_engine" style="width:100%" value="' + esc(n ? n.engine : '') + '" placeholder="如 ace-step-1.5"></div>' +
+    '<div class="fld"><label>端点</label><input id="e_endpoint" style="width:100%" value="' + esc(n ? n.endpoint : '') + '" placeholder="http://127.0.0.1:8190"></div>' +
+    '<div class="fld"><label>说明（宿主/进程/端口纪律）</label><input id="e_note" style="width:100%" value="' + esc(n ? n.note || '' : '') + '" placeholder="如 Spark 本机独显常驻，仅回环监听"></div>' +
+    '<div class="row"><div class="fld" style="flex:1"><label>优先级</label><input id="e_priority" type="number" value="' + (n ? n.priority : 100) + '" style="width:100%"></div>' +
+    '<div class="fld" style="flex:1"><label>权重</label><input id="e_weight" type="number" step="0.1" value="' + (n ? n.weight : 1) + '" style="width:100%"></div>' +
+    '<label style="margin-top:18px"><input id="e_enabled" type="checkbox"' + (!n || n.enabled ? ' checked' : '') + '> 启用</label></div>' +
+    '</div><div class="row" style="margin-top:16px;justify-content:flex-end">' +
+    '<button class="ghost" onclick="closeModal()">取消</button><button class="act" onclick="saveForm()">保存</button></div>';
+  document.getElementById('modal').classList.remove('hide');
+}
+function closeModal() { document.getElementById('modal').classList.add('hide'); }
+async function saveForm() {
+  const body = { kind: document.getElementById('e_kind').value, engine: document.getElementById('e_engine').value.trim(),
+    endpoint: document.getElementById('e_endpoint').value.trim(), priority: Number(document.getElementById('e_priority').value),
+    label: document.getElementById('e_label').value.trim() || null, note: document.getElementById('e_note').value.trim() || null,
+    weight: Number(document.getElementById('e_weight').value), enabled: document.getElementById('e_enabled').checked };
+  if (!body.engine || !body.endpoint) return toast('引擎名与端点必填', true);
+  try {
+    await api(EDIT_ID ? 'PATCH' : 'POST', EDIT_ID ? '/admin/model-nodes/' + EDIT_ID : '/admin/model-nodes', body);
+    closeModal(); toast('已保存'); reloadTab();
+  } catch (e) { toast(e.message, true); }
+}
+async function toggle(id, en) { try { await api('PATCH', '/admin/model-nodes/' + id, { enabled: !!en }); reloadTab(); } catch (e) { toast(e.message, true); } }
+async function probe(id) { try { const r = await api('POST', '/admin/model-nodes/' + id + '/probe'); toast((r.healthy ? '节点可用 · ' : '节点不可达 · ') + (r.msg || ''), !r.healthy); reloadTab(); } catch (e) { toast(e.message, true); } }
+async function probeAll() {
+  const btn = document.getElementById('probeAllBtn'); const sum = document.getElementById('probeSum');
+  if (btn) btn.disabled = true; if (sum) sum.textContent = '探测中…';
+  try {
+    const r = await api('POST', '/admin/model-nodes/probe-all');
+    if (sum) sum.textContent = '健康 ' + r.healthy + ' · 端口可达 ' + r.reachable + ' / 共 ' + r.total;
+    toast('探测完成：健康 ' + r.healthy + '，端口可达 ' + r.reachable + ' / ' + r.total, r.reachable === 0);
+    reloadTab();
+  } catch (e) { if (sum) sum.textContent = ''; toast(e.message, true); if (btn) btn.disabled = false; }
+}
+async function del(id, isDef) {
+  if (!confirm(isDef ? '该节点是默认节点，删除后默认自动指向同种类其余可用节点。确认删除？' : '确认删除该节点？')) return;
+  try { await api('DELETE', '/admin/model-nodes/' + id); toast('已删除'); reloadTab(); } catch (e) { toast(e.message, true); }
+}
+
+// ————— 运营配置（定价/版本策略/公告/审核开关 + 历史回滚） —————
+async function renderConfig() {
+  try {
+    const c = await api('GET', '/admin/config/app');
+    const b = c.blob;
+    document.getElementById('pane').innerHTML =
+      '<div class="card"><h2>积分定价（保存后 APK 与计费即时生效，免重启）</h2>' +
+      '<div class="grid">' +
+        num('每日免费', 'c_daily_free', b.credits.daily_free) + num('每候选', 'c_per_candidate', b.credits.per_candidate) +
+        num('微调 adjust', 'c_adjust', b.credits.adjust) + num('续写 extend', 'c_extend', b.credits.extend) +
+        num('翻唱 cover', 'c_cover', b.credits.cover) + num('端侧 DSP', 'c_dsp', b.credits.dsp) +
+      '</div><h2 style="margin-top:16px">MV 定价</h2><div class="grid">' +
+        ['shot','lipsync','cast_image','cast_video','storyboard','align','preview','compose'].map(k => num('mv.' + k, 'm_' + k, (b.credits.mv || {})[k] || 0)).join('') +
+      '</div><div class="row" style="margin-top:14px"><input id="c_reason" placeholder="变更原因（留痕）" style="width:220px">' +
+      '<button class="act" onclick="savePricing()">保存定价</button></div></div>' +
+      '<div class="card"><h2>版本策略（APK 更新引导 / 强制升级）</h2><div class="grid">' +
+        '<div class="fld"><label>模式</label><select id="v_mode">' +
+          ['none','recommended','required'].map(x => '<option value="' + x + '"' + (b.version_policy.update_mode === x ? ' selected' : '') + '>' + ({none:'不检查',recommended:'引导更新',required:'强制更新'})[x] + '</option>').join('') +
+        '</select></div>' +
+        '<div class="fld"><label>最低可用版本</label><input id="v_min" value="' + esc(b.version_policy.min_supported || '') + '" placeholder="如 0.9.0"></div>' +
+        '<div class="fld"><label>推荐版本</label><input id="v_rec" value="' + esc(b.version_policy.recommended || '') + '" placeholder="如 1.0.0"></div>' +
+        '<div class="fld"><label>下载地址</label><input id="v_url" style="min-width:240px" value="' + esc(b.version_policy.download_url || '') + '" placeholder="https://.../app-release.apk"></div>' +
+        '<div class="fld"><label>检查间隔(秒)</label><input id="v_int" type="number" value="' + (b.version_policy.check_interval_sec || 3600) + '"></div>' +
+      '</div><div class="row" style="margin-top:14px"><input id="v_reason" placeholder="变更原因" style="width:220px"><button class="act" onclick="saveVersion()">保存版本策略</button></div></div>' +
+      '<div class="card"><h2>公告 Banner</h2><div class="row">' +
+        '<label><input id="a_vis" type="checkbox"' + (b.announcement.visible ? ' checked' : '') + '> 显示</label>' +
+        '<select id="a_style">' + [['notice','通知'],['warn','警告'],['maint','维护'],['','']] .filter(x=>x[0]).map(x => '<option value="' + x[0] + '"' + (b.announcement.style === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('') + '</select>' +
+        '<input id="a_text" style="flex:1;min-width:280px" maxlength="500" value="' + esc(b.announcement.text || '') + '" placeholder="公告文案，APK 顶部展示">' +
+        '<button class="act" onclick="saveAnnounce()">保存公告</button></div></div>' +
+      '<div class="card"><h2>审核总开关与配置历史</h2><div class="row" style="margin-bottom:12px">' +
+        '<label><input id="mod_on" type="checkbox"' + (b.moderation_enabled !== false ? ' checked' : '') + '> 启用内容审核</label>' +
+        '<button class="act" onclick="saveModeration()">保存</button></div>' +
+        (await historyTable()) + '</div>';
+  } catch (e) { fail(e); }
+}
+function num(label, id, val) { return '<div class="fld"><label>' + esc(label) + '</label><input id="' + id + '" type="number" value="' + val + '" style="width:100%"></div>'; }
+async function historyTable() {
+  const h = await api('GET', '/admin/config/history?limit=15');
+  return '<h2>配置历史（可回滚，保留完整链路）</h2>' + tableize(['版本','操作人','原因','时间','操作'],
+    h.items.map(x => ['v' + x.version, esc(x.changed_by), esc(x.reason || ''), esc(x.created_at),
+      '<button class="ghost" onclick="rollback(' + x.version + ')">回滚</button>']));
+}
+function credPatch() {
+  const g = id => Number(document.getElementById(id).value);
+  return { credits: { daily_free: g('c_daily_free'), per_candidate: g('c_per_candidate'), adjust: g('c_adjust'),
+    extend: g('c_extend'), cover: g('c_cover'), dsp: g('c_dsp'),
+    mv: { shot: g('m_shot'), lipsync: g('m_lipsync'), cast_image: g('m_cast_image'), cast_video: g('m_cast_video'),
+      storyboard: g('m_storyboard'), align: g('m_align'), preview: g('m_preview'), compose: g('m_compose'),
+      reshoot_system: (document.getElementById('m_reshoot_system') ? Number(document.getElementById('m_reshoot_system').value) : 0) } } };
+}
+async function savePricing() { try { const r = await api('POST', '/admin/config/app', { patch: credPatch(), reason: document.getElementById('c_reason').value }); toast('定价已生效（v' + r.version + '）'); reloadTab(); } catch (e) { toast(e.message, true); } }
+async function saveVersion() {
+  try {
+    const patch = { version_policy: { update_mode: document.getElementById('v_mode').value,
+      min_supported: document.getElementById('v_min').value.trim() || null,
+      recommended: document.getElementById('v_rec').value.trim() || null,
+      download_url: document.getElementById('v_url').value.trim() || null,
+      check_interval_sec: Number(document.getElementById('v_int').value) } };
+    const r = await api('POST', '/admin/config/app', { patch, reason: document.getElementById('v_reason').value });
+    toast('版本策略已生效（v' + r.version + '）'); reloadTab();
+  } catch (e) { toast(e.message, true); }
+}
+async function saveAnnounce() {
+  try {
+    const r = await api('POST', '/admin/config/app', { patch: { announcement: { visible: document.getElementById('a_vis').checked, style: document.getElementById('a_style').value, text: document.getElementById('a_text').value } }, reason: '公告' });
+    toast('公告已生效（v' + r.version + '）');
+  } catch (e) { toast(e.message, true); }
+}
+async function saveModeration() {
+  try { await api('POST', '/admin/config/app', { patch: { moderation_enabled: document.getElementById('mod_on').checked }, reason: '审核开关' }); toast('已保存'); }
+  catch (e) { toast(e.message, true); }
+}
+async function rollback(v) { if (!confirm('回滚到 v' + v + '？将作为新版本生效（历史保留）。')) return; try { const r = await api('POST', '/admin/config/rollback', { version: v }); toast('已回滚，当前 v' + r.version); reloadTab(); } catch (e) { toast(e.message, true); } }
+
+// ————— 功能开关 —————
+async function renderFlags() {
+  try {
+    const f = await api('GET', '/admin/config/features');
+    const LABEL = { mv: 'MV 生成（二期总开关，可按用户灰度）', dsp: '端侧 DSP 工具', persona: '声音人格', assistant_chat: 'MV 对话式助手' };
+    document.getElementById('pane').innerHTML = '<div class="card"><h2>功能开关与灰度（热生效，无需重启/发版）</h2>' +
+      tableize(['开关', '说明', '启用', '灰度比例', '操作'], f.items.map(x =>
+        ['<code>' + x.key + '</code>', esc(LABEL[x.key] || x.key),
+         '<input type="checkbox" id="fe_' + x.key + '"' + (x.enabled ? ' checked' : '') + '>',
+         '<input type="number" id="fg_' + x.key + '" min="0" max="1" step="0.05" value="' + x.grayscale + '" style="width:90px">',
+         '<button class="ghost" onclick="saveFlag(\'' + x.key + '\')">保存</button>'])) +
+      '<p class="muted" style="margin:10px 0 0">灰度=0~1：按用户 id 哈希分桶放量；1 表示全量。</p></div>' +
+      '<div class="card"><h2>开关变更事件</h2>' + tableize(['类型','操作人','目标','变更','时间'],
+        (await api('GET', '/admin/config/events?kind=feature.set&limit=15')).items.map(e => [esc(e.kind), esc(e.actor), esc(e.target),
+          '<span class="muted">' + esc(e.before) + ' → ' + esc(e.after) + '</span>', esc(e.created_at)])) + '</div>';
+  } catch (e) { fail(e); }
+}
+async function saveFlag(key) {
+  try {
+    await api('POST', '/admin/config/features', { key, enabled: document.getElementById('fe_' + key).checked, grayscale: Number(document.getElementById('fg_' + key).value) });
+    toast('开关已更新'); reloadTab();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ————— 内容审核 —————
+async function renderModeration() {
+  try {
+    const [w, r] = await Promise.all([api('GET', '/admin/moderation/words'), api('GET', '/admin/moderation/reports?limit=50')]);
+    document.getElementById('pane').innerHTML =
+      '<div class="card"><h2>审核词库（一行一词；"re:" 前缀为正则；保存即热生效）</h2>' +
+      '<textarea id="wtxt">' + esc(w.text) + '</textarea>' +
+      '<div class="row" style="margin-top:10px"><span class="muted">普通词 ' + w.stats.plain + ' · 正则 ' + w.stats.regex + ' · 加载于 ' + esc(w.stats.loadedAt) + ' · 开关' + (w.enabled ? '开' : '关') + '</span>' +
+      '<span class="sp"></span><button class="act" onclick="saveWords()">保存词库</button></div></div>' +
+      '<div class="card"><h2>举报队列（待处理 ' + r.open + ' 条 / 共 ' + r.total + ' 条）</h2>' +
+      tableize(['举报','作品','原因','状态','时间','操作'], r.items.map(x =>
+        ['<code>' + esc(x.id) + '</code>' + (x.reporter ? '<div class="muted">' + esc(x.reporter.nickname || x.reporter.id) + '</div>' : ''),
+         x.work ? '<code>' + esc(x.work.id) + '</code><div class="muted">' + esc(x.work.title || '') + ' · ' + esc(x.work.visibility || '') + '</div>' : '<span class="muted">-</span>',
+         esc(x.reason || ''), statusPillReport(x.status), esc(x.created_at),
+         '<div class="row" style="gap:6px"><button class="ghost" onclick="decide(\'' + x.id + '\',\'takedown\')">下架</button>' +
+         '<button class="ghost" onclick="decide(\'' + x.id + '\',\'restore\')">恢复</button>' +
+         '<button class="ghost" onclick="decide(\'' + x.id + '\',\'dismiss\')">忽略</button></div>'])) + '</div>';
+  } catch (e) { fail(e); }
+}
+function statusPillReport(s) { return { open: pill('待处理','warn'), dismissed: pill('已忽略','unknown'), actioned: pill('已处置','ok'), restored: pill('已恢复','ok') }[s] || pill(s, 'unknown'); }
+async function saveWords() { try { const r = await api('POST', '/admin/moderation/words', { text: document.getElementById('wtxt').value }); toast('词库已生效（普通 ' + r.stats.plain + ' / 正则 ' + r.stats.regex + '）'); reloadTab(); } catch (e) { toast(e.message, true); } }
+async function decide(id, action) { try { await api('POST', '/admin/moderation/reports/' + id + '/decide', { action }); toast('已' + ({takedown:'下架',restore:'恢复',dismiss:'忽略'})[action]); reloadTab(); } catch (e) { toast(e.message, true); } }
+
+// ————— 用户运营 —————
+async function renderUsers() {
+  const q = document.getElementById('uq') ? document.getElementById('uq').value.trim() : '';
+  try {
+    const r = await api('GET', '/admin/users?limit=50' + (q ? '&q=' + encodeURIComponent(q) : ''));
+    document.getElementById('pane').innerHTML =
+      '<div class="card"><h2>用户运营（共 ' + r.total + ' 人）</h2><div class="row" style="margin-bottom:12px">' +
+      '<input id="uq" placeholder="搜索 ID / 手机号 / 昵称" value="' + esc(q) + '" style="width:260px" onkeydown="if(event.key===\'Enter\')reloadTab()">' +
+      '<button class="ghost" onclick="reloadTab()">搜索</button></div>' +
+      tableize(['用户','手机','身份','状态','作品','积分','注册','操作'], r.items.map(u =>
+        ['<code>' + esc(u.id) + '</code><div class="muted">' + esc(u.nickname || '') + '</div>', esc(u.phone || '-'),
+         u.is_guest ? '游客' : '已绑手机', u.status === 'active' ? pill('正常','ok') : pill('已封禁','bad'),
+         u.works_count, u.balance, esc((u.created_at || '').slice(0, 10)),
+         '<div class="row" style="gap:6px"><button class="ghost" onclick="userDetail(\'' + u.id + '\')">详情</button>' +
+         '<button class="ghost" onclick="adjust(\'' + u.id + '\')">调积分</button>' +
+         '<button class="danger" onclick="ban(\'' + u.id + '\',' + (u.status === 'active' ? "'disabled'" : "'active'") + ')">' + (u.status === 'active' ? '封禁' : '解封') + '</button></div>'])) + '</div>';
+  } catch (e) { fail(e); }
+}
+async function userDetail(id) {
+  try {
+    const d = await api('GET', '/admin/users/' + id);
+    document.getElementById('modalBody').innerHTML =
+      '<h2>' + esc(d.user.nickname || id) + '</h2><p class="muted"><code>' + esc(d.user.id) + '</code> · ' + (d.user.is_guest ? '游客' : '已绑手机') + ' · 余额 ' + d.user.balance + ' · ' + esc(d.user.created_at || '') + '</p>' +
+      '<p class="muted">作品 ' + d.counts.works + ' · MV ' + d.counts.mv_projects + ' · 人格 ' + d.counts.personas + '</p>' +
+      '<h2>最近任务</h2><div class="pre">' + esc(d.jobs.map(j => j.type + ' · ' + j.status + ' · ' + (j.error_code || '') + ' · ' + (j.created_at || '').slice(0,16)).join('\n') || '无') + '</div>' +
+      '<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="act" onclick="closeModal()">关闭</button></div>';
+    document.getElementById('modal').classList.remove('hide');
+  } catch (e) { toast(e.message, true); }
+}
+function adjust(id) {
+  document.getElementById('modalBody').innerHTML =
+    '<h2>人工调积分</h2><p class="muted"><code>' + esc(id) + '</code></p><div style="display:grid;gap:10px">' +
+    '<div class="fld"><label>增减（正数加/负数扣）</label><input id="adj_delta" type="number" value="50" style="width:100%"></div>' +
+    '<div class="fld"><label>原因（留痕）</label><input id="adj_reason" value="客服补偿" style="width:100%"></div></div>' +
+    '<div class="row" style="margin-top:16px;justify-content:flex-end"><button class="ghost" onclick="closeModal()">取消</button>' +
+    '<button class="act" onclick="doAdjust(\'' + id + '\')">确认</button></div>';
+  document.getElementById('modal').classList.remove('hide');
+}
+async function doAdjust(id) {
+  try { const r = await api('POST', '/admin/credits/adjust', { user_id: id, delta: Number(document.getElementById('adj_delta').value), reason: document.getElementById('adj_reason').value }); toast('已调整，余额 ' + r.balance_after); closeModal(); reloadTab(); } catch (e) { toast(e.message, true); }
+}
+async function ban(id, status) {
+  if (!confirm((status === 'disabled' ? '封禁' : '解封') + '该用户？' + (status === 'disabled' ? '其所有会话将立即失效。' : ''))) return;
+  try { await api('POST', '/admin/users/' + id + '/status', { status }); toast('已' + (status === 'disabled' ? '封禁' : '解封')); reloadTab(); } catch (e) { toast(e.message, true); }
+}
+
+// ————— 审计 —————
+async function renderAudit() {
+  try {
+    const [a, e] = await Promise.all([api('GET', '/admin/audit?limit=60'), api('GET', '/admin/config/events?limit=30')]);
+    document.getElementById('pane').innerHTML =
+      '<div class="card"><h2>业务审计（全量写操作留痕）</h2>' + tableize(['类型','对象','时间'],
+        a.items.map(x => ['<code>' + esc(x.kind) + '</code>', '<span class="muted">' + esc(JSON.stringify(x.obj)) + '</span>', esc(x.created_at)])) + '</div>' +
+      '<div class="card"><h2>运营配置事件（定价/开关变更）</h2>' + tableize(['类型','操作人','目标','变更','时间'],
+        e.items.map(x => ['<code>' + esc(x.kind) + '</code>', esc(x.actor), esc(x.target), '<span class="muted">' + esc(String(x.before).slice(0, 120)) + ' → ' + esc(String(x.after).slice(0, 120)) + '</span>', esc(x.created_at)])) + '</div>';
+  } catch (e) { fail(e); }
+}
+
+// ————— 启动 —————
+function showFatal(msg) {
+  const el = document.getElementById('fatal');
+  el.textContent = '页面异常：' + msg + '\n（请截图反馈，或按 F12 查看 Console）';
+  el.classList.remove('hide');
+  show(false);
+}
+window.addEventListener('error', (e) => showFatal((e.message || '未知错误') + ' @' + (e.filename || '') + ':' + (e.lineno || 0)));
+window.addEventListener('unhandledrejection', (e) => showFatal('Promise 异常：' + ((e.reason && e.reason.message) || e.reason)));
+
+function boot() {
+  try {
+    show(true); renderTabs(); reloadTab();
+  } catch (e) { showFatal('boot: ' + (e && e.message || e)); }
+}
+
+// 兜底：内联 onclick 失效时用 addEventListener 再绑一次
+document.getElementById('btnLogin').addEventListener('click', function (ev) { ev.preventDefault(); doLogin(); });
+document.getElementById('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+document.getElementById('lu').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+document.getElementById('ver').textContent = PAGE_BUILD;
+
+// 陈旧标签页自愈：回到前台/获得焦点时比对服务端构建号，不一致就自动重载（旧脚本驻留的根治手段）
+let _staleChecking = false;
+async function checkStale() {
+  if (_staleChecking) return;
+  _staleChecking = true;
+  try {
+    const res = await fetch('/admin/?_=' + Date.now(), { cache: 'no-store' });
+    const txt = await res.text();
+    const m = /PAGE_BUILD\s*=\s*'([^']+)'/.exec(txt);
+    if (m && m[1] !== PAGE_BUILD) { toast('控制台已更新，正在重新加载…'); setTimeout(function () { location.reload(); }, 300); }
+  } catch (e) { /* 离线或服务未起：忽略 */ }
+  finally { _staleChecking = false; }
+}
+document.addEventListener('visibilitychange', function () { if (!document.hidden) checkStale(); });
+window.addEventListener('focus', checkStale);
+
+(async function init() {
+  if (!TOKEN) return show(false);
+  try { await api('GET', '/admin/config/features'); boot(); }
+  catch (e) { show(false); }
+})();
+</script>
+</body>
+</html>

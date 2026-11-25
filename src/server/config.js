@@ -17,6 +17,12 @@ function envInt(name, dflt) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : dflt;
 }
+function envFloat(name, dflt) {
+  const v = process.env[name];
+  if (v === undefined || v === '') return dflt;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : dflt;
+}
 
 const config = {
   // —— 服务端口与对外地址 ——
@@ -45,7 +51,7 @@ const config = {
   engine: {
     pollHoldMs: 25000,      // long-poll 最长挂起
     leaseMs: 10 * 60000,    // 租约 10min
-    sweepMs: 30000,         // 租约过期清扫周期
+    sweepMs: envInt('MB_SWEEP_MS', 30000), // 租约过期清扫周期（takes TTL 并入此作业，N1-5；验收可加速）
     maxAttempts: 3,         // attempts<3 回队，否则 failed+refund
     maxUploadMb: envInt('MB_MAX_UPLOAD_MB', 220), // executor complete multipart 上限（真机 45s 立体声 WAV≈8MB/候选，4×240s≈170MB；2026-11-23 由 20 上调）
     bodyLimitBytes: 1024 * 1024, // JSON body 上限 1MB
@@ -56,6 +62,42 @@ const config = {
     imageMaxMb: 8, imageExts: ['jpg', 'jpeg', 'png'],
     personaMinSec: 20, personaMaxSec: 40,
     ttlHours: 72,           // uploads 表 72h TTL
+  },
+  // —— MV 二期（架构 §1.3/§5/§8；默认关闭，按灰度开放）——
+  mv: {
+    enabled: envStr('MB_MV_ENABLED', '0') === '1',               // 二期 MV 总开关，默认 false
+    comfyBaseUrl: envStr('MB_COMFY_URL', 'http://127.0.0.1:8188'), // 共用 ComfyUI 队列（ADR-MV-4，只发任务+观测）
+    budgetDefault: envInt('MB_MV_BUDGET_DEFAULT', 1200),         // 项目级预算护栏默认值（D13）
+    // credits.mv 定价（架构 §6 / mv-plan §6，照 v1 先扣后派单）：
+    // preview 首次免（D9）；系统自动补拍恒 0（initiated_by=system）
+    credits: {
+      align: 5, cast_image: 10, cast_video: 20, storyboard: 5,
+      shot: 40, lipsync: 20, preview: 5, compose: 10,
+      reshoot_system: 0,
+    },
+    // 报价/ETA 常数（秒，架构 §8，随真机 EVIDENCE 刷新）
+    est: { img: 15, video: 290, lipsync: 240, compose: 180, align: 30 },
+    // 口型质量门（契约 v2.8.4 / 架构 S8）：sync_score < 阈值 → 系统免费补样 ≤2 次，仍不过 → B-roll+字幕降级
+    syncThreshold: envFloat('MB_MV_SYNC_THRESHOLD', 0.6),
+    // LLM 辅助单点超时（suggest/剧本/审读：快速失败不装忙，V13 断言 <30s 返回）
+    llmAssistTimeoutMs: envInt('MB_MV_LLM_ASSIST_TIMEOUT_MS', 12000),
+    // 夜间档（N1-5，架构 §8）：queue_mode='night' 项目的 mv_* jobs 仅在本机钟 window 内派发，窗口内 night 优先；
+    // enabled=false → 不门控（night 等同 normal 随时派发）。测试钩子 env：MB_MV_FORCE_NIGHT=1 / MB_MV_FORCE_DAY=1。
+    queueNightMode: {
+      enabled: envStr('MB_MV_NIGHT_ENABLED', '1') === '1',
+      window: [envInt('MB_MV_NIGHT_WINDOW_START', 0), envInt('MB_MV_NIGHT_WINDOW_END', 8)], // [0,8)=00:00–08:00
+    },
+    // 对话版助手（D11；灰度 0.2，默认关——Inkling-2-Mini 就位前不开）
+    assistant: { chat: { enabled: envStr('MB_MV_ASSISTANT_CHAT', '0') === '1', grayscale: envFloat('MB_MV_ASSISTANT_GRAYSCALE', 0.2) } },
+    mvModelLicense: { model: 'MiniMax-H3 Community', usage: 'attribution' }, // 许可 meta 路线（架构 §10/mv-plan §1.4）
+  },
+  // —— 音乐助手（契约 v3.1 / 架构 l2）：把 MV 已验证的助手治理范式横向搬到「音乐创作」域；默认关，按灰度开放 ——
+  music: {
+    assistant: {
+      enabled: envStr('MB_MUSIC_ASSISTANT', '0') === '1', // 接口总闸（对齐 MB_MV_ENABLED 语义；关且后台开关未开→404）
+      // LLM 增强灰度（对齐 MV assistant.chat：规则模式恒可见，LLM 解析按灰度）
+      chat: { enabled: envStr('MB_MUSIC_ASSISTANT_CHAT', '0') === '1', grayscale: envFloat('MB_MUSIC_ASSISTANT_GRAYSCALE', 0.2) },
+    },
   },
   // —— 开发开关 ——
   DEV_OTP: envStr('MB_DEV_OTP', '1') === '1' ? '888888' : null, // 固定验证码（仅开发）

@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 
-/// 常用心情预设
-const kMoodOptions = [
-  '欢快', '舒缓', '激昂', '忧郁', '浪漫', '治愈',
-  '梦幻', '复古', '未来感', '紧张', '温暖', '孤独',
-];
+import '../../features/create/style_options.dart';
 
-/// 常用流派预设
-const kGenreOptions = [
-  '流行', '摇滚', '电子', '民谣', '嘻哈', '古典',
-  '爵士', 'R&B', '国风', '氛围', '舞曲', '乡村',
-];
+/// 常用心情预设（与服务端词典同源，见 style_options.dart / 契约 v3.2）
+/// 以前这里硬编 12 个、服务端词典另有一份 24 个，选「激昂/未来感」这类词
+/// 服务端 dict.scan 命中不到 → BPM/tags 补全静默失效。现在只有一份定义。
+final List<String> kMoodOptions =
+    kMoodCatalog.map((e) => e.zh).toList(growable: false);
+
+/// 常用流派预设（同上，18 项与词典同构）
+final List<String> kGenreOptions =
+    kGenreCatalog.map((e) => e.zh).toList(growable: false);
 
 /// 心情/流派多选 chips（推荐项可高亮）
 class MoodChips extends StatelessWidget {

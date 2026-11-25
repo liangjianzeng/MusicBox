@@ -8,8 +8,19 @@ import '../../shared/widgets/primary_button.dart';
 import 'credit_guard.dart';
 import 'creation_state.dart';
 import 'progress_page.dart';
+import 'shelf_store.dart';
+import 'style_options.dart';
+import 'style_picker.dart';
 
-const kStructureTags = ['[Verse]', '[Chorus]', '[Bridge]', '[Intro]', '[Outro]'];
+/// 歌词结构标记：插进歌词的必须是英文标记（模型只认 [Verse] 这类），
+/// 界面显示中文——以前只有一排 [Verse]/[Chorus] 方括号，普通用户不知道那是干什么的
+const kStructureTags = [
+  ('[Verse]', '主歌'),
+  ('[Chorus]', '副歌'),
+  ('[Bridge]', '桥段'),
+  ('[Intro]', '前奏'),
+  ('[Outro]', '尾奏'),
+];
 
 /// 深度级工作台：prompt/歌词+结构标记/tags/mood/人声/bpm/时长/数量/persona/seed
 class ShellPro extends ConsumerStatefulWidget {
@@ -26,13 +37,22 @@ class _ShellProState extends ConsumerState<ShellPro> {
   final _tags = TextEditingController();
   final _seed = TextEditingController();
 
+  /// 选择项目录（远程优先，兜底本地）——initState 里先定一次，build 里再随远程刷新取
+  StyleCatalog _cat = StyleCatalog.fallback;
+
+  /// 目录内的规范词由选择器管，目录外的词由自由框管，两者合并存进 st.tags
+  List<String> _freeOf(String raw) =>
+      parseTagList(raw).where((t) => !_cat.isKnown(t)).toList();
+
   @override
   void initState() {
     super.initState();
+    _cat = styleCatalogOfConfig(ref.read(remoteConfigProvider));
     final st = ref.read(creationProvider);
     _prompt.text = st.prompt;
     _lyrics.text = st.lyrics;
-    _tags.text = st.tags;
+    // 自由框只回填"目录外的词"，目录内的由 chips 呈现，避免同一词两处显示
+    _tags.text = joinTagList(_freeOf(st.tags));
   }
 
   @override
@@ -77,12 +97,10 @@ class _ShellProState extends ConsumerState<ShellPro> {
     }
     setState(() => _busy = true);
     try {
-      final tagList = _tags.text
-          .split(RegExp('[,，\\s]+'))
-          .where((e) => e.trim().isNotEmpty)
-          .map((e) => e.trim())
-          .toList();
-      final r = await ref.read(apiClientProvider).generate({
+      // 标签 = 选择器选中的规范词 + 自由补充（统一存于 st.tags，切档位不丢）
+      final tagList = parseTagList(st.tags);
+      final seedNum = int.tryParse(_seed.text.trim());
+      final body = <String, dynamic>{
         'mode': 'custom',
         if (prompt.isNotEmpty) 'prompt': prompt,
         if (lyrics.isNotEmpty) 'lyrics': lyrics,
@@ -95,10 +113,33 @@ class _ShellProState extends ConsumerState<ShellPro> {
         if (st.instrumental) 'tags': [...tagList, '纯音乐'],
         if (st.personaId != null) 'persona_id': st.personaId,
         // 契约 generate 未定义 seed，透传由服务端兼容（可忽略）
-        if (_seed.text.trim().isNotEmpty) 'seed': int.tryParse(_seed.text.trim()),
-      });
+        if (seedNum != null) 'seed': seedNum,
+      };
+      final model = ref.read(musicModelProvider);
+      final r = await ref.read(apiClientProvider).generate(body, model: model);
       if (!mounted) return;
-      ProgressPage.push(context, '${r['job_id']}');
+      ProgressPage.push(
+        context,
+        '${r['job_id']}',
+        brief: TaskBrief.fromCreation(
+          st,
+          prompt: prompt,
+          lyrics: lyrics,
+          tags: st.instrumental ? [...tagList, '纯音乐'] : tagList,
+          seed: seedNum,
+          personaName: st.personaId == null ? null : '已选人格',
+        ).copyLike(sourceLabel: '全参数工作台'),
+        plannedCount: st.count,
+        onRetry: () async {
+          try {
+            final rr =
+                await ref.read(apiClientProvider).generate(body, model: model);
+            return '${rr['job_id']}';
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     } catch (_) {
@@ -113,6 +154,9 @@ class _ShellProState extends ConsumerState<ShellPro> {
     final st = ref.watch(creationProvider);
     final notifier = ref.read(creationProvider.notifier);
     final personas = ref.watch(personasProvider);
+    final cat = styleCatalogOf(ref);
+    _cat = cat; // 与 initState 的回填口径保持一致（远程目录晚到时也对得上）
+    final pickedTags = parseTagList(st.tags).where((t) => cat.isKnown(t)).toList();
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
@@ -145,28 +189,40 @@ class _ShellProState extends ConsumerState<ShellPro> {
           spacing: 6,
           children: kStructureTags
               .map((t) => ActionChip(
-                    label: Text(t, style: const TextStyle(fontSize: 12)),
+                    label: Text('${t.$2} ${t.$1}',
+                        style: const TextStyle(fontSize: 12)),
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _insertTag(t),
+                    onPressed: () => _insertTag(t.$1),
                   ))
               .toList(),
         ),
         const SizedBox(height: 16),
-        const _H('标签（逗号分隔）'),
-        TextField(
+        // 「标签」原来是自由文本框 + 英文示例（city pop, retro, synth），
+        // 没人知道它是曲风还是情绪。拆成两组中文选择项，自由补充降为逃生口。
+        StylePicker(
+          selected: parseTagList(st.tags),
+          onChanged: (next) => notifier.setTags(joinTagList(next)),
+        ),
+        const SizedBox(height: 12),
+        FreeTagField(
           controller: _tags,
-          onChanged: notifier.setTags,
-          decoration: const InputDecoration(
-            hintText: '如：city pop, retro, synth',
-            border: OutlineInputBorder(),
-          ),
+          onChanged: (v) => notifier
+              .setTags(joinTagList([...pickedTags, ...parseTagList(v)])),
         ),
         const SizedBox(height: 16),
-        const _H('Mood'),
+        const _H('心情（可多选）'),
         MoodChips(
             options: kMoodOptions,
             selected: st.mood,
-            onChanged: notifier.setMood),
+            onChanged: (v) {
+              notifier.setMood(v);
+              // 第一次选心情时，按词典里的典型速度给 BPM 一个合理起点；
+              // 只在"从空开始选"时给，之后一律尊重用户手调的值，不偷偷改
+              if (st.mood.isEmpty && v.isNotEmpty) {
+                final bpm = cat.bpmFor(v.first);
+                if (bpm != null) notifier.setBpm(bpm);
+              }
+            }),
         const SizedBox(height: 16),
         const _H('人声'),
         MoodChips(
@@ -177,7 +233,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
               notifier.setInstrumental(v.isNotEmpty && v.first == '纯音乐'),
         ),
         const SizedBox(height: 16),
-        _H('BPM · ${st.bpm}'),
+        _H('速度 BPM · ${st.bpm}'),
         Slider(
           value: st.bpm.toDouble().clamp(60, 180),
           min: 60,
@@ -186,7 +242,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
           label: '${st.bpm}',
           onChanged: (v) => notifier.setBpm(v.round()),
         ),
-        _H('时长 · ${st.sec}s'),
+        _H('时长 · ${st.sec} 秒'),
         Slider(
           value: st.sec.toDouble().clamp(15, 240),
           min: 15,
@@ -199,10 +255,10 @@ class _ShellProState extends ConsumerState<ShellPro> {
         const _H('候选数量'),
         SegmentedButton<int>(
           segments: const [
-            ButtonSegment(value: 1, label: Text('1')),
-            ButtonSegment(value: 2, label: Text('2')),
-            ButtonSegment(value: 3, label: Text('3')),
-            ButtonSegment(value: 4, label: Text('4')),
+            ButtonSegment(value: 1, label: Text('1 首')),
+            ButtonSegment(value: 2, label: Text('2 首')),
+            ButtonSegment(value: 3, label: Text('3 首')),
+            ButtonSegment(value: 4, label: Text('4 首')),
           ],
           selected: {st.count},
           onSelectionChanged: (s) => notifier.setCount(s.first),
@@ -222,12 +278,15 @@ class _ShellProState extends ConsumerState<ShellPro> {
           decoration: const InputDecoration(border: OutlineInputBorder()),
         ),
         const SizedBox(height: 16),
-        const _H('Seed（可选，复现同一首）'),
+        const _H('随机种子（可选）'),
         TextField(
           controller: _seed,
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
-            hintText: '留空随机',
+            isDense: true,
+            hintText: '留空＝每次随机',
+            helperText: '填同一个数字，可以复现同一首歌（比心后固定它）',
+            helperMaxLines: 2,
             border: OutlineInputBorder(),
           ),
         ),

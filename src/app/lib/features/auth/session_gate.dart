@@ -93,8 +93,8 @@ class _RetryPageState extends ConsumerState<_RetryPage> {
           controller: controller,
           keyboardType: TextInputType.url,
           decoration: const InputDecoration(
-            hintText: 'http://10.0.2.2:7900',
-            helperText: '模拟器默认 http://10.0.2.2:7900',
+            hintText: 'http://服务器地址:端口',
+            helperText: '调试后门：修改后自动重新登录（默认地址由打包注入）',
           ),
         ),
         actions: [

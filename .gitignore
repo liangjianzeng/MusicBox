@@ -57,3 +57,10 @@ Thumbs.db
 .env
 .env.*
 node_modules/
+
+# ── 真机开发实例数据（用户 DB、真机录音 uploads/、250MB 音频产物，绝不入仓）──
+# 启动脚本不在此目录入库；ASR worker 启动脚本见 scripts/start-asr.ps1
+var-real/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

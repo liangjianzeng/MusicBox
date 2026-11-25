@@ -1,11 +1,18 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// 应用版本（与 pubspec.yaml version 保持一致；后台版本策略据此判断升级）
+const String kAppVersion = '0.1.0';
+
 /// 应用配置：服务器地址可在“我的”页修改并持久化
 class AppConfig {
   AppConfig({required this.baseUrl});
 
-  /// 模拟器访问宿主机默认地址（Android 模拟器 → 宿主 127.0.0.1）
-  static const defaultBaseUrl = 'http://10.0.2.2:7900';
+  /// 发布默认服务器 origin：打包期经 `--dart-define=MUSICBOX_BASE_URL=<url>` 注入（部署参数，非源码写死）。
+  /// 未注入时回退到跨网 origin，保证真机首启即达后端、直接进首页；App 内「服务器设置」保留为调试后门。
+  static const defaultBaseUrl = String.fromEnvironment(
+    'MUSICBOX_BASE_URL',
+    defaultValue: 'http://100.100.140.75:7901',
+  );
 
   String baseUrl;
 
@@ -39,6 +46,7 @@ class Prefs {
   static const _kConsent = 'consent_biometric';
   static const _kPersona = 'default_persona_id';
   static const _kTier = 'create_tier';
+  static const _kMusicModel = 'create_music_model';
 
   AppConfig loadConfig() =>
       AppConfig(baseUrl: _sp.getString(_kBaseUrl) ?? AppConfig.defaultBaseUrl);
@@ -71,7 +79,17 @@ class Prefs {
     }
   }
 
-  /// 创作档位记忆：0 傻瓜 / 1 标准 / 2 深度
+  /// 创作档位记忆：0 简约 / 1 标准 / 2 深度
   int get createTier => _sp.getInt(_kTier) ?? 0;
   Future<void> setCreateTier(int v) => _sp.setInt(_kTier, v);
+
+  /// 生成模型自选（APK 覆盖后端默认；null = 跟随后台默认）
+  String? get musicModelId => _sp.getString(_kMusicModel);
+  Future<void> setMusicModelId(String? v) async {
+    if (v == null || v.isEmpty) {
+      await _sp.remove(_kMusicModel);
+    } else {
+      await _sp.setString(_kMusicModel, v);
+    }
+  }
 }

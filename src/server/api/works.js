@@ -10,6 +10,8 @@ const credits = require('./credits');
 const U = require('../core/util');
 const dict = require('../prompts/dictionary');
 const adjustPrompt = require('../prompts/adjust');
+const M = require('../core/modelnodes');
+const AC = require('../core/appconfig');
 
 const requireUser = auth.requireUser;
 const G = config.gen;
@@ -52,7 +54,11 @@ function normalizeForIdem(user, kind, params) {
     String(p.prompt || '').trim(), String(p.lyrics || '').trim().slice(0, 2000),
     (U.toArr(p.tags) || []).sort().join(','), String(p.mood || '').trim(),
     p.bpm == null ? '' : p.bpm, p.sec == null ? '' : p.sec, p.count == null ? '' : p.count,
-    p.persona_id || '', p.candidate_id || '', p.op || '', U.jstr(p.params || null), U.jstr(p.delta || null),
+    p.persona_id || '', p.candidate_id || '', p.op || '', p.model || '',
+    // seed/instrumental 必须进幂等键：否则改 seed 重试会被旧 job 吃掉（10 分钟窗口）
+    p.seed_base == null ? '' : p.seed_base,
+    p.instrumental == null ? '' : (p.instrumental ? '1' : '0'),
+    U.jstr(p.params || null), U.jstr(p.delta || null),
   ].join(''));
 }
 
@@ -66,9 +72,12 @@ function dispatchMusic(user, kind, params, opts) {
   if (ex && activeOrRecent) {
     return { status: 202, body: { job_id: ex.id, credits_charged: 0, idempotent: true } };
   }
-  const cost = opts.cost == null ? config.credits.per_candidate * (params.count || G.count_default) : opts.cost;
+  const cost = opts.cost == null ? AC.credits().per_candidate * (params.count || G.count_default) : opts.cost;
   credits.charge(user.id, cost, opts.reason || 'gen', 'gen', kind);
   const payload = buildMusicPayload(params);
+  // 模型选择（APK 未设置则后端默认；后台 locked 时强制默认，见 core/modelnodes.pickNodeForJob）
+  const musicNode = M.pickNodeForJob('music', params.model);
+  if (musicNode && musicNode.endpoint) { payload.music_endpoint = musicNode.endpoint; payload.music_engine = musicNode.engine; }
   if (opts.lineage) payload.lineage = opts.lineage; // {kind, parent_id}：adopt 时写入谱系
   let r;
   try {
@@ -103,9 +112,29 @@ function generate(ctx) {
     if (!Number.isInteger(c) || c < G.count_min || c > G.count_max) throw new U.ApiError('BAD_REQUEST', `候选数量需在 ${G.count_min}-${G.count_max} 之间`);
   }
   if (!U.allowRate('gen:' + user.id, 12, 60000)) throw new U.ApiError('RATE_LIMITED', '生成过于频繁，请稍后再试');
+  // seed：复现基准（候选依次 +0/+1/+2…）；显式传入即锁定，留空随机
+  const seedRaw = body.seed_base !== undefined && body.seed_base !== null ? body.seed_base : body.seed;
+  let seedBase;
+  if (seedRaw !== undefined && seedRaw !== null && seedRaw !== '') {
+    const sv = Number(seedRaw);
+    if (!Number.isInteger(sv) || sv < 0 || sv > 2147483647) {
+      throw new U.ApiError('BAD_REQUEST', 'seed 需为 0-2147483647 的整数');
+    }
+    seedBase = sv;
+  }
+  // instrumental：显式表态优先于「留空歌词即纯音乐」的推断（人声+空歌词不再被误判纯音乐）
+  let instrumental;
+  if (body.instrumental !== undefined && body.instrumental !== null) {
+    if (typeof body.instrumental === 'boolean') instrumental = body.instrumental;
+    else if (body.instrumental === 'true' || body.instrumental === 1 || body.instrumental === '1') instrumental = true;
+    else if (body.instrumental === 'false' || body.instrumental === 0 || body.instrumental === '0') instrumental = false;
+    else throw new U.ApiError('BAD_REQUEST', 'instrumental 需为布尔值');
+  }
   return dispatchMusic(user, 'generate', {
     prompt, lyrics, tags: U.toArr(body.tags), mood: body.mood, bpm: body.bpm,
-    sec: body.sec, count: body.count, persona_id: body.persona_id,
+    sec: body.sec, count: body.count, persona_id: body.persona_id, model: body.model,
+    ...(seedBase === undefined ? {} : { seed_base: seedBase }),
+    ...(instrumental === undefined ? {} : { instrumental }),
   }, { reason: 'gen' });
 }
 
@@ -263,7 +292,7 @@ function extend(ctx) {
     prompt: payload.prompt || w.title, tags: U.toArr(w.genres), mood: w.mood, bpm: w.bpm,
     sec, count: 1, lyrics: w.lyrics, instrumental: payload.instrumental,
     src_audio: w.audio_master ? path.join(config.paths.out, w.audio_master) : null,
-  }, { cost: config.credits.extend, reason: 'extend', lineage: { kind: 'extend', parent_id: w.id } });
+  }, { cost: AC.credits().extend, reason: 'extend', lineage: { kind: 'extend', parent_id: w.id } });
 }
 
 // —— POST /v1/works/:id/cover {persona_id} ——
@@ -279,7 +308,7 @@ function cover(ctx) {
     prompt: payload.prompt || w.title, tags: U.toArr(w.genres), mood: w.mood, bpm: w.bpm,
     sec: w.duration_sec || G.sec_default, count: 1, lyrics: w.lyrics, instrumental: false,
     persona_id: personaId, src_audio: w.audio_master ? path.join(config.paths.out, w.audio_master) : null,
-  }, { cost: config.credits.cover, reason: 'cover', lineage: { kind: 'cover', parent_id: w.id } });
+  }, { cost: AC.credits().cover, reason: 'cover', lineage: { kind: 'cover', parent_id: w.id } });
   store.run('UPDATE personas SET use_count=use_count+1 WHERE id=?', personaId);
   return r;
 }
@@ -294,7 +323,7 @@ function variation(ctx) {
   const merged = adjustPrompt.mergeDelta(base, {
     tags: U.toArr(delta.tags), mood: delta.mood, bpm: delta.bpm, seed: delta.seed, instrumental: delta.instrumental,
   });
-  return dispatchMusic(user, 'variation', { ...merged, count: G.count_default }, { cost: config.credits.adjust, reason: 'adjust', lineage: { kind: 'variation', parent_id: w.id } });
+  return dispatchMusic(user, 'variation', { ...merged, count: G.count_default }, { cost: AC.credits().adjust, reason: 'adjust', lineage: { kind: 'variation', parent_id: w.id } });
 }
 
 function variationBase(w) {
@@ -319,7 +348,7 @@ async function adjust(ctx) {
   const r = await adjustPrompt.parseAdjust(text, base);
   if (!r.understood) return { status: 200, body: { understood: false, clarify: r.clarify || '没太理解，能换个说法吗？' } };
   const merged = adjustPrompt.mergeDelta(base, r.delta);
-  const d = dispatchMusic(user, 'adjust', { ...merged, count: G.count_default }, { cost: config.credits.adjust, reason: 'adjust', lineage: { kind: 'adjust', parent_id: w.id } });
+  const d = dispatchMusic(user, 'adjust', { ...merged, count: G.count_default }, { cost: AC.credits().adjust, reason: 'adjust', lineage: { kind: 'adjust', parent_id: w.id } });
   // 契约 §2：adjust 成功应答是 200 {understood:true, job_id}（区别于 generate 的 202 受理语义；V4-④/V8-⑤ 同步断言）
   if (d.status === 202) return { status: 200, body: Object.assign({ understood: true }, d.body) };
   return d;
@@ -335,14 +364,14 @@ function dsp(ctx) {
   if (!OPS.includes(op)) throw new U.ApiError('BAD_REQUEST', `op 仅支持 ${OPS.join('/')}`);
   const params = (b.params && typeof b.params === 'object') ? b.params : {};
   if (!w.audio_master) throw new U.ApiError('BAD_REQUEST', '该作品暂无音频源文件');
-  credits.charge(user.id, config.credits.dsp, 'dsp', 'work', w.id);
+  credits.charge(user.id, AC.credits().dsp, 'dsp', 'work', w.id);
   const srcs = [path.join(config.paths.out, w.audio_master)]
     .concat(U.toArr(params.srcs).map(s => /^[\w./-]+$/.test(s) ? path.join(config.paths.out, s) : s));
   const r = engine.enqueue({
     type: 'dsp', payload: { op, src: srcs[0], srcs, params, work_id: w.id }, userId: user.id,
-    idemKey: normalizeForIdem(user, 'dsp', { op, params, candidate_id: w.id }), creditsCost: config.credits.dsp,
+    idemKey: normalizeForIdem(user, 'dsp', { op, params, candidate_id: w.id }), creditsCost: AC.credits().dsp,
   });
-  if (!r.idempotent) { /* 已扣分 */ } else { credits.refund(user.id, config.credits.dsp, 'dsp', 'work'); }
+  if (!r.idempotent) { /* 已扣分 */ } else { credits.refund(user.id, AC.credits().dsp, 'dsp', 'work'); }
   return { status: 202, body: { job_id: r.job.id } };
 }
 
@@ -381,7 +410,7 @@ function report(ctx) {
 }
 
 module.exports = {
-  dispatchMusic, buildMusicPayload, normalizeForIdem,
+  dispatchMusic, buildMusicPayload, normalizeForIdem, variationBase,
   routes: [
     { m: 'POST', p: '/v1/works/generate', h: generate },
     { m: 'GET', p: '/v1/jobs/:id', h: getJob },

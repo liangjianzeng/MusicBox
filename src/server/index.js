@@ -17,6 +17,12 @@ const worksApi = require('./api/works');
 const intentApi = require('./api/intent');
 const personasApi = require('./api/personas');
 const executorApi = require('./api/executor');
+const mvApi = require('./api/mv');
+const musicAssistantApi = require('./api/music_assistant');
+const adminAuth = require('./api/admin');
+const modelnodesApi = require('./api/modelnodes');
+const appconfigApi = require('./api/appconfig');
+const adminOpsApi = require('./api/admin_ops');
 
 const U = util;
 
@@ -30,14 +36,15 @@ function addRoute(m, p, h, opts) {
   }).join('/') + '$';
   routes.push({ m, re: new RegExp(regexSrc), names, h, literal: p.split('/').filter(s => s && !s.startsWith(':')).length, opts: opts || {} });
 }
-for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi]) {
+for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi, mvApi, musicAssistantApi, adminAuth, modelnodesApi, appconfigApi, adminOpsApi]) {
   for (const r of mod.routes) addRoute(r.m, r.p, r.h, r);
 }
 routes.sort((a, b) => b.literal - a.literal);
 
 const MIME = {
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
   '.json': 'application/json; charset=utf-8', '.peaks.json': 'application/json; charset=utf-8',
 };
 
@@ -63,14 +70,30 @@ function serveFile(req, res, urlPath) {
   });
 }
 
+// —— 运营控制台单文件页面（/admin；无构建 vanilla SPA，禁缓存便于迭代）——
+const ADMIN_HTML = path.join(__dirname, 'admin', 'index.html');
+function serveAdminConsole(res) {
+  fs.readFile(ADMIN_HTML, (err, buf) => {
+    if (err) return sendJson(res, 404, { code: 'NOT_FOUND', message: '控制台页面缺失' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': buf.length, 'cache-control': 'no-store, max-age=0' });
+    res.end(buf);
+  });
+}
+
 // —— 主请求处理 ——
 async function handle(req, res) {
   const u = new URL(req.url, 'http://localhost');
   const urlPath = u.pathname;
   if (req.method === 'GET' && urlPath === '/healthz') {
-    return sendJson(res, 200, { ok: true, ts: U.nowIso(), online: bus.onlineCount() });
+    const body = { ok: true, ts: U.nowIso(), online: bus.onlineCount() };
+    // mv_metrics（契约 v2.18 / N1-5，架构 §11 最小可观测集）：mv 灰度开启时附 lane 耗时直方 + 队列深度
+    if (config.mv.enabled) {
+      try { body.mv_metrics = require('./core/metrics').snapshot(); } catch (e) { /* 观测不阻断健康检查 */ }
+    }
+    return sendJson(res, 200, body);
   }
   if (req.method === 'GET' && urlPath.startsWith('/f/')) return serveFile(req, res, urlPath);
+  if (req.method === 'GET' && (urlPath === '/admin' || urlPath === '/admin/')) return serveAdminConsole(res);
 
   const route = routes.find(r => r.m === req.method && r.re.test(urlPath));
   if (!route) return sendJson(res, 404, { code: 'NOT_FOUND', message: '接口不存在' });
@@ -203,6 +226,11 @@ function handleUpgrade(req, socket) {
 // —— 启动 ——
 function main() {
   store.init();
+  // 模型节点/管理员种子（空表时写入默认，保证节点不写死且服务可启动）
+  const modelnodes = require('./core/modelnodes');
+  modelnodes.initDefaultNodes();
+  require('./core/appconfig').initDefaults(); // 功能开关种子（mv/dsp/persona/assistant_chat）
+  adminAuth.initDefaultAdmin();
   engine.start();
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {

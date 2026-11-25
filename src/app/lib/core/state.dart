@@ -47,6 +47,96 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   return client;
 });
 
+// ---------- 远程配置（后端下发的定价/默认走向/可选模型） ----------
+
+class RemoteConfig {
+  RemoteConfig(this.data);
+  final Map data;
+
+  Map get _music => (data['routing']?['music'] as Map?) ?? const {};
+  bool get musicLocked => _music['locked'] == true;
+  String get musicDefaultEngine => '${_music['engine'] ?? ''}';
+  List<Map> get musicModelOptions =>
+      ((data['model_options']?['music'] as List?) ?? const [])
+          .whereType<Map>()
+          .toList();
+
+  /// 功能开关（服务端已按用户灰度判定，客户端只读结果）
+  Map get _features => (data['features'] as Map?) ?? const {};
+  bool featureOn(String key) => _features[key] == true;
+  bool get mvEnabled => featureOn('mv');
+  bool get dspEnabled => _features.containsKey('dsp') ? featureOn('dsp') : true;
+  bool get personaEnabled =>
+      _features.containsKey('persona') ? featureOn('persona') : true;
+
+  /// 制片助手对话版（契约 v2.20）：仅作 App 侧粗判/文案；权威以 project detail 的
+  /// assistant.enabled / chat_enabled 为准（避免灰度判定分散）。
+  bool get assistantChat => featureOn('assistant_chat');
+
+  /// 音乐助手（契约 v3.1）：接口总闸（规则模式恒可用）+ 对话版 LLM 灰度。
+  /// 服务端下发为权威（音乐域无 project detail 下发位，直接读 features）。
+  bool get musicAssistant => featureOn('music_assistant');
+  bool get assistantChatMusic => featureOn('assistant_chat_music');
+
+  /// 版本策略：低于 min_supported 时 required=强制 / recommended=引导
+  Map get _vp => (data['version_policy'] as Map?) ?? const {};
+  String get updateMode => '${_vp['update_mode'] ?? 'none'}';
+  String? get minSupported =>
+      _vp['min_supported'] == null ? null : '${_vp['min_supported']}';
+  String? get recommended =>
+      _vp['recommended'] == null ? null : '${_vp['recommended']}';
+  String? get downloadUrl =>
+      _vp['download_url'] == null ? null : '${_vp['download_url']}';
+  bool get forceUpdate =>
+      updateMode == 'required' &&
+      minSupported != null &&
+      _cmpVersion(kAppVersion, minSupported!) < 0;
+  bool get suggestUpdate =>
+      updateMode != 'none' &&
+      recommended != null &&
+      _cmpVersion(kAppVersion, recommended!) < 0;
+
+  /// 公告
+  Map get _ann => (data['announcement'] as Map?) ?? const {};
+  bool get announcementVisible => _ann['visible'] == true;
+  String get announcementText => '${_ann['text'] ?? ''}';
+  String get announcementStyle => '${_ann['style'] ?? 'notice'}';
+}
+
+/// 语义化版本比较：a<b 返回 -1，a>b 返回 1，相等 0
+int _cmpVersion(String a, String b) {
+  List<int> parse(String v) =>
+      v.split(RegExp(r'[+\-]')).first.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+  final x = parse(a), y = parse(b);
+  for (var i = 0; i < 3; i++) {
+    final l = i < x.length ? x[i] : 0, r = i < y.length ? y[i] : 0;
+    if (l != r) return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
+class RemoteConfigNotifier extends StateNotifier<RemoteConfig?> {
+  RemoteConfigNotifier(this._ref) : super(null);
+  final Ref _ref;
+
+  Future<void> refresh() async {
+    try {
+      final d = await _ref.read(apiClientProvider).appConfig();
+      state = RemoteConfig(d);
+    } catch (_) {}
+  }
+}
+
+final remoteConfigProvider =
+    StateNotifierProvider<RemoteConfigNotifier, RemoteConfig?>((ref) {
+  return RemoteConfigNotifier(ref);
+});
+
+/// 生成模型自选（null = 跟随后台默认）
+final musicModelProvider = StateProvider<String?>((ref) {
+  return ref.watch(prefsProvider).musicModelId;
+});
+
 // ---------- 会话（游客静默登录 / 积分 / 流水） ----------
 
 enum SessionStatus { loading, ready, failed }
@@ -105,6 +195,8 @@ class SessionNotifier extends StateNotifier<SessionState> {
   Future<void> bootstrap() async {
     if (_bootstrapped) return;
     _bootstrapped = true;
+    // 拉取远程配置（定价/默认走向/可选模型）；失败不阻断，用本地缓存/默认
+    unawaited(_ref.read(remoteConfigProvider.notifier).refresh());
     if (_prefs.accessToken != null) {
       try {
         final me = await _api.me();

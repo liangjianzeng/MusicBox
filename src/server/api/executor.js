@@ -4,6 +4,7 @@ const config = require('../config');
 const store = require('../core/store');
 const engine = require('../core/engine');
 const lanes = require('../lanes');
+const M = require('../core/modelnodes');
 const U = require('../core/util');
 
 // X-Executor-Token 校验（恒定时间比较）
@@ -33,7 +34,8 @@ function register(ctx) {
   if (exists) store.run('UPDATE executors SET lanes=?, version=?, last_seen=? WHERE id=?', U.jstr(wanted), String(b.version || ''), U.nowIso(), id);
   else store.run('INSERT INTO executors(id,lanes,version,last_seen,created_at) VALUES(?,?,?,?,?)', id, U.jstr(wanted), String(b.version || ''), U.nowIso(), U.nowIso());
   store.log('executor.register', { executor_id: id, lanes: wanted, version: String(b.version || '') });
-  return { status: 200, body: { executor_id: id, poll_interval_ms: 1500 } };
+  // 下发运行时节点配置（后台可配，执行器据此调用生成端点，而非仅靠环境变量）
+  return { status: 200, body: { executor_id: id, poll_interval_ms: 1500, nodes: M.nodesForExecutor() } };
 }
 
 // POST /executor/poll {lanes} → {job: leaseJob|null}（服务端挂起最多 25s）
@@ -42,7 +44,9 @@ async function poll(ctx) {
   const b = ctx.body || {};
   const executorId = exId(ctx) || 'ex_anon';
   if (exId(ctx)) store.run('UPDATE executors SET last_seen=? WHERE id=?', U.nowIso(), executorId);
-  const job = await engine.poll(b.lanes, executorId);
+  // 幽灵 poll 防线：领单前检查连接是否仍存活（executor 崩溃/被杀时不把 job 租给死会话）
+  const isAlive = () => !!(ctx.req && ctx.req.socket && !ctx.req.socket.destroyed);
+  const job = await engine.poll(b.lanes, executorId, isAlive);
   if (!job) return { status: 200, body: { job: null } };
   return {
     status: 200,

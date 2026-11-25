@@ -1,0 +1,27 @@
+# mv-asr（Spark 草案）—— SenseVoice 时间戳对齐转写 :8391（2026-11-24）
+# 草案纪律：本阶段禁止 systemctl enable/run（funasr venv 属 SP-MV-2，宿主协调 S4/S6）。
+# CPU 常驻 ~2G；仅回环监听。一期 :8191 同机服务零改动，本单元为 MV 时间戳扩展独立进程。
+[Unit]
+Description=MusicBox MV ASR Service (SenseVoice timestamps, :8391)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbox
+Group=musicbox
+WorkingDirectory=/opt/musicbox/src/workers/mv_asr
+ExecStart=/opt/musicbox/var/venv-asr/bin/uvicorn app:app --host 127.0.0.1 --port 8391
+EnvironmentFile=-/etc/musicbox/spark.env
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/musicbox/var
+PrivateTmp=true
+MemoryHigh=3G
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target

@@ -55,6 +55,72 @@ const EMOTION_MAP = {
   angry: '紧张', fearful: '神秘', disgusted: '神秘', neutral: '', surprised: '欢快', calm: '平静', gentle: '治愈',
 };
 
+// —— 风格点缀词（深度档选择项，契约 v3.2 style_options.style_words）——
+// zh = 用户在 App 上看到的中文，en = 喂给生乐引擎的规范提示词词。
+// 只放"能被模型听懂的通用风格修饰"，曲风走 ENTRIES(type=genre)，情绪走 ENTRIES(type=mood)——
+// 三者职责分开，用户不再面对一个说不清用途的自由文本框。
+const STYLE_WORDS = [
+  { zh: '复古', en: 'retro' },
+  { zh: '合成器', en: 'synth' },
+  { zh: '空灵', en: 'ethereal' },
+  { zh: '低保真', en: 'lofi' },
+  { zh: '温暖', en: 'warm' },
+  { zh: '弦乐铺底', en: 'strings' },
+  { zh: '钢琴', en: 'piano' },
+  { zh: '电吉他', en: 'electric guitar' },
+  { zh: '木吉他', en: 'acoustic guitar' },
+  { zh: '萨克斯', en: 'saxophone' },
+  { zh: '二胡', en: 'erhu' },
+  { zh: '古筝', en: 'guzheng' },
+  { zh: '鼓点强劲', en: 'heavy drums' },
+  { zh: '鼓机 808', en: '808' },
+  { zh: '现场感', en: 'live' },
+  { zh: '女声', en: 'female vocal' },
+  { zh: '男声', en: 'male vocal' },
+  { zh: '和声层叠', en: 'harmonies' },
+  { zh: '副歌大合唱', en: 'choir' },
+  { zh: '黑胶噪点', en: 'vinyl crackle' },
+  { zh: '大混响', en: 'reverb' },
+  { zh: '节奏切分', en: 'syncopated' },
+  { zh: '情绪渐强', en: 'building' },
+  { zh: '循环洗脑', en: 'hypnotic' },
+];
+
+// 下发给 APK 的选择项目录（契约 v3.2）：中文给用户看，英文给模型用。
+// App 侧必须以此为准（本地只留同构兜底），杜绝两处词表各写一份导致的漂移。
+function catalog() {
+  const moods = [];
+  const genres = [];
+  for (const e of ENTRIES) {
+    if (e.type === 'mood' && e.mood && !moods.some((m) => m.zh === e.mood)) {
+      moods.push({ zh: e.mood, bpm: e.bpm || null });
+    }
+    if (e.type === 'genre') {
+      const tags = e.tags || [];
+      genres.push({ zh: e.key, en: tags[0] || String(e.key).toLowerCase(), tags, instrumental: !!e.instrumental });
+    }
+  }
+  return {
+    moods,
+    genres,
+    style_words: STYLE_WORDS.map((w) => ({ zh: w.zh, en: w.en })),
+  };
+}
+
+// 英文规范词 → 中文（意图卡「流派假设」常是英文 tags，展示要翻回中文）
+const _ZH_BY_EN = (() => {
+  const m = Object.create(null);
+  for (const e of ENTRIES) for (const t of e.tags || []) if (t && !m[t]) m[t] = e.key;
+  for (const w of STYLE_WORDS) if (!m[w.en]) m[w.en] = w.zh;
+  return m;
+})();
+function zhFor(word) {
+  const s = String(word || '').trim();
+  if (!s) return '';
+  return _ZH_BY_EN[s.toLowerCase()] || s; // 查不到原样回显，不编造
+}
+
+
 // 关键词扫描：返回 {moods:[], tags:[], bpm:null|n, instrumental:null|true}
 function scan(text) {
   const s = String(text || '').toLowerCase();
@@ -107,4 +173,4 @@ function defaultQuestions(card) {
   return qs.slice(0, 2); // 每轮 ≤2 题
 }
 
-module.exports = { ENTRIES, EMOTION_MAP, scan, heuristicIntent, defaultQuestions, question };
+module.exports = { ENTRIES, EMOTION_MAP, STYLE_WORDS, scan, heuristicIntent, defaultQuestions, question, catalog, zhFor };

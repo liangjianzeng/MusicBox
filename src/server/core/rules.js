@@ -53,6 +53,11 @@ function reload() {
 
 // 审核入口：返回 {ok:true} 或 {ok:false, code:'MODERATION_BLOCK', message:中文}
 function moderate(text) {
+  // 运营总开关（后台可热关闭）：关闭时直放
+  try {
+    const AC = require('./appconfig');
+    if (!AC.moderationEnabled()) return { ok: true };
+  } catch (e) { /* 配置中心异常不影响审核 */ }
   if (!plainWords.length && !regexRules.length) reload();
   const s = String(text == null ? '' : text);
   if (!s.trim()) return { ok: true };

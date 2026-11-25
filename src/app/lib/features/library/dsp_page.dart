@@ -6,6 +6,18 @@ import '../../core/state.dart';
 import '../../shared/widgets/primary_button.dart';
 import '../create/credit_guard.dart';
 import '../create/progress_page.dart';
+import '../create/shelf_store.dart';
+
+/// 过程页要素用的人话标签（不把 start_sec/semitones 这种键名甩给用户）
+const kDspOpZh = {'trim': '裁剪', 'fade': '淡入淡出', 'pitch': '变调', 'tempo': '变速'};
+const kDspParamZh = {
+  'start_sec': '开始（秒）',
+  'end_sec': '结束（秒）',
+  'in_sec': '淡入（秒）',
+  'out_sec': '淡出（秒）',
+  'semitones': '变调（半音）',
+  'factor': '倍速',
+};
 
 /// DSP 入口：裁剪 / 淡化 / 变调 / 变速 → job → 进度
 class DspPage extends ConsumerStatefulWidget {
@@ -61,7 +73,30 @@ class _DspPageState extends ConsumerState<DspPage> {
       }
       final jobId = await ref.read(apiClientProvider).dsp(widget.workId, _op, params);
       if (!mounted) return;
-      ProgressPage.push(context, jobId, title: '音频处理中');
+      final api = ref.read(apiClientProvider);
+      ProgressPage.push(
+        context,
+        jobId,
+        title: '音频处理中',
+        brief: TaskBrief(
+          action: '音频处理',
+          sourceLabel: '曲库作品',
+          count: 1,
+          extra: {
+            '操作': kDspOpZh[_op] ?? _op,
+            for (final e in params.entries)
+              (kDspParamZh[e.key] ?? e.key): '${e.value}',
+          },
+        ),
+        plannedCount: 1,
+        onRetry: () async {
+          try {
+            return await api.dsp(widget.workId, _op, params);
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     } catch (_) {

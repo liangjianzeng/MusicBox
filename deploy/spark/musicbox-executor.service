@@ -1,0 +1,32 @@
+# MusicBox 执行器 daemon（Spark 本机草案）—— 二期 MV 五 lane + 一期 ffmpeg（2026-11-24）
+# 草案纪律：本阶段禁止 systemctl enable/run/run 真机（需宿主协调 S6/S7，construction-plan §2.1）。
+# 机密（API 地址/执行器令牌）一律走 EnvironmentFile，勿写死在本文件。
+# 共宿主纪律（架构 §1.2）：--concurrency 1 强制单并发 + ram_free 水位挂起（只观测不干预，无 /free）。
+[Unit]
+Description=MusicBox Executor (MV lane worker, Spark host)
+After=network-online.target musicbox-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbox
+Group=musicbox
+WorkingDirectory=/opt/musicbox/src
+ExecStart=/opt/musicbox/node/bin/node src/executor/index.js --api http://127.0.0.1:7900 --lanes imgspark,vidspark,lipsync,align,ffmpeg --concurrency 1
+EnvironmentFile=-/etc/musicbox/spark.env
+# /etc/musicbox/spark.env 必含：
+#   MB_API_URL / MB_EXECUTOR_TOKEN / MB_COMFY_URL=http://127.0.0.1:8188
+#   MB_LIPSYNC_URL=http://127.0.0.1:8390 MB_FACEGATE_URL=http://127.0.0.1:8395 MB_MV_ASR_URL=http://127.0.0.1:8391
+#   MB_ASR_URL=<一期转写端> MB_PUBLIC_BASE_URL=<客户端可达地址> MB_LLM_VLM_URL=http://127.0.0.1:8090/v1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=320          # 给 SIGINT 优雅退出留足收尾时间（任务级 300s）
+KillSignal=SIGINT
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/musicbox/var
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

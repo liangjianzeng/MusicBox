@@ -1,11 +1,13 @@
-// 积分：每日免费 50 惰性重置（daily_expire+daily_free 成对入账）、扣分/退款原语、/v1/credits（2026-11-23）
+﻿// 积分：每日免费 50 惰性重置（daily_expire+daily_free 成对入账）、扣分/退款原语、/v1/credits（2026-11-23）
 'use strict';
 const config = require('../config');
 const store = require('../core/store');
 const bus = require('../core/bus');
 const U = require('../core/util');
+const AC = require('../core/appconfig');
 
-const COST = config.credits;
+// 定价走运营配置中心（后台可改、热生效）；config.js 值仅作首次种子默认
+function COST() { return AC.credits(); }
 
 // 新自然日首次触碰：balance>0 记 daily_expire，再 +daily_free 记 daily_free（账本链不变量由 appendLedger 保证）
 function ensureDaily(userId) {
@@ -18,7 +20,7 @@ function ensureDaily(userId) {
     const bal = store.getBalance(userId);
     let after = bal;
     if (bal > 0) after = store.appendLedger(userId, -bal, 'daily_expire', 'day', today);
-    after = store.appendLedger(userId, COST.daily_free, 'daily_free', 'day', today);
+    after = store.appendLedger(userId, COST().daily_free, 'daily_free', 'day', today);
     store.setPref(userId, 'credit_reset_day', today);
     bus.creditDelta(userId, after - bal, after);
   });
@@ -57,7 +59,7 @@ function summary(userId) {
      FROM credit_ledger
      WHERE user_id=? AND rowid > COALESCE((SELECT rowid FROM credit_ledger WHERE user_id=? AND reason='daily_free' ORDER BY rowid DESC LIMIT 1),0)`,
     userId, userId);
-  return { balance, daily_quota: COST.daily_free, daily_used: Math.max(0, (used && used.used) || 0) };
+  return { balance, daily_quota: COST().daily_free, daily_used: Math.max(0, (used && used.used) || 0) };
 }
 
 // GET /v1/credits → {balance, daily_quota, daily_used, items}

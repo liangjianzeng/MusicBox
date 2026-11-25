@@ -7,7 +7,7 @@ import 'shell_easy.dart';
 import 'shell_pro.dart';
 import 'shell_standard.dart';
 
-/// 创建页：顶部 🧸傻瓜 / 🎚标准 / 🎛深度 三档切换（同一 CreationSession 状态树）
+/// 创建页：顶部 简约 / 标准 / 深度 三档切换（同一 CreationSession 状态树）
 class CreatePage extends ConsumerWidget {
   const CreatePage({super.key});
 
@@ -46,9 +46,18 @@ class CreatePage extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: SegmentedButton<int>(
               segments: const [
-                ButtonSegment(value: 0, label: Text('🧸 傻瓜'), icon: null),
-                ButtonSegment(value: 1, label: Text('🎚 标准')),
-                ButtonSegment(value: 2, label: Text('🎛 深度')),
+                ButtonSegment(
+                    value: 0,
+                    label: Text('简约'),
+                    icon: _TierIcon(Icons.auto_awesome)),
+                ButtonSegment(
+                    value: 1,
+                    label: Text('标准'),
+                    icon: _TierIcon(Icons.tune)),
+                ButtonSegment(
+                    value: 2,
+                    label: Text('深度'),
+                    icon: _TierIcon(Icons.equalizer)),
               ],
               selected: {tier},
               onSelectionChanged: (s) =>
@@ -65,6 +74,32 @@ class CreatePage extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 三档统一图标：同尺寸、同圆角、同渐变，只换图形——避免 emoji 风格/配色不一
+class _TierIcon extends StatelessWidget {
+  const _TierIcon(this.icon);
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 22,
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [scheme.primary, scheme.tertiary],
+        ),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Icon(icon, size: 15, color: scheme.onPrimary),
     );
   }
 }

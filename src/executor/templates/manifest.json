@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "note": "MusicBox MV ComfyUI 模板清单（tmpl_sha16 锁）。PLACEHOLDER：本阶段两模板为诚实骨架（节点图形状忠实镜像自剧场同族模板，按 MusicBox 命名重皮），未经真机登记与实测，禁止真跑；SP-MV-4 真机侧完成部署登记后回填 comfy_commit/weights/实测数据。",
+  "templates": {
+    "h3-image-cast": {
+      "tmpl_sha16": "313a47730e1819e6",
+      "placeholder": true,
+      "family": "h3image",
+      "endpoint": "spark",
+      "comfy_commit": null,
+      "cn_commits": {},
+      "weights": [],
+      "params": {
+        "PROMPT": "定妆描述（半身棚拍，性别+风格）",
+        "WIDTH": "864",
+        "HEIGHT": "1536",
+        "SEED": "uint32（每候选 +1 派生）",
+        "REF_IMAGE_1..3": "identity reference 文件名（/upload/image 上传后回填；AI 脸档由 runner 置为占位/删节点）"
+      },
+      "vram_profile": "PLACEHOLDER：H3-Image 族 ~28G（架构 §1.2 预算），实测数据由 SP-MV-4 回写",
+      "evidence": null
+    },
+    "h3-fl2va": {
+      "tmpl_sha16": "55b0dfe955b7ce15",
+      "placeholder": true,
+      "family": "h3video",
+      "endpoint": "spark",
+      "comfy_commit": null,
+      "cn_commits": {},
+      "weights": [],
+      "params": {
+        "FIRST_FRAME": "定妆照/关键帧文件名（/upload/image 上传后回填）",
+        "PROMPT": "表演描述（转头/表情/对镜演唱）",
+        "WIDTH": "736",
+        "HEIGHT": "1312",
+        "LENGTH": "124（5.17s @24fps）",
+        "STEPS": "4（turbo4 恒定）",
+        "SEED": "uint32"
+      },
+      "vram_profile": "PLACEHOLDER：H3 视频族 ~42G（架构 §1.2 预算），实测数据由 SP-MV-4 回写",
+      "evidence": null
+    },
+    "h3-image-edit": {
+      "tmpl_sha16": "b203f3be5cedeab6",
+      "placeholder": true,
+      "family": "h3image",
+      "endpoint": "spark",
+      "comfy_commit": null,
+      "cn_commits": {},
+      "weights": [],
+      "params": {
+        "PROMPT": "分镜描述（人物完全不变，只替换背景与环境：…背景：…景别运镜：…）",
+        "WIDTH": "864",
+        "HEIGHT": "1536",
+        "SEED": "uint32",
+        "REF_IMAGE": "viewRef 姿态帧文件名（cast/confirm 固化帧库，/upload/image 上传后回填）"
+      },
+      "vram_profile": "PLACEHOLDER：H3-Image 族 ~28G（与 h3-image-cast 同族常驻），实测数据由 SP-MV-4 回写",
+      "evidence": null,
+      "note": "mv_storyboard 角色镜专用（mv-plan §4.7.1 只换背景壳，denoise 0.85 身份保持档，真机标定归 SP-MV-4）；低分 → mv-facegate /swap ×2 非致命降级"
+    }
+  }
+}

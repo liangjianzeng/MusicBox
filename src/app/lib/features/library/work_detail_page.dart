@@ -10,7 +10,10 @@ import '../../core/state.dart';
 import '../../shared/widgets/ai_badge.dart';
 import '../../shared/widgets/waveform_canvas.dart';
 import '../create/credit_guard.dart';
+import '../create/music_assistant_sheet.dart';
 import '../create/progress_page.dart';
+import '../create/shelf_store.dart';
+import '../mv/mv_wizard_page.dart';
 import '../player/player_provider.dart';
 import 'dsp_page.dart';
 
@@ -249,11 +252,20 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                 leading: const Icon(Icons.flag_outlined),
                 title: const Text('举报'),
                 onTap: () => Navigator.pop(ctx, 'report')),
+            ListTile(
+                leading: const Icon(Icons.movie_creation_outlined),
+                title: const Text('用这首拍 MV'),
+                onTap: () => Navigator.pop(ctx, 'mv')),
           ],
         ),
       ),
     );
     switch (picked) {
+      case 'mv':
+        if (!mounted) break;
+        MvWizardPage.push(context,
+            workId: widget.workId, initialStep: 1);
+        break;
       case 'extend':
         _extend();
         break;
@@ -305,7 +317,21 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
     try {
       final jobId = await _api.extend(widget.workId, sec);
       if (!mounted) return;
-      ProgressPage.push(context, jobId, title: '延长中');
+      ProgressPage.push(
+        context,
+        jobId,
+        title: '延长中',
+        brief:
+            TaskBrief(action: '延长', sourceLabel: '曲库作品', sec: sec, count: 1),
+        plannedCount: 1,
+        onRetry: () async {
+          try {
+            return await _api.extend(widget.workId, sec);
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     }
@@ -338,7 +364,26 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
     try {
       final jobId = await _api.cover(widget.workId, pid);
       if (!mounted) return;
-      ProgressPage.push(context, jobId, title: '翻唱中');
+      final pname =
+          personas.where((p) => p.id == pid).map((p) => p.name).toList();
+      ProgressPage.push(
+        context,
+        jobId,
+        title: '翻唱中',
+        brief: TaskBrief(
+            action: '翻唱',
+            sourceLabel: '曲库作品',
+            personaName: pname.isEmpty ? null : pname.first,
+            count: 1),
+        plannedCount: 1,
+        onRetry: () async {
+          try {
+            return await _api.cover(widget.workId, pid);
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     }
@@ -393,7 +438,29 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
     try {
       final jobId = await _api.variation(widget.workId, delta);
       if (!mounted) return;
-      ProgressPage.push(context, jobId, title: '实验中');
+      ProgressPage.push(
+        context,
+        jobId,
+        title: '实验中',
+        brief: TaskBrief(
+            action: '实验',
+            sourceLabel: '曲库作品',
+            bpm: delta['bpm'] is int
+                ? delta['bpm'] as int
+                : int.tryParse('${delta['bpm']}'),
+            tags: delta['tags'] is List
+                ? (delta['tags'] as List).map((e) => '$e').toList()
+                : const [],
+            count: 1),
+        plannedCount: 1,
+        onRetry: () async {
+          try {
+            return await _api.variation(widget.workId, delta);
+          } catch (_) {
+            return null;
+          }
+        },
+      );
     } on ApiException catch (e) {
       _toast(e.zh);
     }
@@ -471,6 +538,8 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
   @override
   Widget build(BuildContext context) {
     final w = _work;
+    final rc = ref.watch(remoteConfigProvider);
+    final assistantOn = (rc?.musicAssistant ?? false) || kMusicAssistantForce;
     return Scaffold(
       appBar: AppBar(
         title: const Text('作品详情'),
@@ -485,6 +554,18 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
               tooltip: '更多'),
         ],
       ),
+      floatingActionButton: assistantOn
+          ? FloatingActionButton.small(
+              heroTag: 'music_assistant_fab_work',
+              tooltip: '音乐助手',
+              onPressed: () => showMusicAssistant(context,
+                  subjectType: 'work',
+                  subjectId: widget.workId,
+                  subjectLabel: w?.title ?? '',
+                  chatEnabled: rc?.assistantChatMusic ?? false),
+              child: const Icon(Icons.smart_toy_outlined, size: 20),
+            )
+          : null,
       body: _loading && w == null
           ? const Center(child: CircularProgressIndicator())
           : w == null
@@ -539,7 +620,9 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                         barWidth: 3,
                         gap: 3,
                       ),
-                      Row(
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
                         children: [
                           FilledButton.icon(
                             onPressed: () => ref
@@ -548,11 +631,19 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                             icon: const Icon(Icons.play_arrow_rounded),
                             label: const Text('播放'),
                           ),
-                          const SizedBox(width: 10),
                           OutlinedButton.icon(
                             onPressed: _shareSeedPack,
                             icon: const Icon(Icons.ios_share, size: 18),
                             label: const Text('Seed Pack 分享'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => MvWizardPage.push(
+                                context,
+                                workId: widget.workId,
+                                initialStep: 1),
+                            icon: const Icon(Icons.movie_creation_outlined,
+                                size: 18),
+                            label: const Text('用这首拍 MV'),
                           ),
                         ],
                       ),

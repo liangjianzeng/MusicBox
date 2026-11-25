@@ -21,7 +21,7 @@ class CreationState {
     this.intentId,
   });
 
-  final int tier; // 0 傻瓜 / 1 标准 / 2 深度
+  final int tier; // 0 简约 / 1 标准 / 2 深度
   final String prompt;
   final String lyrics;
   final String tags;

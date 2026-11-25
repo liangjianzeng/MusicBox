@@ -14,17 +14,27 @@ class LocalDb {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       '$dir/musicbox.db',
-      version: 1,
+      version: 2,
       onCreate: (db, v) async {
         await db.execute(
             'CREATE TABLE works_mirror(id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at INTEGER NOT NULL)');
         await db.execute(
             'CREATE TABLE play_history(id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT, payload TEXT NOT NULL, played_at INTEGER NOT NULL)');
         await db.execute('CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+        await _createShelf(db);
+      },
+      onUpgrade: (db, old, v) async {
+        if (old < 2) await _createShelf(db);
       },
     );
     return LocalDb._(db);
   }
+
+  static Future<void> _createShelf(Database db) => db.execute(
+      'CREATE TABLE IF NOT EXISTS reveal_shelf('
+      'job_id TEXT PRIMARY KEY, title TEXT NOT NULL, brief TEXT NOT NULL, '
+      'candidates TEXT NOT NULL, adopted TEXT NOT NULL, '
+      'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
 
   // ---------- 作品镜像 ----------
 
@@ -82,6 +92,34 @@ class LocalDb {
             (jsonDecode(r['payload'] as String) as Map).cast<String, dynamic>()))
             .toList();
   }
+
+  // ---------- 灵感暂存架（生成候选留存，清缓存也不丢） ----------
+
+  /// 最多留存的暂存会话数（只保留最近 N 次生成）
+  static const kShelfKeep = 8;
+
+  Future<void> saveShelfRow(Map<String, Object?> row) async {
+    await _db.insert('reveal_shelf', row,
+        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.delete(
+      'reveal_shelf',
+      where:
+          'job_id NOT IN (SELECT job_id FROM reveal_shelf ORDER BY updated_at DESC LIMIT ?)',
+      whereArgs: [kShelfKeep],
+    );
+  }
+
+  Future<List<Map<String, Object?>>> shelfRows() =>
+      _db.query('reveal_shelf', orderBy: 'updated_at DESC', limit: kShelfKeep);
+
+  Future<Map<String, Object?>?> shelfRow(String jobId) async {
+    final rows = await _db.query('reveal_shelf',
+        where: 'job_id = ?', whereArgs: [jobId], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<void> removeShelfRow(String jobId) =>
+      _db.delete('reveal_shelf', where: 'job_id = ?', whereArgs: [jobId]);
 
   // ---------- 通用离线缓存 ----------
 

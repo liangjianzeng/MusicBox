@@ -62,6 +62,8 @@ async function runMusic(job, ctx) {
     ? p.candidates
     : Array.from({ length: count }, (_, i) => ({ seq: i + 1, seed_delta: i }));
   const seedBase = Number.isFinite(Number(p.seed_base)) ? Number(p.seed_base) : 424242;
+  // 节点选择：job.payload 里的 music_endpoint/music_engine 由后台/用户选择决定（后端配置，不写死）；缺省回退本机 cfg
+  const musicUrl = p.music_endpoint || cfg.musicUrl;
   const sec = Math.max(15, Math.min(240, Number(p.sec) || 45));
   const tags = Array.isArray(p.tags) ? p.tags : String(p.tags || '').split(/[,，]/).filter(Boolean);
   const instrumental = !!p.instrumental;
@@ -90,7 +92,7 @@ async function runMusic(job, ctx) {
     if (Number.isFinite(bpmN) && bpmN >= 30 && bpmN <= 300) baseBody.bpm = Math.round(bpmN);
 
     // ① guide：完整歌（无 ref_audio）
-    const r1 = await callMusic(cfg.musicUrl, baseBody, ctx.log);
+    const r1 = await callMusic(musicUrl, baseBody, ctx.log);
     let finalAbs = path.join(ctx.workDir, 'cand_' + seq + '.wav');
     await ingestArtifact(r1.file, finalAbs, ctx.log);
     let meta = { clone: { applied: false, stage2_failed: false }, gen_seconds: r1.gen_seconds, task_type: r1.task_type };

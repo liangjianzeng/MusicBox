@@ -7,6 +7,8 @@ import '../../core/state.dart';
 import '../../shared/widgets/ai_badge.dart';
 import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/waveform_canvas.dart';
+import '../create/shelf_page.dart';
+import '../create/shelf_store.dart';
 import '../player/player_provider.dart';
 import 'work_detail_page.dart';
 
@@ -166,6 +168,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                       _load(refresh: true);
                     }),
                 const SizedBox(width: 10),
+                const _ShelfChip(),
                 Wrap(
                   spacing: 6,
                   children: moods
@@ -258,6 +261,31 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 灵感暂存架入口：生成好但还没「收下」的候选都在这里，退出/切页不丢
+class _ShelfChip extends ConsumerWidget {
+  const _ShelfChip();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final n = ref.watch(shelfProvider).length;
+    final scheme = Theme.of(context).colorScheme;
+    return ActionChip(
+      avatar: Icon(n > 0 ? Icons.bookmark : Icons.bookmark_border,
+          size: 16, color: n > 0 ? scheme.primary : Colors.white54),
+      label: Text(n > 0 ? '暂存 $n' : '暂存',
+          style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: n > 0 ? FontWeight.w700 : FontWeight.w500,
+              color: n > 0 ? Colors.white : Colors.white54)),
+      tooltip: n > 0
+          ? '生成好但还没收下的候选都在这里（最近 8 次）'
+          : '生成好但没收下的候选会自动存到这里',
+      onPressed: () => Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const ShelfPage())),
     );
   }
 }

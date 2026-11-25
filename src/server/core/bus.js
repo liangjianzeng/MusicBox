@@ -46,6 +46,10 @@ function intentCard(userId, intentId, status) {
 function creditDelta(userId, delta, balanceAfter) {
   push(userId, { type: 'credit.delta', delta, balance_after: balanceAfter });
 }
+// MV 二期（契约 v2.2/v2.8.5）：剧组通告板数据源——shot/project 状态变更即广播
+function mvProgress(userId, payload) {
+  push(userId, { type: 'mv.progress', ...payload });
+}
 
 function waitEvent(predicate, timeoutMs) {
   return new Promise((resolve) => {
@@ -62,4 +66,4 @@ function waitEvent(predicate, timeoutMs) {
 
 function onlineCount() { return clients.size; }
 
-module.exports = { attach, detach, push, jobProgress, jobDone, jobError, intentCard, creditDelta, waitEvent, onlineCount };
+module.exports = { attach, detach, push, jobProgress, jobDone, jobError, intentCard, creditDelta, mvProgress, waitEvent, onlineCount };
