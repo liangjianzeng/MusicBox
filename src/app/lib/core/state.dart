@@ -32,8 +32,7 @@ class ConfigNotifier extends StateNotifier<AppConfig> {
 
 // ---------- API ----------
 
-final configProvider =
-    StateNotifierProvider<ConfigNotifier, AppConfig>((ref) {
+final configProvider = StateNotifierProvider<ConfigNotifier, AppConfig>((ref) {
   return ConfigNotifier(ref.watch(prefsProvider));
 });
 
@@ -77,6 +76,9 @@ class RemoteConfig {
   /// 服务端下发为权威（音乐域无 project detail 下发位，直接读 features）。
   bool get musicAssistant => featureOn('music_assistant');
   bool get assistantChatMusic => featureOn('assistant_chat_music');
+  bool get assistantCore => _features.containsKey('assistant_core')
+      ? featureOn('assistant_core')
+      : true;
 
   /// 版本策略：低于 min_supported 时 required=强制 / recommended=引导
   Map get _vp => (data['version_policy'] as Map?) ?? const {};
@@ -105,8 +107,12 @@ class RemoteConfig {
 
 /// 语义化版本比较：a<b 返回 -1，a>b 返回 1，相等 0
 int _cmpVersion(String a, String b) {
-  List<int> parse(String v) =>
-      v.split(RegExp(r'[+\-]')).first.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+  List<int> parse(String v) => v
+      .split(RegExp(r'[+\-]'))
+      .first
+      .split('.')
+      .map((e) => int.tryParse(e) ?? 0)
+      .toList();
   final x = parse(a), y = parse(b);
   for (var i = 0; i < 3; i++) {
     final l = i < x.length ? x[i] : 0, r = i < y.length ? y[i] : 0;
@@ -156,6 +162,7 @@ class SessionState {
     this.credits,
     this.error,
     this.ledger = const [],
+    this.netOnline = true,
   });
 
   final SessionStatus status;
@@ -164,12 +171,16 @@ class SessionState {
   final String? error;
   final List<LedgerEntry> ledger; // 本次会话积分流水（契约无 ledger 端点，本地记）
 
+  /// 离线兜底进首页时为 false；登录/积分恢复后置回 true
+  final bool netOnline;
+
   SessionState copyWith({
     SessionStatus? status,
     AppUser? user,
     Credits? credits,
     String? error,
     List<LedgerEntry>? ledger,
+    bool? netOnline,
   }) =>
       SessionState(
         status: status ?? this.status,
@@ -177,6 +188,7 @@ class SessionState {
         credits: credits ?? this.credits,
         error: error,
         ledger: ledger ?? this.ledger,
+        netOnline: netOnline ?? this.netOnline,
       );
 }
 
@@ -188,8 +200,18 @@ class SessionNotifier extends StateNotifier<SessionState> {
   final Ref _ref;
   final Prefs _prefs;
   bool _bootstrapped = false;
+  Timer? _offlineRetry;
 
   ApiClient get _api => _ref.read(apiClientProvider);
+
+  /// 启动连网兜底：整体最长 10s，单请求 3s × 最多 3 次尝试；
+  /// 超时/网络不通则离线进首页（本地能力可用），后台继续重试恢复在线
+  static const _bootstrapDeadline = Duration(seconds: 10);
+  static const _attemptTimeout = Duration(seconds: 3);
+  static const _maxAttempts = 3;
+
+  Future<T> _withTimeout<T>(Future<T> Function() f) =>
+      f().timeout(_attemptTimeout);
 
   /// App 启动：有 token 先验证，无 token 静默游客登录
   Future<void> bootstrap() async {
@@ -197,18 +219,118 @@ class SessionNotifier extends StateNotifier<SessionState> {
     _bootstrapped = true;
     // 拉取远程配置（定价/默认走向/可选模型）；失败不阻断，用本地缓存/默认
     unawaited(_ref.read(remoteConfigProvider.notifier).refresh());
+    final deadline = DateTime.now().add(_bootstrapDeadline);
     if (_prefs.accessToken != null) {
-      try {
-        final me = await _api.me();
-        state = state.copyWith(
-            status: SessionStatus.ready, user: me.user, credits: me.credits);
-        _connectWs();
+      var fatal = false;
+      for (var i = 0;
+          i < _maxAttempts && DateTime.now().isBefore(deadline);
+          i++) {
+        try {
+          final me = await _withTimeout(_api.me);
+          state = state.copyWith(
+              status: SessionStatus.ready, user: me.user, credits: me.credits);
+          _connectWs();
+          return;
+        } on TimeoutException {
+          continue; // 超时→重试
+        } catch (_) {
+          fatal = true; // 服务端明确拒绝→token 失效，转游客登录
+          break;
+        }
+      }
+      if (!fatal) {
+        _enterOffline();
         return;
-      } catch (_) {
-        await _prefs.clearTokens();
+      }
+      await _prefs.clearTokens();
+    }
+    await _guestLoginBoot(deadline);
+  }
+
+  /// 启动用游客登录：带超时重试与离线兜底
+  Future<void> _guestLoginBoot(DateTime deadline) async {
+    state = state.copyWith(status: SessionStatus.loading);
+    for (var i = 0;
+        i < _maxAttempts && DateTime.now().isBefore(deadline);
+        i++) {
+      try {
+        final r = await _withTimeout(_api.guestLogin);
+        await _prefs.saveTokens(
+            '${r['access_token']}', '${r['refresh_token']}');
+        await _finishOnline(AppUser.fromMap((r['user'] as Map?) ?? const {}));
+        return;
+      } on TimeoutException {
+        // 超时→重试
+      } on ApiException catch (e) {
+        // 网络类错误可重试；业务类错误直接进失败页
+        if (e.code != 'NETWORK') {
+          state = state.copyWith(
+              status: SessionStatus.failed, error: e.zh, netOnline: true);
+          return;
+        }
       }
     }
-    await guestLogin();
+    _enterOffline();
+  }
+
+  /// 离线兜底：放行到首页（本地能力可用），后台定期重试恢复在线
+  void _enterOffline() {
+    state = state.copyWith(
+        status: SessionStatus.ready, error: null, netOnline: false);
+    _offlineRetry?.cancel();
+    _offlineRetry = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (!mounted) {
+        _offlineRetry?.cancel();
+        _offlineRetry = null;
+        return;
+      }
+      if (state.netOnline) {
+        _offlineRetry?.cancel();
+        _offlineRetry = null;
+        return;
+      }
+      try {
+        if (_prefs.accessToken != null) {
+          final me = await _withTimeout(_api.me);
+          state = state.copyWith(
+              status: SessionStatus.ready,
+              user: me.user,
+              credits: me.credits,
+              netOnline: true);
+        } else {
+          final r = await _withTimeout(_api.guestLogin);
+          await _prefs.saveTokens(
+              '${r['access_token']}', '${r['refresh_token']}');
+          final u = AppUser.fromMap((r['user'] as Map?) ?? const {});
+          Credits? credits;
+          try {
+            credits = (await _withTimeout(_api.me)).credits;
+          } catch (_) {}
+          state = state.copyWith(
+              status: SessionStatus.ready,
+              user: u,
+              credits: credits,
+              netOnline: true);
+          _connectWs();
+        }
+        _offlineRetry?.cancel();
+        _offlineRetry = null;
+      } catch (_) {}
+    });
+  }
+
+  /// 登录成功后的公共收尾：取积分（尽力而为）、置 ready、连 WSS
+  Future<void> _finishOnline(AppUser u, {bool netOnline = true}) async {
+    Credits? credits;
+    try {
+      credits = (await _withTimeout(_api.me)).credits;
+    } catch (_) {}
+    state = state.copyWith(
+        status: SessionStatus.ready,
+        user: u,
+        credits: credits,
+        netOnline: netOnline);
+    _connectWs();
   }
 
   /// 游客登录（静默）。失败进入 failed 态，由门禁给重试页
@@ -217,14 +339,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
     try {
       final r = await _api.guestLogin();
       await _prefs.saveTokens('${r['access_token']}', '${r['refresh_token']}');
-      final u = AppUser.fromMap((r['user'] as Map?) ?? const {});
-      Credits? credits;
-      try {
-        credits = (await _api.me()).credits;
-      } catch (_) {}
-      state = state.copyWith(
-          status: SessionStatus.ready, user: u, credits: credits);
-      _connectWs();
+      await _finishOnline(AppUser.fromMap((r['user'] as Map?) ?? const {}));
     } catch (e) {
       state = state.copyWith(
           status: SessionStatus.failed,
@@ -252,7 +367,8 @@ class SessionNotifier extends StateNotifier<SessionState> {
   Future<void> refreshCredits() async {
     try {
       final me = await _api.me();
-      state = state.copyWith(user: me.user, credits: me.credits);
+      state =
+          state.copyWith(user: me.user, credits: me.credits, netOnline: true);
     } catch (_) {}
   }
 
@@ -292,7 +408,9 @@ final wsClientProvider = Provider<WsClient>((ref) {
       WsClient(wsUrl: cfg.wsUrl, tokenProvider: () => prefs.accessToken);
   client.events.listen((e) {
     if (e is CreditDeltaEvent) {
-      ref.read(sessionProvider.notifier).applyCreditDelta(e.delta, e.balanceAfter);
+      ref
+          .read(sessionProvider.notifier)
+          .applyCreditDelta(e.delta, e.balanceAfter);
     }
   });
   ref.onDispose(client.dispose);
