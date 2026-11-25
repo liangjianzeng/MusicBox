@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS model_defaults(
 
 > **2026-11-24 落地进度：M0 / M1 / M2 全部实现并端到端验收通过。**
 > 控制台地址：开发 `http://127.0.0.1:7900/admin/`；生产 `https://<域名>/admin/`（Nginx 已加运维 IP 白名单）。
-> 登录：`MB_ADMIN_USERNAME/MB_ADMIN_PASSWORD`（默认 admin/admin1234，首启打印告警）。
+> 登录：`MB_ADMIN_USERNAME/MB_ADMIN_PASSWORD`（首启使用默认凭据并打印告警，生产必须覆盖）。
 > 模块：运营看板 / 模型节点 / 运营配置（定价·版本策略·公告·审核开关·历史回滚）/ 功能开关（灰度）/ 内容审核（词库+举报队列）/ 用户运营（详情·封禁·调积分）/ 审计日志。
 
 ### M0 —— 运营后台地基 + 内容审核 + 用户运营（APK 零改动）
