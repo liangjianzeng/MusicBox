@@ -165,6 +165,33 @@ class _RevealPageState extends ConsumerState<RevealPage> {
     _loadPeaks(widget.candidates[i]);
   }
 
+  double _swipeDx = 0.0;
+
+  /// 左右滑动切换候选：左滑 → 下一首，右滑 → 上一首。
+  /// 波形 seek（内层手势）会先赢得手势仲裁，不受影响。
+  void _onSwipeStart(DragStartDetails _) {
+    _swipeDx = 0.0;
+  }
+
+  void _onSwipeUpdate(DragUpdateDetails d) {
+    _swipeDx += d.delta.dx;
+  }
+
+  void _onSwipeEnd(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0.0;
+    final dx = _swipeDx;
+    _swipeDx = 0.0;
+    if (v < -300 || dx < -90) {
+      _go(_idx + 1);
+    } else if (v > 300 || dx > 90) {
+      _go(_idx - 1);
+    }
+  }
+
+  void _onSwipeCancel() {
+    _swipeDx = 0.0;
+  }
+
   /// 拉真 peaks（/f/* 公共读）；拉不到留 pseudoPeaks 占位并由 UI 标注预览
   Future<void> _loadPeaks(Candidate c) async {
     if (_peaks.containsKey(c.id)) return;
@@ -424,53 +451,64 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                 ],
               ),
             ),
-            // 翻转候选卡
+            // 翻转候选卡（左右滑动切换候选；波形区由内层手势 seek，优先级更高）
             Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 420),
-                    transitionBuilder: (child, anim) {
-                      final t = Tween<double>(begin: math.pi / 2, end: 0)
-                          .animate(CurvedAnimation(
-                              parent: anim, curve: Curves.easeOutBack));
-                      return AnimatedBuilder(
-                        animation: anim,
-                        child: child,
-                        builder: (ctx, c) {
-                          final m = Matrix4.identity()
-                            ..setEntry(3, 2, 0.0015)
-                            ..rotateY(1 - t.value);
-                          return Transform(
-                            alignment: Alignment.center,
-                            transform: m,
-                            child: c,
-                          );
-                        },
-                      );
-                    },
-                    child: _CandidateCard(
-                      key: ValueKey(_cur.id),
-                      candidate: _cur,
-                      adopted: adopted,
-                      playing: isCurrent && playerState.playing,
-                      peaks: _peaks[_cur.id],
-                      progress: progress,
-                      onPlay: () => ref.read(playerProvider.notifier).playQueue(
-                          widget.candidates.map(_candidateToWork).toList(),
-                          _idx),
-                      onTogglePlay: isCurrent
-                          ? () => ref.read(playerProvider.notifier).toggle()
-                          : null,
-                      onSeek: isCurrent && total.inMilliseconds > 0
-                          ? (v) => ref.read(playerProvider.notifier).seek(
-                              Duration(
-                                  milliseconds:
-                                      (v * total.inMilliseconds).round()))
-                          : null,
-                      onAdopt: _adopt,
-                      busy: _busy,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: _onSwipeStart,
+                onHorizontalDragUpdate: _onSwipeUpdate,
+                onHorizontalDragEnd: _onSwipeEnd,
+                onHorizontalDragCancel: _onSwipeCancel,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 420),
+                      transitionBuilder: (child, anim) {
+                        final t = Tween<double>(begin: math.pi / 2, end: 0)
+                            .animate(CurvedAnimation(
+                                parent: anim, curve: Curves.easeOutBack));
+                        return AnimatedBuilder(
+                          animation: anim,
+                          child: child,
+                          builder: (ctx, c) {
+                            final m = Matrix4.identity()
+                              ..setEntry(3, 2, 0.0015)
+                              ..rotateY(t.value);
+                            return Transform(
+                              alignment: Alignment.center,
+                              transform: m,
+                              child: c,
+                            );
+                          },
+                        );
+                      },
+                      child: _CandidateCard(
+                        key: ValueKey(_cur.id),
+                        candidate: _cur,
+                        adopted: adopted,
+                        playing: isCurrent && playerState.playing,
+                        peaks: _peaks[_cur.id],
+                        progress: progress,
+                        onPlay: () => ref
+                            .read(playerProvider.notifier)
+                            .playQueue(
+                                widget.candidates
+                                    .map(_candidateToWork)
+                                    .toList(),
+                                _idx),
+                        onTogglePlay: isCurrent
+                            ? () => ref.read(playerProvider.notifier).toggle()
+                            : null,
+                        onSeek: isCurrent && total.inMilliseconds > 0
+                            ? (v) => ref.read(playerProvider.notifier).seek(
+                                Duration(
+                                    milliseconds:
+                                        (v * total.inMilliseconds).round()))
+                            : null,
+                        onAdopt: _adopt,
+                        busy: _busy,
+                      ),
                     ),
                   ),
                 ),
