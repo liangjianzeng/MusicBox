@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 契约：契约 v5.1（MV 加固回归口径 —— 审核词库 fail closed、机审指纹、JSON 数组归一）
 describe('MV hardening unit regressions', () => {
   it('moderation read failures fail closed and retain the last known-good rules', async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-mv-rules-'));

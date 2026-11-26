@@ -1,0 +1,606 @@
+{
+  "_meta": {
+    "purpose": "MusicBox HTTP 接口机器可读清单（CONTRACTS.next §2/§3/§4 的结构化真源）",
+    "status": "DRAFT-FOR-REVIEW",
+    "generatedAt": "2026-11-26",
+    "generatedFrom": [
+      "src/server/api/auth.js", "src/server/api/credits.js", "src/server/api/works.js",
+      "src/server/api/intent.js", "src/server/api/personas.js", "src/server/api/executor.js",
+      "src/server/api/mv.js", "src/server/api/music_assistant.js", "src/server/api/assistant.js",
+      "src/server/api/admin.js", "src/server/api/modelnodes.js", "src/server/api/appconfig.js",
+      "src/server/api/admin_ops.js",
+      "src/server/index.js (路由注册 + /healthz + /f/* + /admin + /ws upgrade)",
+      "src/server/config.js (积分表 / gen 边界 / upload 限制 / engine 常量)",
+      "src/server/lanes/index.js (lane → types / timeout / ladder)",
+      "src/server/core/store.js (表结构 → 字段落库), src/server/core/engine.js (拉单/租约/退款), src/server/core/bus.js (WSS 事件)"
+    ],
+    "snapshot": { "gitHead": "0ce3d66", "concurrentEdits": "核对时 src/server/config.js、api/admin.js、core/security.js、core/store.js 正被并发的 P0-3 安全加固修改（MB_ENV/bind/assertBootable/管理员令牌过期/登录限流）。本清单已按修改后的工作区复核；评审时请以当时 HEAD 重跑一次路由抽取。" }, "authoritativeRule": "本清单由读码得出，字段以代码为准；文档与代码冲突时以代码为准并登记到 CONTRACTS.next §8。",
+    "idScheme": "C-API-<域>-<资源>-<动作>-NNN；域 ∈ CORE|AUTH|CREDITS|WORK|JOB|INTENT|PERSONA|EXEC|MV|MUSIC|ASSISTANT|ADMIN。NNN 全局递增，一经发布不得复用它号。",
+    "authVocabulary": {
+      "user": "必须 Authorization: Bearer <access_token>（api/auth.js requireUser / userFromRequest）",
+      "guest": "允许游客 token，无需手机号绑定",
+      "admin": "必须管理员 Bearer token（api/admin.js requireAdmin，admins.token 单值令牌）",
+      "executor": "必须 X-Executor-Token（api/executor.js assertToken，恒定时间比较 config.executorToken）",
+      "public": "代码中无任何鉴权调用（含仅限流的伪公开）"
+    },
+    "fieldNotes": {
+      "authCalls": "处理链里实际出现的鉴权/识别调用；空数组＝完全没有",
+      "unauthenticated": "true＝该路由不存在任何身份校验（lead 要求显式标出）",
+      "gated": "功能开关门控（关闭时按 404 NOT_FOUND 处理，不是 403）",
+      "limitMb": "请求体上限（index.js 默认 1MB JSON；raw 路由按 opts.limitMb）"
+    },
+    "totals": {
+      "moduleRouteItems": 100,
+      "uniquePathsFromModules": 90,
+      "uniqueMethodPathFromModules": 100,
+      "builtinEntries": 4,
+      "totalEntries": 104,
+      "byModule": { "auth": 5, "credits": 1, "works": 13, "intent": 8, "personas": 3, "executor": 6, "mv": 20, "music_assistant": 3, "assistant": 12, "admin": 1, "modelnodes": 9, "appconfig": 1, "admin_ops": 18, "core-builtin": 4 },
+      "byAuth": { "user": 59, "admin": 28, "public": 10, "executor": 6, "user-conditional-public": 1 },
+      "byAuthModulesOnly": { "user": 58, "admin": 28, "public": 7, "executor": 6, "user-conditional-public": 1 },
+      "unauthenticatedCount": 10,
+      "unauthenticatedRoutes": [
+        "POST /v1/auth/guest (C-API-AUTH-GUEST-CREATE-001)",
+        "POST /v1/auth/phone/request-code (C-API-AUTH-PHONEREQUEST-CREATE-002)",
+        "POST /v1/auth/phone/verify (C-API-AUTH-PHONEVERIFY-CREATE-003)",
+        "POST /v1/auth/refresh (C-API-AUTH-SESSION-REFRESH-004)",
+        "GET /v1/health/speech (C-API-INTENT-SPEECHHEALTH-READ-023) ← 设计公开但透传 ASR device/model_loaded",
+        "GET /v1/app/config (C-API-ADMIN-CLIENTCONFIG-READ-082) ← 泄露 engine 名 + 全量积分表 + 开关命中",
+        "POST /admin/login (C-API-ADMIN-LOGIN-CREATE-072) ← 内置默认账号待轮换（登录已限流、令牌 12h 过期）",
+        "GET /healthz (C-API-CORE-HEALTH-READ-101)",
+        "GET /f/* (C-API-CORE-STATIC-READ-102) ← 永久公开产物，无签名 URL",
+        "GET /admin (C-API-ADMIN-CONSOLE-READ-103) ← 运营控制台 HTML 不鉴权"
+      ],
+      "adminSurface": { "adminRoutesRegistered": 28, "adminPrefixRoutes": 27, "v1PrefixedAdminRoutes": 1, "note": "/admin/* 整体不在 v1–v5.0 契约内；另有 1 个 /v1/admin/assistant/metrics" },
+      "conditionalAuthGap": "GET /v1/works 当 query public=1 时完全跳过 requireUser（api/works.js 的 listWorks）"
+    }
+  },
+
+  "routes": [
+    {
+      "id": "C-API-CORE-HEALTH-ONLINE-READ-102",
+      "method": "GET",
+      "path": "/healthz.online",
+      "module": "index.js(builtin)",
+      "auth": "public",
+      "authCalls": [],
+      "unauthenticated": true,
+      "contract": "v2.18 观测（§0/§11 最小可观测集）",
+      "request": {},
+      "response": { "status": 200, "body": { "ok": true, "ts": "iso", "online": "int(App WSS 连接数)" } },
+      "errors": [],
+      "credits": { "charged": 0 },
+      "notes": "online 统计的是 **App 的 WSS 连接数**，不是执行器数量；判执行器死活要看 executors.last_seen（真机排障实测：把 online 当执行器数会误判「执行器没起来」）。"
+    },
+    {
+      "id": "C-API-CORE-WS-READ-103",
+      "method": "GET",
+      "path": "/ws",
+      "module": "index.js(builtin)",
+      "auth": "user",
+      "authCalls": ["ws token 查询参数 access_token"],
+      "contract": "v2.18 观测（§0/§11 推送面）",
+      "request": { "access_token": "query；用户访问令牌" },
+      "response": { "status": 101, "body": "WebSocket 升级；服务端推送 jobProgress / creditDelta / jobError 等事件" },
+      "errors": ["UNAUTHORIZED"],
+      "credits": { "charged": 0 },
+      "notes": "creditDelta 必须在事务 COMMIT 之后推送（抢救 P1-2 outbox），否则崩溃会留下「客户端显示扣款成功」的幻影余额。"
+    },
+    { "id": "C-API-AUTH-GUEST-CREATE-001", "method": "POST", "path": "/v1/auth/guest", "module": "auth.js", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v1 §2 认证与账户",
+      "request": { "device_key?": "string；带则同设备复用同一游客号（guest_key=sha256(device_key)）" },
+      "response": { "status": 200, "body": { "access_token": "string(at_…)", "refresh_token": "string(rt_…)", "user": { "id": "string", "nickname": "string", "is_guest": true } } },
+      "errors": ["INTERNAL"], "credits": { "charged": 0 },
+      "notes": "会话落 sessions（token 只存哈希）。accessTtl 2h / refreshTtl 30d（config.js accessTokenTtlMs/refreshTokenTtlMs）。" },
+
+    { "id": "C-API-AUTH-PHONEREQUEST-CREATE-002", "method": "POST", "path": "/v1/auth/phone/request-code", "module": "auth.js", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v1 §2",
+      "request": { "phone": "string 1[3-9]\\d{9}" },
+      "response": { "status": 200, "body": { "sent": true } },
+      "errors": ["BAD_REQUEST", "RATE_LIMITED"], "credits": { "charged": 0 },
+      "notes": "限流：手机号 3 次/5min + IP 10 次/10min（util.allowRate）。DEV_OTP 固定验证码默认已关闭（MB_DEV_OTP 缺省 0）；开启时任意手机号可用固定码取正式令牌，MB_ENV=prod 下 core/security.js assertBootable 拒绝启动（见 §8 登记册 R-01）。" },
+
+    { "id": "C-API-AUTH-PHONEVERIFY-CREATE-003", "method": "POST", "path": "/v1/auth/phone/verify", "module": "auth.js", "auth": "public", "authCalls": ["userFromRequest(可选，游客升级用)"], "unauthenticated": true, "contract": "v1 §2",
+      "request": { "phone": "string", "code": "string 6 位" },
+      "response": { "status": 200, "body": { "access_token": "string", "refresh_token": "string", "user": { "id": "string", "nickname": "string", "is_guest": false } } },
+      "errors": ["BAD_REQUEST(过期/不正确/手机号已绑定)", "RATE_LIMITED(tries≥5)"], "credits": { "charged": 0 },
+      "notes": "带游客 token 调用＝原号升级、作品保留；码比对走 timingSafeEq + sha256。" },
+
+    { "id": "C-API-AUTH-SESSION-REFRESH-004", "method": "POST", "path": "/v1/auth/refresh", "module": "auth.js", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v1 §2",
+      "request": { "refresh_token": "string" },
+      "response": { "status": 200, "body": { "access_token": "string", "refresh_token": "string" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(缺少 refresh_token)"], "credits": { "charged": 0 },
+      "notes": "refresh 轮换：新旧同会话行内替换（rotateSession）。" },
+
+    { "id": "C-API-AUTH-ME-READ-005", "method": "GET", "path": "/v1/me", "module": "auth.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": {}, "response": { "status": 200, "body": { "user": { "id": "string", "nickname": "string", "phone_masked": "string|null", "is_guest": "bool" }, "credits": { "balance": "int", "daily_quota": "int", "daily_used": "int" }, "prefs": "object" } },
+      "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "summary() 会触发每日免费积分惰性重置（credits.ensureDaily）。" },
+
+    { "id": "C-API-CREDITS-BALANCE-READ-006", "method": "GET", "path": "/v1/credits", "module": "credits.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": {}, "response": { "status": 200, "body": { "balance": "int", "daily_quota": "int", "daily_used": "int", "items": "[{delta,reason,balance_after,ref_type,ref_id,created_at}] 最近 50 条" } },
+      "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "账本真源 credit_ledger；不变量 Σdelta == 末条 balance_after（store.appendLedger）。" },
+
+    { "id": "C-API-WORK-GENERATE-CREATE-007", "method": "POST", "path": "/v1/works/generate", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 文本创作线",
+      "request": { "mode": "simple|custom（其它值 400；不是 standard/pro）", "prompt": "string ≤500（simple 下 prompt/lyrics 至少一个非空）", "lyrics": "string ≤4000", "tags": "string[] ≤6", "mood": "string ≤20", "bpm?": "int 40-200", "sec?": "int 15-240（默认 45，越界 400）", "count?": "int 1-4（默认 3，非整数或越界 400）", "persona_id?": "string", "model?": "string（node_id 或 engine；后台 locked 时被强制默认）", "seed?|seed_base?": "int 0-2147483647", "instrumental?": "bool|'true'|'false'|0|1" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST", "MODERATION_BLOCK", "CREDITS_NOT_ENOUGH", "RATE_LIMITED(gen:user 12 次/60s)"],
+      "credits": { "charged": "credits.per_candidate * count（默认 15×3=45）；幂等命中 0", "reason": "gen", "refund": "enqueue 抛错/并发同键即时全额退" },
+      "notes": "先审→幂等→扣分→enqueue 顺序不可换；idem 键含 seed/instrumental（normalizeForIdem）。job type=music → lane music（timeout 8min，ladder 恒等）。" },
+
+    { "id": "C-API-JOB-STATUS-READ-008", "method": "GET", "path": "/v1/jobs/:id", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "id": "path" },
+      "response": { "status": 200, "body": { "id": "string", "type": "string", "status": "queued|leased|running|done|failed|canceled", "progress": "int 0-100", "note": "string", "candidates": "[candidate]|null", "error": "{code,message}|null", "result_work_id": "string|null" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN(非本人 job)"], "credits": { "charged": 0 },
+      "notes": "candidate = store.candidateOf：{id,seq,title,audio_url,duration_sec,format,waveform_url,meta}。" },
+
+    { "id": "C-API-WORK-CANDIDATE-ADOPT-009", "method": "POST", "path": "/v1/works/:id/adopt", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "candidate_id": "string" },
+      "response": { "status": 200, "body": { "work": "work 形状（store.workOf）" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(候选已采纳)", "FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "写 works 行（status=draft、visibility=private、ai_label=1、language=zh）+ candidates.adopted/work_id；lineage 取 payload.lineage。" },
+
+    { "id": "C-API-WORK-LIST-READ-010", "method": "GET", "path": "/v1/works", "module": "works.js", "auth": "user-conditional-public", "authCalls": ["requireUser(仅 public≠1 分支)"], "unauthenticated": false, "contract": "v1 §2",
+      "request": { "public?": "1 ⇒ 只查 visibility='public'，且此分支无任何鉴权调用", "mine?": "1", "genre?": "string≤30(LIKE)", "mood?": "string≤30(LIKE)", "bpm_min?": "int", "bpm_max?": "int", "q?": "string≤50(命中 title/lyrics/mood/genres)", "cursor?": "string", "limit?": "int 1-50（默认 20）" },
+      "response": { "status": 200, "body": { "items": "[work]", "next_cursor": "string|null" } },
+      "errors": ["UNAUTHORIZED(私有分支)", "FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "⚠ public=1 全公开枚举且无限流（§8 R-04）。listWorks 亦被内部助手复用（ctx.user 注入）。" },
+
+    { "id": "C-API-WORK-DETAIL-READ-011", "method": "GET", "path": "/v1/works/:id", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "id": "path" },
+      "response": { "status": 200, "body": { "work": "work", "lineage_parents": "[work 简卡 ≤10 层]", "children_count": "int" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(retired 视为不存在)", "FORBIDDEN"], "credits": { "charged": 0 }, "notes": "允许读他人 public 作品（allowPublic）。" },
+
+    { "id": "C-API-WORK-META-UPDATE-012", "method": "PATCH", "path": "/v1/works/:id", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "title?": "string≤80(审核)", "mood?": "string≤20(审核)", "genres?": "string[]≤8(审核)", "rating?": "int 1-5", "visibility?": "private|public", "status?": "draft|published|retired" },
+      "response": { "status": 200, "body": { "work": "work" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(无字段/枚举非法)", "MODERATION_BLOCK"], "credits": { "charged": 0 },
+      "notes": "patchWorkInternal 与统一助手确认票共用同一内核（不开第二写库通道）。" },
+
+    { "id": "C-API-WORK-EXTEND-CREATE-013", "method": "POST", "path": "/v1/works/:id/extend", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "sec": "int 15-240（必填，越界 400）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "credits.extend（默认 20）", "reason": "extend" },
+      "notes": "count 固定 1；lineage={kind:'extend',parent_id}；文档只写 202 {job_id}，实际多返回两字段（§8 R-09）。" },
+
+    { "id": "C-API-WORK-COVER-CREATE-014", "method": "POST", "path": "/v1/works/:id/cover", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "persona_id": "string（必填；须本人或 is_public）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(作品/人格)", "FORBIDDEN", "BAD_REQUEST", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "credits.cover（默认 20）", "reason": "cover" },
+      "notes": "instrumental 强制 false；personas.use_count++。" },
+
+    { "id": "C-API-WORK-VARIATION-CREATE-015", "method": "POST", "path": "/v1/works/:id/variation", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "delta": "{tags?,mood?,bpm?,seed?,instrumental?}（对象必填）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "credits.adjust（默认 10，与 adjust 同价）", "reason": "adjust" },
+      "notes": "count=gen.count_default(3)；mergeDelta 基于 variationBase。" },
+
+    { "id": "C-API-WORK-ADJUST-CREATE-016", "method": "POST", "path": "/v1/works/:id/adjust", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "text": "string 非空（审核）" },
+      "response": { "status": 200, "body": { "understood": "bool", "clarify?": "string", "job_id?": "string", "credits_charged?": "int", "idempotent?": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST", "MODERATION_BLOCK", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "credits.adjust（understood=false 时不扣）", "reason": "adjust" },
+      "notes": "⚠ 成功是 200 而非 202（契约 §2 已裁决；与 generate/variation 的 202 受理语义不同）。LLM 解析走 prompts/adjust.parseAdjust。" },
+
+    { "id": "C-API-WORK-DSP-CREATE-017", "method": "POST", "path": "/v1/works/:id/dsp", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "op": "trim|fade|pitch|tempo|concat|slice", "params?": "object（trim{start_sec,end_sec} fade{in_sec,out_sec} pitch{semitones} tempo{factor} concat{srcs[]} slice{start_sec,duration}）" },
+      "response": { "status": 202, "body": { "job_id": "string" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(op 非法/无音频源)", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "credits.dsp（默认 5）", "reason": "dsp" },
+      "notes": "job type=dsp → lane ffmpeg。先扣分再 enqueue，幂等命中退款（ref_type='work'）。" },
+
+    { "id": "C-API-WORK-SEEDPACK-READ-018", "method": "GET", "path": "/v1/works/:id/seed-pack", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "id": "path" },
+      "response": { "status": 200, "body": { "seed_pack": { "prompt": "string", "tags": "string[]", "bpm": "int|null", "sec": "int", "seed": "int|null", "engine": "string(恒 'music')" } } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "engine 字段是中性名（'music'），非真引擎名——用户面纪律落点之一。" },
+
+    { "id": "C-API-WORK-REPORT-CREATE-019", "method": "POST", "path": "/v1/works/:id/report", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "reason": "string ≤500（必填，审核）" },
+      "response": { "status": 200, "body": { "ok": true } }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST", "MODERATION_BLOCK"], "credits": { "charged": 0 },
+      "notes": "落 reports(status=open)，由 /admin/moderation/reports/:id/decide 消费。" },
+
+    { "id": "C-API-INTENT-VOICE-CREATE-020", "method": "POST", "path": "/v1/intent/voice", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 M1", "limitMb": 12, "raw": true,
+      "request": { "multipart.file": "m4a|wav，≤10MB，≤60s（魔数 RIFF/ftyp + 真实时长实测）", "multipart.hint?": "string ≤300（审核）" },
+      "response": { "status": 202, "body": { "intent_id": "string" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(格式/时长/超大/无文件)", "RATE_LIMITED(10 次/60s)"], "credits": { "charged": 0 },
+      "notes": "落 uploads(kind='voice',72h TTL) + intent_cards(draft)；job type=intent_voice → lane intent(90s)。" },
+
+    { "id": "C-API-INTENT-IMAGE-CREATE-021", "method": "POST", "path": "/v1/intent/image", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 M1", "limitMb": 10, "raw": true,
+      "request": { "multipart.file": "jpg|png，≤8MB（FFD8FF / 89504E470D0A1A0A 实测）", "multipart.hint?": "string ≤300" },
+      "response": { "status": 202, "body": { "intent_id": "string" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST", "RATE_LIMITED(10 次/60s)"], "credits": { "charged": 0 }, "notes": "job type=intent_image → lane intent（VLM 场景描述 + 编译）。" },
+
+    { "id": "C-API-INTENT-TEXT-CREATE-022", "method": "POST", "path": "/v1/intent/text", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v2.19 音乐线意图卡点改（同一通道）",
+      "request": { "text": "string ≤500 非空（审核）", "hint?": "string ≤300", "intent_id?": "string（带则原地重编译并清空 answers/rounds）" },
+      "response": { "status": 202, "body": { "intent_id": "string" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(空/卡已用)", "NOT_FOUND(卡不存在或非本人)", "MODERATION_BLOCK", "RATE_LIMITED(20 次/60s)"], "credits": { "charged": 0 },
+      "notes": "job type=intent_text（只过理解不过 ASR）。" },
+
+    { "id": "C-API-INTENT-SPEECHHEALTH-READ-023", "method": "GET", "path": "/v1/health/speech", "module": "intent.js", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v3.2 端侧语音（登记但 §2 未列）",
+      "request": {},
+      "response": { "status": 200, "body": { "asr": { "ok": "bool", "reason": "string", "model_loaded?": "bool", "device?": "string(ASR /healthz 原样透传)" }, "checked_at": "iso" } },
+      "errors": ["INTERNAL"], "credits": { "charged": 0 },
+      "notes": "⚠ 设计上是公开自检端点，但把上游 ASR /healthz 的 device/model_loaded 原样透传给匿名调用方，且无 allowRate（§8 R-05）。探测缓存 15s。" },
+
+    { "id": "C-API-INTENT-CARD-READ-024", "method": "GET", "path": "/v1/intent/:id", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 intent 形状",
+      "request": { "id": "path" }, "response": { "status": 200, "body": "intent = {id,source_kind,status,mood[],scene_desc,genre_hypotheses[],vocal,duration_hint,confidence,questions[],answers[],source_text,degraded,created_at}" },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND"], "credits": { "charged": 0 }, "notes": "status='draft' 读时归一为 'clarifying'。" },
+
+    { "id": "C-API-INTENT-ANSWER-CREATE-025", "method": "POST", "path": "/v1/intent/:id/answer", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 澄清纪律",
+      "request": { "answers": "[{q_idx:int, option_idx:int}] 长度 1-2" },
+      "response": { "status": 200, "body": "intent（status 可能转 ready / 追加下轮题）" },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(已使用/空答/超 2 题/轮次≥2/选项不存在/无匹配题)"], "credits": { "charged": 0 },
+      "notes": "服务端强制：总轮次≤2、每轮≤2 题、recommended_idx 必带、confidence≥0.75 → ready；bus.intentCard 推 WSS。" },
+
+    { "id": "C-API-INTENT-CARD-UPDATE-026", "method": "PATCH", "path": "/v1/intent/:id", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v2.19（重复版本号，见 §9）",
+      "request": { "mood?": "string[]≤3(每项≤20)", "genre_hypotheses?": "string[]≤3(每项≤24)", "vocal?": "song|instrumental|unknown", "scene_desc?": "string≤300（审核）", "sec?": "int 15-240", "bpm?": "int 40-200", "count?": "int 1-4" },
+      "response": { "status": 200, "body": "intent" },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(consumed 拒改/无字段/枚举越界)", "MODERATION_BLOCK", "RATE_LIMITED(10 次/60s)"], "credits": { "charged": 0 },
+      "notes": "卡面点改唯一落库通道；不推进 status/rounds/confidence；patchIntentInternal 亦被音乐助手 set_card 复用。" },
+
+    { "id": "C-API-INTENT-GENERATE-CREATE-027", "method": "POST", "path": "/v1/intent/:id/generate", "module": "intent.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 / v2.19 参数优先级",
+      "request": { "id": "path（须 status=ready）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(未 ready / 已 consumed)"], "credits": { "charged": "credits.per_candidate * count", "reason": "gen" },
+      "notes": "参数优先级 gen_params(用户点改) > 卡面推导 > 服务端默认；count 只在用户显式点改后覆盖默认（计费交付一致，DEV-LADDER-PAY）。" },
+
+    { "id": "C-API-PERSONA-LIST-READ-028", "method": "GET", "path": "/v1/personas", "module": "personas.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": {}, "response": { "status": 200, "body": { "items": "[{id,name,is_public,use_count,created_at}] ≤100" } },
+      "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "本人 + is_public=1。" },
+
+    { "id": "C-API-PERSONA-VOICE-CREATE-029", "method": "POST", "path": "/v1/personas", "module": "personas.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2", "limitMb": 26, "raw": true,
+      "request": { "multipart.name": "string 1-30（审核）", "multipart.file": "wav|m4a|mp3，≤25MB，时长 20-40s（魔数 + 实测时长）" },
+      "response": { "status": 200, "body": { "persona": "{id,name,is_public,use_count,created_at}" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(名称/格式/时长/损坏)", "MODERATION_BLOCK"], "credits": { "charged": 0 },
+      "notes": "音频落 var/out（U.saveToOut，经 /f/* 公开读——声纹样本暴露面，见 §8 R-07）；clone_params 默认 fast/0.2。" },
+
+    { "id": "C-API-PERSONA-FROMWORK-CREATE-030", "method": "POST", "path": "/v1/works/:id/to-persona", "module": "personas.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2",
+      "request": { "name?": "string ≤30（默认作品标题）" },
+      "response": { "status": 200, "body": { "persona": "{id,name,is_public,use_count,created_at}" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(作品不存在/非本人)", "BAD_REQUEST(无音频源)", "MODERATION_BLOCK"], "credits": { "charged": 0 }, "notes": "复用 work.audio_master 作声纹（derived_from_work）。" },
+
+    { "id": "C-API-EXEC-REGISTER-CREATE-031", "method": "POST", "path": "/executor/register", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken(X-Executor-Token)"], "contract": "v1 §4",
+      "request": { "lanes": "string[]（须全在 lanes.allLanes() 内，否则 400）", "version?": "string", "executor_id?": "string（缺省服务端生成 ex_…）" },
+      "response": { "status": 200, "body": { "executor_id": "string", "poll_interval_ms": 1500, "nodes": "{kind:{engine,endpoint,status}} ×7 kinds" } },
+      "errors": ["FORBIDDEN(令牌无效)", "BAD_REQUEST(缺 lanes/未知 lane)"], "credits": { "charged": 0 },
+      "notes": "⚠ 响应下发全部内部端点（music/asr/llm/comfy/lipsync/facegate/mv_asr 的 endpoint+真引擎名）；契约 §4 只登记了 executor_id/poll_interval_ms（§8 R-08）。令牌存在仓库内公开默认值（明文值不入文，见 config.js executorToken）；MB_ENV=prod 未显式配置 MB_EXECUTOR_TOKEN 会被 core/security.js assertBootable 拒绝启动。" },
+
+    { "id": "C-API-EXEC-POLL-READ-032", "method": "POST", "path": "/executor/poll", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken"], "contract": "v1 §4",
+      "request": { "lanes": "string[]（lane 名或直接 job 类型名皆可）", "executor_id?": "body 或 X-Executor-Id 头" },
+      "response": { "status": 200, "body": { "job": "{id,type,payload,lease_expire_at}|null" } },
+      "errors": ["FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "long-poll 最多挂 25s（engine.pollHoldMs）；租约 10min；幽灵 poll 防线（socket destroyed 即放弃派发）；夜间档过滤 + night 优先出队。" },
+
+    { "id": "C-API-EXEC-PROGRESS-CREATE-033", "method": "POST", "path": "/executor/jobs/:id/progress", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken"], "contract": "v1 §4",
+      "request": { "progress": "int 0-100", "note?": "string ≤200" }, "response": { "status": 200, "body": { "ok": true } },
+      "errors": ["FORBIDDEN(令牌/租约不属本执行器)", "BAD_REQUEST(状态不允许)"], "credits": { "charged": 0 },
+      "notes": "job.status 置 running；bus.jobProgress 推 user；助手任务联动 notifyJob。" },
+
+    { "id": "C-API-EXEC-COMPLETE-CREATE-034", "method": "POST", "path": "/executor/jobs/:id/complete", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken"], "contract": "v1 §4", "limitMb": 222, "raw": true,
+      "request": { "multipart.result": "JSON 字符串（含 files:{逻辑名: 上传字段名}）", "multipart.<files…>": "任意数量产物" },
+      "response": { "status": 200, "body": "engine.complete 的返回（music:{ok,work_id…} / mv 各型 {ok:true}）" },
+      "errors": ["FORBIDDEN", "BAD_REQUEST(非 multipart / result 非 JSON / 状态不允许)"], "credits": { "charged": 0 },
+      "notes": "文件落 var/out/<yyyy-mm>/ 并回填 *_url；type 分发到 completeMusic/Transcode/Dsp/Intent/Mv*。上限 = config.engine.maxUploadMb(220)+2。" },
+
+    { "id": "C-API-EXEC-FAIL-CREATE-035", "method": "POST", "path": "/executor/jobs/:id/fail", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken"], "contract": "v1 §4",
+      "request": { "code?": "string", "message?": "string（过 util.sanitizeEngineNames）" }, "response": { "status": 200, "body": { "ok": true } },
+      "errors": ["FORBIDDEN", "BAD_REQUEST", "NOT_FOUND"], "credits": { "charged": "attempts<3 回队；attempts≥3 → failed + credits_cost 全额 refund（reason='refund',ref_type='job'）" },
+      "notes": "ladderNext 在此路径被调用（core/engine.js requeueOrFail）——当前 7 个 ladder 全为恒等函数（§5 / §8 R-02）。子 job 连带取消；transcode/mv_lipsync 永久失败有父任务定稿兜底。" },
+
+    { "id": "C-API-EXEC-HEARTBEAT-CREATE-036", "method": "POST", "path": "/executor/heartbeat", "module": "executor.js", "auth": "executor", "authCalls": ["assertToken"], "contract": "v1 §4",
+      "request": { "job_id?": "string（缺省＝该执行器全部 leased/running）" }, "response": { "status": 200, "body": { "ok": true, "lease_extended": "bool" } },
+      "errors": ["FORBIDDEN"], "credits": { "charged": 0 }, "notes": "续租 10min；租约过期由 sweep（30s）回收。" },
+
+    { "id": "C-API-MV-PROJECT-CREATE-037", "method": "POST", "path": "/v1/mv/projects", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "config.mv.enabled 或 feature_flags.mv（关→404）", "contract": "v2.1",
+      "request": { "work_id": "string（须本人非 retired）", "brief?": "string ≤2000（lex.sanitize + 审核）", "character.gender": "m|f", "character.source": "upload|ai", "character.image_id?": "upload 通道必填（kind='mv_portrait' 未过期）", "character.name?": "string ≤40", "cast_method?": "i2v_first_frame(默认)|h3_image_cast|ref2va|likeness_lora（非法即回退默认）" },
+      "response": { "status": 201, "body": { "project": "projectShape" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(作品/人像)", "BAD_REQUEST(枚举/缺 work_id/缺 image_id)", "NOT_FOUND(409：同 work 已有未结束项目)", "MODERATION_BLOCK", "RATE_LIMITED(10 次/小时)"],
+      "credits": { "charged": 0, "note": "建项目免积分；budget_credits 初始 = mv.budgetDefault(1200)" },
+      "notes": "写 mv_projects(status='casting') + mv_characters；kind 由 lyrics 是否有字判定 vocal/instrumental。" },
+
+    { "id": "C-API-MV-PORTRAIT-UPLOAD-038", "method": "POST", "path": "/v1/mv/image", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1 / v2.5", "limitMb": 10, "raw": true,
+      "request": { "multipart.consent": "'true'（PIPL 前置，缺失即 400）", "multipart.file": "jpg|png ≤8MB（魔数实测）" },
+      "response": { "status": 200, "body": { "image_id": "string" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(consent/格式/超大/无文件)", "RATE_LIMITED(20 次/小时)"], "credits": { "charged": 0 },
+      "notes": "sha256 去重复用同一 image_id；uploads(kind='mv_portrait',72h TTL)。" },
+
+    { "id": "C-API-MV-PORTRAIT-PRECHECK-039", "method": "POST", "path": "/v1/mv/image/precheck", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.22", "limitMb": 10, "raw": true,
+      "request": { "multipart.file": "jpg|png（契约另写 image_id，代码只收 file）" },
+      "response": { "status": 200, "body": { "available": "bool", "pass": "bool|null", "checks": "[{key:'resolution'|'frontal'|'lighting'|'occlusion', pass:bool|null, msg:string}]", "msg": "string|null" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(无文件)"], "credits": { "charged": 0 },
+      "notes": "facegate(:8395 /score) 不可达 → available=false、相关项 null，诚实降级绝不 500；不留存（PIPL 即时判定）。" },
+
+    { "id": "C-API-MV-CASTCONFIRM-CREATE-040", "method": "POST", "path": "/v1/mv/projects/:id/cast/confirm", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1",
+      "request": { "character_id?": "string（多角色必填）", "cast_image_url": "string 必填", "frame_sel?": "[{url,score?,sel?}] ≤32" },
+      "response": { "status": 200, "body": { "character": "characterShape（含 viewrefs/cast_images/frames/cast_method）" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(项目/角色)", "FORBIDDEN", "BAD_REQUEST(状态非 casting|scripting / 缺 cast_image_url / 多角色未指定 character_id)"], "credits": { "charged": 0 },
+      "notes": "固化 viewrefs 为身份真源；全部角色 confirmed 后 status casting→scripting。" },
+
+    { "id": "C-API-MV-PROJECT-UPDATE-041", "method": "PATCH", "path": "/v1/mv/projects/:id", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1 / v2.8.6 机检字段防伪造",
+      "request": { "ver": "int ≥1 必填（剧本版本 CAS）", "title?": "string ≤80（审核+净化）", "brief?": "string ≤2000", "script_json?": "object|null（含 shots；会重跑机审）", "queue_mode?": "normal|night", "budget_credits?": "int 0-1000000（人工提预算）" },
+      "response": { "status": 200, "body": { "project": "projectShape" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(缺 ver/无字段/budget 越界)", "STALE(409)", "MODERATION_BLOCK"], "credits": { "charged": 0 },
+      "notes": "MACHINE_KEYS 静默剥除（ai_review/sync_score/est_json/est_ver/status/…），用户不可伪造；script_json 变更才 ver++ 并 syncShotsFromScript（成片镜不动）。" },
+
+    { "id": "C-API-MV-LIST-READ-042", "method": "GET", "path": "/v1/mvs", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1",
+      "request": { "cursor?": "string", "limit?": "int 1-50（默认 20）" },
+      "response": { "status": 200, "body": { "items": "[mvShape（projectShape + poster_url + cast[] + est.shots）]", "next_cursor": "string|null" } },
+      "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "只列本人项目（无 public 分支）。" },
+
+    { "id": "C-API-MV-DETAIL-READ-043", "method": "GET", "path": "/v1/mvs/:id", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8.2 谱系",
+      "request": { "id": "path" }, "response": { "status": 200, "body": { "mv": "mvShape", "parent_work": "work|null" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(非本人)"], "credits": { "charged": 0 }, "notes": "与 GET /v1/mv/projects/:id 并存（列表卡 vs 面板）。" },
+
+    { "id": "C-API-MV-PROJECT-READ-044", "method": "GET", "path": "/v1/mv/projects/:id", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1 + v2.13.3 + v2.20 + v2.21",
+      "request": { "id": "path" },
+      "response": { "status": 200, "body": { "project": "projectShape（含 est/est_ver/budget_credits/paused/queue_mode/license/credits_cost）", "characters": "[characterShape]", "shots": "[shotShape]", "tickets": "[pending 确认票]", "assistant": { "status": "none|open|broken", "banner": "string|null", "enabled": true, "chat_enabled": "bool", "mode_hint": "chat|rule" }, "ai_review": { "engine": "string|null", "findings": "[]", "llm_findings": "[]|null", "assist": "object|null", "blocked": "bool", "checked_at": "iso|null", "has_script": "bool" } } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "顺带清扫过期票；ai_review 只读下发（PATCH 不可伪造）。" },
+
+    { "id": "C-API-MV-REPORT-READ-045", "method": "GET", "path": "/v1/mv/projects/:id/report", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.21 真聚合",
+      "request": { "id": "path" },
+      "response": { "status": 200, "body": { "align_report": { "aligned_lines": "int", "mean_abs_err_ms": "number", "within_150ms_ratio": "number" }, "sync_dist": { "count": "int", "mean": "number", "p50": "number", "p90": "number", "below_threshold": "int" }, "phrase_hit": "number", "degraded_shots": "[]", "stub": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": 0 },
+      "notes": "无任何 shot 时 stub=true（诚实空态，绝不伪造通过）；阈值取 config.mv.syncThreshold(0.6)。" },
+
+    { "id": "C-API-MV-TONE-CREATE-046", "method": "POST", "path": "/v1/mv/projects/:id/tone", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.22",
+      "request": { "id": "path" }, "response": { "status": 200, "body": { "tone_suggest": "object", "assist": "{mode:'llm+rule'|'rule', …}" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": 0, "note": "system free（只读建议，不改剧本）" },
+      "notes": "LLM 不可达 → 词典兜底，assist.mode='rule'；采纳需走 PATCH（v2.22）。" },
+
+    { "id": "C-API-MV-CANCEL-CREATE-047", "method": "POST", "path": "/v1/mv/projects/:id/cancel", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.1",
+      "request": { "id": "path" }, "response": { "status": 200, "body": { "refunded": "int" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": "退款 = min(未拍镜数×mv.shot, 账本未退净额)，恒 ≥0 且按账本不重复退" },
+      "notes": "已 canceled/failed → {refunded:0}；同时 cancelProjectTickets 取消 pending 票。" },
+
+    { "id": "C-API-MV-JOBS-CREATE-048", "method": "POST", "path": "/v1/mv/projects/:id/jobs", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8.1 / v2.16(align)",
+      "request": { "type": "cast|cast_image|cast_video|storyboard|preview|shoot|compose|align", "params?": "cast{cast_method?} / cast_video{cast_image_url} / shoot{shot_id} / storyboard 无参 / align 无参" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(项目/角色/镜/项目已结束)", "FORBIDDEN", "BAD_REQUEST(type 非法/前置不满足)", "NOT_READY(409)", "AI_REVIEW_BLOCKED(409)", "AI_REVIEW_STALE(409)", "BUDGET_EXCEEDED(402)", "CREDITS_NOT_ENOUGH", "RATE_LIMITED(30 次/分)"],
+      "credits": { "charged": "cast 20 / cast_image 10 / cast_video 20 / storyboard 5×镜数 / preview 首免否则 5 / shoot 40 / compose 10 / align 5（AC.credits().mv 覆盖 config.mv.credits）", "reason": "按 job 类型；ref_type='mv_project'", "refund": "enqueue 抛错或并发同键即时全额退" },
+      "notes": "唯一扣费落点 chargeThenEnqueue（先扣后派单 + 预算 120% 护栏 + 同参幂等 + 失败重试换 idem 后缀）。cast 按 cast_method 分流 i2v_first_frame→mv_cast、h3_image_cast→mv_cast_image。" },
+
+    { "id": "C-API-MV-PREVIEW-CREATE-049", "method": "POST", "path": "/v1/mv/projects/:id/preview", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8 / D9",
+      "request": { "id": "path（须有分镜；canceled/failed → 404）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int(0 或 5)", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "NOT_READY(409 无镜头)", "BUDGET_EXCEEDED(402)", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "每项目首次 0，重出 5" }, "notes": "job type=mv_preview → lane ffmpeg（timeout 600s per-type）。" },
+
+    { "id": "C-API-MV-BOOT-CREATE-050", "method": "POST", "path": "/v1/mv/projects/:id/boot", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8.1/§C6",
+      "request": { "est_ver": "string（报价 CAS；与 project.est_ver 不符 → 409 EST_STALE）" },
+      "response": { "status": 202, "body": { "jobs": "[job_id]", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND", "NOT_READY(409 status<previewed/无镜/无报价/已取消)", "EST_STALE(409)", "AI_REVIEW_BLOCKED(409)", "BUDGET_EXCEEDED(402)", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "40 × 未成片镜数（先校验余额 ≥ 报价总额）" },
+      "notes": "开机权在人：确认票不可执行 boot（mv.executeTicketAction 正则硬拒）。整批派单在同一事务。" },
+
+    { "id": "C-API-MV-SHOTJOBS-CREATE-051", "method": "POST", "path": "/v1/mv/shots/:id/jobs", "module": "mv.js", "auth": "user", "authCalls": ["requireUser", "timingSafeEq(X-Executor-Token) 仅 initiated_by=system 时"], "gated": "mv", "contract": "v2.8.1 / v2.4",
+      "request": { "type": "reshoot|resync", "reason?": "string ≤120（含「动作」→ LLM 运动改写）", "initiated_by?": "system（须 X-Executor-Token，否则 403）" },
+      "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
+      "errors": ["UNAUTHORIZED", "FORBIDDEN(系统补拍凭证)", "NOT_FOUND", "BAD_REQUEST(type 非法)", "NOT_READY(409)", "AI_REVIEW_BLOCKED(409)", "BUDGET_EXCEEDED(402)", "CREDITS_NOT_ENOUGH"],
+      "credits": { "charged": "user_reshoot：reshoot 40 / resync(lipsync) 20；system：0 且 origin=system_auto" },
+      "notes": "⚠ 同一 /v1 端点承载两套凭证语义（用户 + 系统），契约未登记（§8 R-11）。rerolls++、reason_history 留 20 条 chips 链。" },
+
+    { "id": "C-API-MV-SUGGEST-CREATE-052", "method": "POST", "path": "/v1/mv/projects/:id/suggest", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8.2",
+      "request": { "note": "string ≤500 必填（审核）" },
+      "response": { "status": 200, "body": { "suggest": "{id, script:{shots[]}, mode, …}" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(缺 note)", "NOT_READY(409 无剧本/LLM 不可用)", "INVALID_LLM_OUTPUT(422)", "MODERATION_BLOCK", "RATE_LIMITED(10 次/分)"], "credits": { "charged": 0 },
+      "notes": "suggest_json 挂草稿不 ver++（suggest 纪律）。" },
+
+    { "id": "C-API-MV-SUGGESTAPPLY-CREATE-053", "method": "POST", "path": "/v1/mv/projects/:id/suggest/apply", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.8.2 / v2.10",
+      "request": { "suggest_id": "string", "ver": "int（CAS）" },
+      "response": { "status": 200, "body": { "project": "projectShape" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND(建议不存在/已采纳)", "FORBIDDEN", "BAD_REQUEST(缺 ver)", "STALE(409)", "NOT_READY(409 建议不可用)", "MODERATION_BLOCK"], "credits": { "charged": 0 },
+      "notes": "采纳才 ver++ + 机审重跑 + syncShotsFromScript(resetToDraft) 把 stale 未成片镜拉回 draft。" },
+
+    { "id": "C-API-MV-CHAT-CREATE-054", "method": "POST", "path": "/v1/mv/assistant/messages", "module": "mv.js → l2mv/facade", "auth": "user", "authCalls": ["requireUser"], "gated": "mv（对话增强另受 assistant_chat 灰度）", "contract": "v2.13.1",
+      "request": { "project_id": "string", "text": "string", "chips?": "实体卡（服务端注入 args，不信 LLM 给的 id）", "session_id?": "string" },
+      "response": { "status": 200, "body": { "session_id": "string", "reply": "string", "ticket?": "{ticket_id,project_id,action,est:{credits,minutes},est_credits,est_minutes,ver,hash,status}", "meta?": "{mode,intent,fused,…}" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(白名单外工具/参数越界)", "NOT_READY(409)"], "credits": { "charged": 0, "note": "本端点不扣费；付费动作只在 tickets/confirm 落账" },
+      "notes": "注入红线 12 条正则命中 → 拒答 + 审计 injection_suspect；预算超报价 120% → fused。" },
+
+    { "id": "C-API-MV-TICKETCONFIRM-CREATE-055", "method": "POST", "path": "/v1/mv/tickets/:id/confirm", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.14",
+      "request": { "ver": "string|int", "hash": "string(hash12)" },
+      "response": { "status": 200, "body": { "executed": true, "reply": "string", "job_id?": "string", "credits_charged?": "int", "suggest_id?": "string" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN(非票主/白名单外/boot)", "NOT_READY(409 项目已取消)", "BAD_REQUEST", "STALE/hash 失配"], "credits": { "charged": "仅 mv.shot_reshoot=40；reorder/delete/suggest 票面 est 为后续制作估价，本次 0" },
+      "notes": "五连校验（hash+ver+TTL 60s+一票一次+归属）→ 唯一执行器 executeTicketAction；失败 releaseTicketReservation 并置 failed。" },
+
+    { "id": "C-API-MV-TICKETDENY-CREATE-056", "method": "POST", "path": "/v1/mv/tickets/:id/deny", "module": "mv.js", "auth": "user", "authCalls": ["requireUser"], "gated": "mv", "contract": "v2.14",
+      "request": {}, "response": { "status": 200, "body": { "ok": true } }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN(非票主)"], "credits": { "charged": 0 }, "notes": "pending → denied。" },
+
+    { "id": "C-API-MUSIC-CHAT-CREATE-057", "method": "POST", "path": "/v1/music/assistant/messages", "module": "music_assistant.js", "auth": "user", "authCalls": ["userFromRequest + 手工 UNAUTHORIZED 判定"], "gated": "config.music.assistant.enabled 或 feature_flags.music_assistant（关→404）；LLM 增强另受 assistant_chat_music", "contract": "v3.1.1",
+      "request": { "session_id?": "string", "text": "string", "chips": "实体卡（work/intent/job）" },
+      "response": { "status": 200, "body": { "session_id": "string", "reply": "string", "ticket?": "chat_ticket(scope='music')", "meta?": "object" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(白名单外/参数域)", "FORBIDDEN(实体归属)"], "credits": { "charged": 0 },
+      "notes": "7 工具白名单（l2music/governance）；花钱大门 generate 不入白名单。" },
+
+    { "id": "C-API-MUSIC-TICKETCONFIRM-CREATE-058", "method": "POST", "path": "/v1/music/tickets/:id/confirm", "module": "music_assistant.js", "auth": "user", "authCalls": ["userFromRequest + 手工判定"], "gated": "music_assistant", "contract": "v3.1.1",
+      "request": { "ver": "string|int", "hash": "string" },
+      "response": { "status": 200, "body": { "ok": true, "action": "string", "reply": "string", "job_id": "string|null", "credits_charged": "int" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN", "BAD_REQUEST(五连校验失败)", "CREDITS_NOT_ENOUGH", "INTERNAL"], "credits": { "charged": "adjust 10 / per_candidate×count / cover 20 / extend 20（确认后唯一落账点 executeMusicTicketAction）" },
+      "notes": "票已消费后执行失败不重退、不重扣，如实回执并审计 music.assistant.exec_fail。" },
+
+    { "id": "C-API-MUSIC-TICKETDENY-CREATE-059", "method": "POST", "path": "/v1/music/tickets/:id/deny", "module": "music_assistant.js", "auth": "user", "authCalls": ["userFromRequest + 手工判定"], "gated": "music_assistant", "contract": "v3.1.1",
+      "request": {}, "response": { "status": 200, "body": "gov.denyTicket 返回体" }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "FORBIDDEN"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ASSISTANT-BOOTSTRAP-READ-060", "method": "GET", "path": "/v1/assistant/bootstrap", "module": "assistant.js", "auth": "user", "authCalls": ["userFromRequest + 未登录 401"], "gated": "assistant_core（关→404）", "contract": "v4.0/v5.0",
+      "request": {},
+      "response": { "status": 200, "body": { "available": true, "mode": "rule|llm+rule", "capabilities": { "chat": true, "voice": false, "actions": "bool", "music": true, "mv": true, "llm": "bool" }, "recent_session": "sessionShape|null", "pending_tickets": "[ticket]", "tasks": "[task](≤10)", "server_time": "iso" } },
+      "errors": ["NOT_FOUND(开关关)", "UNAUTHORIZED"], "credits": { "charged": 0 },
+      "notes": "capabilities 固定 6 字段；voice 恒 false 而 v3.2 端侧语音已上线（§8 R-12）。" },
+
+    { "id": "C-API-ASSISTANT-SESSION-CREATE-061", "method": "POST", "path": "/v1/assistant/sessions", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled→userFromRequest+401"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "title?": "string ≤80", "context?": { "surface": "string", "refs": "[entity_ref ≤12（服务端属主校验）]" } },
+      "response": { "status": 201, "body": { "session": "{id,title,surface,refs,created_at,updated_at}" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED", "BAD_REQUEST(title 超长/context 非法)"], "credits": { "charged": 0 }, "notes": "统一会话：chat_sessions.scope='global'、subject_type='user'。" },
+
+    { "id": "C-API-ASSISTANT-MESSAGES-READ-062", "method": "GET", "path": "/v1/assistant/sessions/:id/messages", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "id": "path", "after_seq?": "int" }, "response": { "status": 200, "body": { "session_id": "string", "messages": "[assistant_message]", "next_seq": "int" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"], "credits": { "charged": 0 }, "notes": "只存已执行结果摘要（role='result'），不存原始模型指令。" },
+
+    { "id": "C-API-ASSISTANT-MESSAGES-CREATE-063", "method": "POST", "path": "/v1/assistant/messages", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0/v5.0",
+      "request": { "session_id?": "string", "client_msg_id": "string 必填 ≤80（幂等键）", "text": "string 1-1000", "context?": "{surface,refs[]≤12}", "feedback?": "{message_id,result:accepted|dismissed|completed}" },
+      "response": { "status": 200, "body": { "session_id": "string", "message": "assistant_message", "reply": "string", "ticket?": "assistant_ticket", "meta": "{mode,intent,tool,status,rejected?}" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED", "BAD_REQUEST(client_msg_id 缺失/超长/text 空/refs 非法)", "FORBIDDEN(白名单外工具)"], "credits": { "charged": 0, "note": "付费动作只发票，执行在 tickets/confirm" },
+      "notes": "同会话同 client_msg_id 重复提交返回首次结果，不重复执行/记账。" },
+
+    { "id": "C-API-ASSISTANT-IMAGE-CREATE-064", "method": "POST", "path": "/v1/assistant/image", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "⚠ v4.0 REST 清单未登记；v5.0 称图片引用属阶段三「本版本不实现」，但本端点已上线（§8 R-06）", "limitMb": "默认 1MB（未设 opts.limitMb ⇒ 与 imageMaxMb=8 不一致）", "raw": false,
+      "request": { "multipart.consent": "'true'（PIPL 前置）", "multipart.file": "jpg|png ≤8MB（魔数实测）" },
+      "response": { "status": 200, "body": { "image_id": "string" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED", "BAD_REQUEST(consent/格式/超大/无文件)", "RATE_LIMITED(20 次/小时)"], "credits": { "charged": 0 },
+      "notes": "sha256 去重复用同一 image_id；落 uploads(kind='assistant',72h TTL)。⚠ 路由未标 raw:true ⇒ index.js 走 JSON 解析分支，multipart 只能靠 raw 缓冲区透传，且 1MB body 上限会先于 8MB 图片限制生效（§8 R-10）。" },
+
+    { "id": "C-API-ASSISTANT-TASKS-READ-065", "method": "GET", "path": "/v1/assistant/tasks", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "limit?": "int" }, "response": { "status": 200, "body": { "items": "[{kind:'job',id,title,status,progress,updated_at,result_work_id?,credits_cost}]" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ASSISTANT-TICKETS-READ-066", "method": "GET", "path": "/v1/assistant/tickets", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "limit?": "int" }, "response": { "status": 200, "body": { "items": "[assistant_ticket]" } }, "errors": ["NOT_FOUND", "UNAUTHORIZED"], "credits": { "charged": 0 },
+      "notes": "hash/ver 只返回给票主（core.ticketShape）。" },
+
+    { "id": "C-API-ASSISTANT-TICKETCONFIRM-CREATE-067", "method": "POST", "path": "/v1/assistant/tickets/:id/confirm", "module": "assistant.js → l2assistant/facade.confirm", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core；付费动作另受 assistant_actions", "contract": "v4.0/v5.0",
+      "request": { "ver": "string|int", "hash": "string" },
+      "response": { "status": 200, "body": { "ok": true, "ticket": "assistant_ticket", "action": "string", "reply": "string", "job_id?": "string", "credits_charged?": "int" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN(非票主/闸门关/白名单外)", "BAD_REQUEST(五连校验失败)", "CREDITS_NOT_ENOUGH"], "credits": { "charged": "复用唯一扣费点：executeMusicTicketAction / mv.executeTicketAction" },
+      "notes": "重复 confirm 返回同一 ticket/job，不重派不重复扣费。" },
+
+    { "id": "C-API-ASSISTANT-TICKETDENY-CREATE-068", "method": "POST", "path": "/v1/assistant/tickets/:id/deny", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": {}, "response": { "status": 200, "body": { "ok": true, "ticket": "assistant_ticket" } }, "errors": ["NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ASSISTANT-EVENTS-READ-069", "method": "GET", "path": "/v1/assistant/events", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "after_seq?": "int", "limit?": "int(≤100)" }, "response": { "status": 200, "body": { "items": "[{id,seq,type,payload,created_at}]", "next_seq": "int" } },
+      "errors": ["NOT_FOUND", "UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "assistant_events(user_id,seq) 唯一索引；与业务写同事务落库，供断线补发。" },
+
+    { "id": "C-API-ASSISTANT-FEEDBACK-CREATE-070", "method": "POST", "path": "/v1/assistant/feedback", "module": "assistant.js", "auth": "user", "authCalls": ["requireEnabled"], "gated": "assistant_core", "contract": "v4.0",
+      "request": { "message_id": "string", "result": "accepted|dismissed|completed" }, "response": { "status": 200, "body": "core.recordFeedback 返回体" }, "errors": ["NOT_FOUND", "UNAUTHORIZED", "BAD_REQUEST"], "credits": { "charged": 0 }, "notes": "只进 assistant_metrics，不改任务结果。" },
+
+    { "id": "C-API-ADMIN-ASSISTANTMETRICS-READ-071", "method": "GET", "path": "/v1/admin/assistant/metrics", "module": "assistant.js", "auth": "admin", "authCalls": ["requireAdmin(admins.token)"], "contract": "v4.0（挂在 /v1 前缀下的管理端点，命名空间例外）",
+      "request": { "days?": "int" }, "response": { "status": 200, "body": "core.assistantMetrics(days)（聚合计数，不含用户原文）" }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "⚠ 唯一 /v1/* 下的 admin 路由，与 /admin/* 黑洞并存（§8 R-03）。" },
+
+    { "id": "C-API-ADMIN-LOGIN-CREATE-072", "method": "POST", "path": "/admin/login", "module": "admin.js", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "无（v1–v5.0 均未登记 /admin）",
+      "request": { "username": "string", "password": "string" },
+      "response": { "status": 200, "body": { "token": "string(at_…)", "admin": { "id": "string", "username": "string" } } },
+      "errors": ["UNAUTHORIZED(用户名或密码错误)", "RATE_LIMITED(同 IP 5 分钟 10 次)"], "credits": { "charged": 0 },
+      "notes": "2026-11-26 加固（HEAD 复核，core/security.js + api/admin.js）：口令 scrypt 加盐存储（旧无盐 sha256 行登录成功后自动升级）、同 IP 5 分钟 10 次限流、令牌 12h 过期、明文口令不再进日志。剩余风险：①首启未设 MB_ADMIN_USERNAME/PASSWORD ⇒ 种子内置默认账号（口令值不入文），须运维轮换；②token 仍明文存 admins.token 单列，新登录顶掉旧 token，无独立登出接口（§8 R-03）。" },
+
+    { "id": "C-API-ADMIN-NODELIST-READ-073", "method": "GET", "path": "/admin/model-nodes", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无（§8 R-03 黑洞）",
+      "request": { "kind?": "music|asr|llm|comfy|lipsync|facegate|mv_asr", "enabled?": "bool", "limit?": "int 1-1000", "offset?": "int" },
+      "response": { "status": 200, "body": { "items": "[{id,kind,engine,endpoint,label,note,source,priority,weight,enabled,status,last_probe_at,last_probe_msg,is_default,locked}]", "total": "int" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "含内网端点与真引擎名 ⇒ 管理员面数据，禁止下发 App。" },
+
+    { "id": "C-API-ADMIN-NODECREATE-CREATE-074", "method": "POST", "path": "/admin/model-nodes", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "kind": "KINDS 之一", "endpoint": "http(s)://…", "engine?": "string(缺省=kind)", "label?": "≤80", "note?": "≤300", "priority?": "int 0-100000", "weight?": "number 0.01-100000", "enabled?": "bool" },
+      "response": { "status": 201, "body": "nodeView" }, "errors": ["UNAUTHORIZED", "BAD_REQUEST(kind/endpoint 非法)"], "credits": { "charged": 0 },
+      "notes": "⚠ SSRF 面：endpoint 可为任意 URL，probe 会以服务端身份发起 GET（§8 R-13）。" },
+
+    { "id": "C-API-ADMIN-NODEHEALTH-READ-075", "method": "GET", "path": "/admin/model-nodes/health", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "items": "[{kind,node{…},default{node_id,engine,locked},stale}]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "stale = last_probe_at 距今 >30s。" },
+
+    { "id": "C-API-ADMIN-NODEPROBEALL-CREATE-076", "method": "POST", "path": "/admin/model-nodes/probe-all", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "total": "int", "healthy": "int", "reachable": "int", "items": "[{found,id,engine,endpoint,healthy,status:'healthy'|'degraded'|'unreachable',msg,probed_at}]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 },
+      "notes": "三态判读：/health|/healthz|/models|/ 依序探测；scaffold 或权重未就绪 → degraded，不冒充 healthy。" },
+
+    { "id": "C-API-ADMIN-NODEPROBE-CREATE-077", "method": "POST", "path": "/admin/model-nodes/:id/probe", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "id": "path" }, "response": { "status": 200, "body": "{found,id,engine,endpoint,healthy,status,msg,probed_at}" }, "errors": ["UNAUTHORIZED", "NOT_FOUND"], "credits": { "charged": 0 }, "notes": "回写 model_nodes.status/last_probe_*。" },
+
+    { "id": "C-API-ADMIN-NODEUPDATE-UPDATE-078", "method": "PATCH", "path": "/admin/model-nodes/:id", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "kind?": "KINDS 之一", "engine?": "string", "endpoint?": "http(s)", "label?": "≤80", "note?": "≤300", "priority?": "int", "weight?": "number", "enabled?": "bool" },
+      "response": { "status": 200, "body": "nodeView" }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(无可更新字段/枚举非法)"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ADMIN-NODEDELETE-DELETE-079", "method": "DELETE", "path": "/admin/model-nodes/:id", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "id": "path" }, "response": { "status": 200, "body": { "ok": true } }, "errors": ["UNAUTHORIZED", "NOT_FOUND"], "credits": { "charged": 0 },
+      "notes": "默认指向被删节点时重绑该 kind 首个可用节点；无可用则按 NODE_META 重建种子。" },
+
+    { "id": "C-API-ADMIN-ROUTING-READ-080", "method": "GET", "path": "/admin/config/routing", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "items": "{kind:{kind,node_id,engine,endpoint,locked}}" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "与 GET /v1/app/config 的 routing 子集同源（后者匿名、且泄露 engine）。" },
+
+    { "id": "C-API-ADMIN-ROUTING-SET-081", "method": "POST", "path": "/admin/config/routing", "module": "modelnodes.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "<kind>|routing.<kind>": "{node_id?|id?, locked?}" }, "response": { "status": 200, "body": { "ok": true, "changed": "[kind]" } },
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST(kind 非法/节点不存在/无可用节点/未提供任何配置)"], "credits": { "charged": 0 },
+      "notes": "locked=1 ⇒ APK 自选 model 被忽略，强制默认节点。" },
+
+    { "id": "C-API-ADMIN-CLIENTCONFIG-READ-082", "method": "GET", "path": "/v1/app/config", "module": "appconfig.js", "auth": "public", "authCalls": ["allowRate(appcfg:ip,60/60s)", "userFromRequest(仅用于灰度分桶，不拒绝匿名)"], "unauthenticated": true, "contract": "无（v3.2 只登记 style_options；v4/v5 未登记本端点）",
+      "request": {},
+      "response": { "status": 200, "body": { "config_version": "string(sha256 前 8 位)", "credits": "积分表全量（含 mv 子表）", "routing": "{music|llm|mv:{engine,locked,node_id}}", "model_options": "{music:[{id,label}]|null}", "features": "{8 个开关键位 → bool}", "version_policy": "object", "announcement": "object", "moderation": { "enabled": "bool" }, "style_options": "词典目录" } },
+      "errors": ["RATE_LIMITED"], "credits": { "charged": 0 },
+      "notes": "⚠ 无任何鉴权即下发：①真引擎名 `ace-step-1.5` / `qwen38-fp4` / `comfyui`（core/modelnodes.routingForApp 的 engine 字段）；②全量积分表；③8 个功能开关及其灰度命中结果。直接违反 CONTRACTS §0「任何引擎型号名不得出现在面向用户的字符串」。util.sanitizeEngineNames 未作用于该响应，且其黑名单不含 comfy/comfyui（§8 R-01）。" },
+
+    { "id": "C-API-ADMIN-MODWORDS-READ-083", "method": "GET", "path": "/admin/moderation/words", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "text": "string(词库全文)", "stats": "{plain,regex}", "enabled": "bool" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "词库文件 var/config/moderation_words.txt。" },
+
+    { "id": "C-API-ADMIN-MODWORDS-SET-084", "method": "POST", "path": "/admin/moderation/words", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "text": "string ≤200000", "enabled?": "bool" }, "response": { "status": 200, "body": { "ok": true, "stats": "object", "enabled": "bool" } }, "errors": ["UNAUTHORIZED", "BAD_REQUEST(缺 text/过大)"], "credits": { "charged": 0 }, "notes": "写盘 + rules.reload() 热生效。" },
+
+    { "id": "C-API-ADMIN-REPORTS-READ-085", "method": "GET", "path": "/admin/moderation/reports", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "status?": "open|dismissed|actioned|restored", "limit?": "int 1-500", "offset?": "int" },
+      "response": { "status": 200, "body": { "items": "[{id,work_id,reason,status,created_at,reporter{id,nickname},work{id,title,visibility,status}}]", "total": "int", "open": "int" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ADMIN-REPORTDECIDE-SET-086", "method": "POST", "path": "/admin/moderation/reports/:id/decide", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "action": "dismiss|takedown|restore", "note?": "string" }, "response": { "status": 200, "body": { "ok": true, "action": "string" } },
+      "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST(action 非法)"], "credits": { "charged": 0 }, "notes": "takedown→works.visibility='private'；restore→'public'。" },
+
+    { "id": "C-API-ADMIN-CREDITADJUST-SET-087", "method": "POST", "path": "/admin/credits/adjust", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "user_id": "string", "delta": "int（|delta|≤100000 且 ≠0）", "reason?": "string ≤60（落账 reason='admin_adjust:…'）" },
+      "response": { "status": 200, "body": { "ok": true, "balance_after": "int" } }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST"], "credits": { "charged": 0 },
+      "notes": "直接 appendLedger（绕过 balance 下限校验 ⇒ 可把余额调成负数，§8 R-14）。" },
+
+    { "id": "C-API-ADMIN-LEDGER-READ-088", "method": "GET", "path": "/admin/credits/ledger", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "user_id?": "string", "reason?": "string(LIKE)", "limit?": "int 1-500", "offset?": "int" }, "response": { "status": 200, "body": { "items": "[credit_ledger 行]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ADMIN-USERSTATUS-SET-089", "method": "POST", "path": "/admin/users/:id/status", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "status": "active|disabled" }, "response": { "status": 200, "body": { "ok": true, "status": "string" } }, "errors": ["UNAUTHORIZED", "NOT_FOUND", "BAD_REQUEST"], "credits": { "charged": 0 }, "notes": "disabled 立即把该用户全部 sessions 置过期（踢下线）。" },
+
+    { "id": "C-API-ADMIN-USERDETAIL-READ-090", "method": "GET", "path": "/admin/users/:id", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "id": "path" }, "response": { "status": 200, "body": { "user": "{id,nickname,phone_masked,is_guest,status,created_at,balance}", "counts": "{works,mv_projects,personas}", "works": "[≤20]", "jobs": "[≤20]", "ledger": "[≤20]" } }, "errors": ["UNAUTHORIZED", "NOT_FOUND"], "credits": { "charged": 0 }, "notes": "手机号只出 maskPhone。" },
+
+    { "id": "C-API-ADMIN-USERLIST-READ-091", "method": "GET", "path": "/admin/users", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "q?": "string(命中 id/phone/nickname LIKE)", "status?": "string", "limit?": "int 1-500", "offset?": "int" },
+      "response": { "status": 200, "body": { "items": "[{id,nickname,phone_masked,is_guest,status,created_at,works_count,balance}]", "total": "int" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ADMIN-AUDIT-READ-092", "method": "GET", "path": "/admin/audit", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "kind?": "string(LIKE)", "limit?": "int 1-500", "offset?": "int" }, "response": { "status": 200, "body": { "items": "[{id,kind,obj,created_at}]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "audit 表由 store.log 全量写入（含 credit 明细）。" },
+
+    { "id": "C-API-ADMIN-CONFIGGET-READ-093", "method": "GET", "path": "/admin/config/app", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "version": "int", "blob": "object(定价/版本策略/公告/审核开关)", "defaults": "object(defaultBlob)" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "§1 积分运行时真源在此（app_config.blob），config.js 只是 defaultBlob 的种子。" },
+
+    { "id": "C-API-ADMIN-CONFIGSET-SET-094", "method": "POST", "path": "/admin/config/app", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "patch|<blob 顶层键>": "object 非空（credits / version_policy / announcement / moderation_enabled）", "reason?": "string" },
+      "response": { "status": 200, "body": { "ok": true, "version": "int", "blob": "object" } }, "errors": ["UNAUTHORIZED", "BAD_REQUEST(缺 patch/update_mode 非法/download_url 非 http(s))"], "credits": { "charged": 0 },
+      "notes": "⚠ 改这里即改全站计费（含 /v1/app/config 下发），且无审批/双确认——计费诚信风险面（§8 R-15）。" },
+
+    { "id": "C-API-ADMIN-CONFIGHISTORY-READ-095", "method": "GET", "path": "/admin/config/history", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "limit?": "int" }, "response": { "status": 200, "body": { "items": "[app_config 快照]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "" },
+
+    { "id": "C-API-ADMIN-CONFIGROLLBACK-SET-096", "method": "POST", "path": "/admin/config/rollback", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "version": "int >0" }, "response": { "status": 200, "body": { "ok": true, "version": "int", "rolled_back_to": "int", "blob": "object" } }, "errors": ["UNAUTHORIZED", "BAD_REQUEST"], "credits": { "charged": 0 }, "notes": "回滚生成新版本号（非破坏式）。" },
+
+    { "id": "C-API-ADMIN-FEATURES-READ-097", "method": "GET", "path": "/admin/config/features", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": {}, "response": { "status": 200, "body": { "items": "[{key,enabled,grayscale}]（8 个 FLAG_KEYS）" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "键位：mv/dsp/persona/assistant_chat/music_assistant/assistant_chat_music/assistant_core/assistant_actions。" },
+
+    { "id": "C-API-ADMIN-FEATURES-SET-098", "method": "POST", "path": "/admin/config/features", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "key": "FLAG_KEYS 之一", "enabled?": "bool", "grayscale?": "number 0-1" }, "response": { "status": 200, "body": { "ok": true, "flag": "{key,enabled,grayscale}" } },
+      "errors": ["UNAUTHORIZED", "⚠ 未知 key ⇒ 500 INTERNAL（core/appconfig.js setFlag 以 `throw U.ApiError(...)` 少写 new 抛 TypeError；应 400 BAD_REQUEST，§8 R-16）"], "credits": { "charged": 0 }, "notes": "灰度按 sha256(userId:key) 分桶；无 userId 时需 grayscale≥1。" },
+
+    { "id": "C-API-ADMIN-OPSEVENTS-READ-099", "method": "GET", "path": "/admin/config/events", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "kind?": "string", "limit?": "int" }, "response": { "status": 200, "body": { "items": "[ops_events 行]" } }, "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "配置/开关变更留痕（before/after）。" },
+
+    { "id": "C-API-ADMIN-METRICS-READ-100", "method": "GET", "path": "/admin/metrics/overview", "module": "admin_ops.js", "auth": "admin", "authCalls": ["requireAdmin"], "contract": "无",
+      "request": { "range?": "int 1-90（默认 7）" },
+      "response": { "status": 200, "body": { "range_days": "int", "generated_at": "iso", "users": "{total,new,bound_phone,dau,mau}", "works": "{total,new,public}", "jobs": "{total,done,failed,success_rate,by_type[],error_top[],queue{queued,leased,running}}", "credits": "{granted,consumed,net}", "mv": { "projects": "int" }, "moderation": { "reports_open": "int" }, "executors": "[{id,lanes,version,last_seen,online}]", "storage": "{files,bytes}", "flags": "[…]", "config_version": "int" } },
+      "errors": ["UNAUTHORIZED"], "credits": { "charged": 0 }, "notes": "30s 内存缓存；error_top 过 sanitizeEngineNames。遍历 var/out 统计存储，可能拖慢请求。" },
+
+    { "id": "C-API-CORE-HEALTH-READ-101", "method": "GET", "path": "/healthz", "module": "index.js(builtin)", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v2.18 观测（§0/§11 最小可观测集）",
+      "request": {}, "response": { "status": 200, "body": { "ok": true, "ts": "iso", "online": "int(WSS 在线用户数)", "mv_metrics?": "core/metrics.snapshot()（仅 mv.enabled 时）",
+          "audit_failures": "int(审计写入失败计数，core/store.getAuditFailures)",
+          "credit_violations": "int(账本 Σdelta==balance 巡检破损累计次数)" } },
+      "errors": [], "credits": { "charged": 0 }, "notes": "观测失败不阻断健康检查。" },
+
+    { "id": "C-API-CORE-STATIC-READ-102", "method": "GET", "path": "/f/*", "module": "index.js(builtin)", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "v1 §2 脚注",
+      "request": { "路径": "var/out 相对路径；拒绝 NUL/绝对路径/..（400）；越界 out 目录 400" },
+      "response": { "status": "200|400|404", "body": "文件流；cache-control: public,max-age=31536000,immutable" },
+      "errors": ["BAD_REQUEST(路径无效)", "NOT_FOUND"], "credits": { "charged": 0 },
+      "notes": "文件名＝不可猜 id 是唯一防线（无签名 URL、无 Referer 校验）；产物永久公开（含 persona 声纹 wav、MV 成片、候选音频）。生产由 Nginx 接管。" },
+
+    { "id": "C-API-ADMIN-CONSOLE-READ-103", "method": "GET", "path": "/admin", "module": "index.js(builtin)", "auth": "public", "authCalls": [], "unauthenticated": true, "contract": "无（§8 R-03）", "pathAliases": ["/admin/"],
+      "request": {}, "response": { "status": "200|404", "body": "src/server/admin/index.html 单文件 SPA；cache-control: no-store" }, "errors": ["NOT_FOUND(页面缺失)"], "credits": { "charged": 0 },
+      "notes": "⚠ 无鉴权即返回运营控制台（含全部管理接口表单）。登录侧已加固（限流/scrypt/令牌过期），但控制台页面本身仍可匿名取得，且内置默认账号未轮换时可直接进入 ⇒ 建议本路由纳入 requireAdmin 或 IP 白名单（§8 R-03）。" },
+
+    { "id": "C-API-CORE-WSS-CONNECT-104", "method": "GET", "upgrade": true, "path": "/ws?token=<access_token>", "module": "index.js(builtin)", "auth": "user", "authCalls": ["userFromRequest(仅 query token)"], "contract": "v1 §3 / v2.2 / v2.14.2 / v4.0 WSS",
+      "request": { "token": "query 参数（不接受 Authorization 头）；非 /ws 前缀直接 destroy；无 key/非 websocket 即 destroy" },
+      "response": { "status": "101|401", "body": "文本帧 JSON，服务端单向下发" },
+      "errors": ["401(握手前拒绝)"], "credits": { "charged": 0 },
+      "notes": "手写最小 RFC6455：客户端帧必须掩码、单帧 ≤1MB、支持分片/ping-pong/close。已实现事件：job.progress / job.done（成功与失败共用 type，靠 error 字段区分）/ intent.card / credit.delta / mv.progress / assistant.event —— 第 6 种 assistant.event 未登记进 §3（§8 R-17）。客户端消息只认 {type:'ping'}。" }
+  ]
+}

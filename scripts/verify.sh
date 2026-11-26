@@ -87,6 +87,13 @@ if out=$(node scripts/verify_routes.mjs --with-contract 2>&1); then
 else
   printf '%s\n' "$out" | sed 's/^/  /'; FAILS=$((FAILS + 1))
 fi
+# 机器可读契约清单双向对账（P1-3）：实现 ↔ contract/routes.json 必须互相覆盖。
+# 计划里写的是可选 --with-contract，这里直接常开：静态检查极便宜，而"单向对账"正是契约烂掉的开始。
+if out=$(node scripts/verify_contract.mjs 2>&1); then
+  printf '%s\n' "$out" | grep -v Experimental | sed 's/^/  /'
+else
+  printf '%s\n' "$out" | grep -v Experimental | sed 's/^/  /'; FAILS=$((FAILS + 1))
+fi
 
 # —— 4. 起服冒烟：真的把 server 拉起来，/healthz 必须 200（挡住 require 期崩溃）——
 step "4/5 起服冒烟（: $PORT）"
@@ -106,11 +113,10 @@ if [ -n "$alive" ]; then
   body=$(curl -s -m 3 "http://127.0.0.1:$PORT/healthz")
   printf '%s\n' "$body" | grep -q '"ok":true' && ok "healthz 载荷正确：$body" || bad "healthz 载荷异常：$body"
   # 安全红线：日志里不得出现明文口令/固定验证码
-  # 已知待修（P0-3）：api/admin.js:14 默认口令 + :21 明文写日志。修好后把 TODO_P03 置 1 变成硬失败。
-  TODO_P03=${TODO_P03:-0}
+  # P0-3 已修并由 V28 验收套件钉住（prod fail-closed / 限流 / 令牌过期 / 日志无明文凭据）：
+  # 这里默认**硬失败**，不再留 TODO 软放行 —— 留软放行等于给回归开门。
   if grep -qE 'admin1234|888888' "$VARROOT/server.log"; then
-    if [ "$TODO_P03" = "1" ]; then bad "启动日志泄露明文凭据（见 $VARROOT/server.log）";
-    else printf '  \033[33m!\033[0m 启动日志泄露明文凭据（已知 P0-3 未修，TODO_P03=1 可转为硬失败）\n'; fi
+    bad "启动日志泄露明文凭据（见 $VARROOT/server.log；P0-3 已修，出现即回归，见 test/acceptance/v28_boot_security.test.js）"
   else
     ok "启动日志无明文凭据"
   fi

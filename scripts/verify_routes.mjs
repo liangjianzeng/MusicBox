@@ -103,7 +103,9 @@ if (process.argv.includes('--with-contract')) {
   else {
     const list = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
     // index.js 内置路由（/healthz、/f/*、/admin、/ws）不走 api/*/routes 数组，注册在 handle() 里 —— 对账需计入
-    for (const b of ['/healthz', '/f/*', '/admin', '/admin/', '/ws', '/ws?token=<access_token>']) srvPaths.add(norm(b));
+    // /healthz.online 也是 handle() 里的内置观测端点（此前只在 contract/routes.json 补了声明，
+    // 这里不补白名单就会报"契约声明了 server 不存在的路由"—— 两处内置清单必须同步）
+    for (const b of ['/healthz', '/healthz.online', '/f/*', '/admin', '/admin/', '/ws', '/ws?token=<access_token>']) srvPaths.add(norm(b));
     const mPaths = new Set(list.routes.map((r) => norm(r.path)));
     for (const r of routes) if (!mPaths.has(norm(r.path))) errors.push(`server 路由未登记进契约清单：${r.method} ${r.path}`);
     for (const r of list.routes) if (!String(r.path).split('|').some((seg) => srvPaths.has(norm(seg.trim())))) errors.push(`契约清单声明了 server 不存在的路由：${r.method} ${r.path}`);
