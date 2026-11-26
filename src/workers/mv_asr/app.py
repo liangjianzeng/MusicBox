@@ -4,14 +4,30 @@ import threading
 import wave
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
+
+# —— 内部令牌（2026-11-26 抢救 P0-4）：worker 默认只监听回环；跨机部署必须设 MB_WORKER_TOKEN ——
+WORKER_TOKEN = os.environ.get("MB_WORKER_TOKEN", "").strip()
+
+
+def _require_token(x_worker_token: str = Header(default="")):
+    """纵深防御：即便被端口转发/反向代理暴露到局域网，未带令牌也无法调用推理口。"""
+    if WORKER_TOKEN and (x_worker_token or "").strip() != WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="WORKER_UNAUTHORIZED")
+    return True
+
+
+def _default_roots():
+    """可信素材根：去掉 /opt/musicbox 与 E:/Work 历史路径，改为当前部署可解析的位置。"""
+    return ",".join([str(Path.home() / "MusicBox" / "var"), str(Path("var").resolve())])
+
 
 MODEL_ID = os.environ.get("MB_MV_ASR_MODEL", "iic/SenseVoiceSmall")
 DEVICE = os.environ.get("MB_MV_ASR_DEVICE", "cpu")
 PORT = int(os.environ.get("MB_MV_ASR_PORT", "8391"))
 ROOTS = [Path(p).resolve() for p in os.environ.get(
-    "MB_MV_ASR_ROOTS", "/opt/musicbox/var,E:/Work/MusicBox/var"
+    "MB_MV_ASR_ROOTS", _default_roots()
 ).split(",") if p.strip()]
 TAG_RE = re.compile(r"<\|([^|>]+)\|>")
 EMOTIONS = {"HAPPY", "SAD", "ANGRY", "NEUTRAL", "FEARED", "DISGUSTED", "SURPRISED", "EMO_UNKNOWN"}
@@ -19,6 +35,23 @@ EVENTS = {"BGM", "APPLAUSE", "LAUGHTER", "CRY", "COUGH", "BREATH", "SPEECH", "EV
 MAX_AUDIO_BYTES = int(os.environ.get("MB_MV_ASR_MAX_BYTES", str(20 * 1024 * 1024)))
 
 app = FastAPI(title="musicbox-mv-asr", version="1.0.0")
+
+# —— 内部令牌（2026-11-26 抢救 P0-4）：worker 默认只监听回环；跨机部署必须设 MB_WORKER_TOKEN ——
+WORKER_TOKEN = os.environ.get("MB_WORKER_TOKEN", "").strip()
+
+
+def _require_token(x_worker_token: str = Header(default="")):
+    """纵深防御：即便被端口转发/反向代理暴露到局域网，未带令牌也无法调用推理口。"""
+    if WORKER_TOKEN and (x_worker_token or "").strip() != WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="WORKER_UNAUTHORIZED")
+    return True
+
+
+def _default_roots():
+    """可信素材根：去掉 /opt/musicbox 与 E:/Work 历史路径，改为当前部署可解析的位置。"""
+    home_var = str(Path.home() / "MusicBox" / "var")
+    return ",".join([home_var, str(Path("var").resolve())])
+
 _model = None
 _lock = threading.Lock()
 
@@ -92,7 +125,7 @@ def healthz():
 
 
 @app.post("/asr")
-def asr(req: AsrReq):
+def asr(req: AsrReq, _auth: bool = Depends(_require_token)):
     path = local_file(req.path)
     model = _load_model()
     try:

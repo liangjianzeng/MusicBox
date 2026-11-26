@@ -12,7 +12,7 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const net = require('../lib/net.js');
-const { resolveSrc } = require('../lib/paths.js');
+const { resolveSrc, resolvePublic } = require('../lib/paths.js');
 const comfy = require('../lib/comfy.js');
 const { probe } = require('./ffmpeg.js');
 
@@ -80,7 +80,10 @@ async function cachedStep(ctx, kind, value, suffix, produce) {
   const dir = cacheDir(ctx); fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, stageKey(kind, value) + suffix);
   if (fs.existsSync(out) && fs.statSync(out).size > 0) return { abs: out, reused: true };
-  const partial = out + '.part-' + process.pid;
+  // 原子写：先写 partial 再 rename。partial 须把 .part-<pid> 放在扩展名之前（<hash>.part-<pid>.mp4），
+  // 否则 ffmpeg 按输出扩展名自动识别 muxer 时会因 .part-<pid> 后缀无法识别格式而 FFMPEG_FAILED（见 #mv-compose）。
+  const ext = path.extname(out);
+  const partial = ext ? out.slice(0, out.length - ext.length) + '.part-' + process.pid + ext : out + '.part-' + process.pid;
   try {
     fs.rmSync(partial, { force: true });
     await produce(partial);
@@ -428,13 +431,21 @@ async function mockPng(cfg, ctx, abs, w, h, label) {
   return { stub: 'png-synthetic' };
 }
 
+// worker 内部令牌（2026-11-26 抢救 P0-4）：worker 侧设置 MB_WORKER_TOKEN 后，推理口只认带令牌的调用
+function workerHeaders(cfg) {
+  const h = { 'content-type': 'application/json' };
+  const t = (cfg && cfg.workerToken) || process.env.MB_WORKER_TOKEN || '';
+  if (t) h['x-worker-token'] = t;
+  return h;
+}
+
 // ---------- facegate 客户端（真 mode，观测失败不致命） ----------
 async function facegateScore(cfg, ctx, imgAbs, refFile) {
   const url = String(cfg.facegateUrl || 'http://127.0.0.1:8395').replace(/\/+$/, '');
   try {
     const b64 = fs.readFileSync(imgAbs).toString('base64');
     const res = await net.request('POST', url + '/score', {
-      headers: { 'content-type': 'application/json' },
+      headers: workerHeaders(cfg),
       body: JSON.stringify({ img_b64: b64, ref_file: refFile || undefined }),
       timeoutMs: 15000,
     });
@@ -453,7 +464,7 @@ async function facegateSwap(cfg, ctx, imgAbs, refFile) {
   try {
     const b64 = fs.readFileSync(imgAbs).toString('base64');
     const res = await net.request('POST', url + '/swap', {
-      headers: { 'content-type': 'application/json' },
+      headers: workerHeaders(cfg),
       body: JSON.stringify({ img_b64: b64, ref_file: refFile || undefined }),
       timeoutMs: 30000,
     });
@@ -501,6 +512,25 @@ async function mockCastImage(job, ctx) {
   }
   return {
     result: { files: { cast_image: 'cast_image_1' }, seed_base: seedBase, face_scores: scores, mock: true, meta: { stub: stubs[0] || null } },
+    files,
+  };
+}
+async function mockCastI2V(job, ctx) {
+  await ctx.progress(10, '定妆视频生成中（方案一/mock）');
+  const size = engineSize(job.payload || {}, ctx.cfg, CAST_VID);
+  const abs = path.join(ctx.workDir, 'cast_video.mp4');
+  const st = await mockMp4(ctx.cfg, ctx, abs, size.w, size.h, CAST_VID.sec, 'cast_video');
+  await ctx.progress(60, '抽帧中（mock）');
+  const files = [{ field: 'cast_video', filename: 'cast_video.mp4', abs }];
+  const frames = [];
+  for (let i = 1; i <= CAST_VID.frames; i++) {
+    const fp = path.join(ctx.workDir, 'frame_' + String(i).padStart(2, '0') + '.png');
+    fs.writeFileSync(fp, synthPngBuf(184, 328, i * 104729));
+    files.push({ field: 'frame_' + i, filename: 'frame_' + String(i).padStart(2, '0') + '.png', abs: fp });
+    frames.push({ file: 'frame_' + i, score: null, pass: true });
+  }
+  return {
+    result: { files: { cast_video: 'cast_video' }, duration_sec: CAST_VID.sec, frames, mock: true, meta: { stub: st.stub } },
     files,
   };
 }
@@ -645,17 +675,18 @@ async function realCastImage(job, ctx) {
   return { result: { files: map, seed_base: seedBase, face_scores: faceScores, meta: { comfy: true } }, files };
 }
 
-// mv_cast_video：h3-fl2va 定妆视频（736×1312·124f·turbo4）→ ffmpeg 抽 ~13 帧 → facegate 逐帧
-async function realCastVideo(job, ctx) {
+// 定妆 I2V 核心（方案一 / 遗留分支共用）：首帧源 → h3-fl2va I2V → ffmpeg 抽 ~13 帧 → facegate 逐帧对照
+//   firstSrcAbs = 首帧源文件（方案一=女主原图；遗留=定妆候选照）
+//   refSrc      = facegate 对照脸（方案一=女主原图；遗留=定妆候选照）
+//   motionPrompt= 转头/换景指令（方案一用 desc；遗留用 motion）
+async function castI2VCore(firstSrcAbs, refSrc, job, ctx, motionPrompt) {
   const p = job.payload || {};
   if (!(await haveFfmpeg(ctx.cfg))) throw laneErr('FFMPEG_MISSING', '本机尚未安装视频处理组件，定妆抽帧不可用');
   const size = engineSize(p, ctx.cfg, CAST_VID);
-  const castAbs = await resolveSrc(p.cast_image, ctx);
-  if (!castAbs) throw laneErr('SRC_MISSING', '定妆照源文件不存在');
-  const first = await comfy.uploadAsset(ctx.cfg, fs.readFileSync(castAbs), path.basename(castAbs));
+  const first = await comfy.uploadAsset(ctx.cfg, fs.readFileSync(firstSrcAbs), path.basename(firstSrcAbs));
   await ctx.progress(15, '定妆视频生成中（引擎）');
   const r = await comfySubmit(ctx.cfg, ctx, 'h3-fl2va', {
-    FIRST_FRAME: first, PROMPT: String(p.motion || 'natural head turn, subtle expression').slice(0, 900),
+    FIRST_FRAME: first, PROMPT: String(motionPrompt || 'natural head turn, subtle expression').slice(0, 900),
     WIDTH: size.w, HEIGHT: size.h, LENGTH: 124, STEPS: 4, SEED: seedFor(p, ctx.cfg, 0),
   }, TMO.vidspark);
   const vidAbs = path.join(ctx.workDir, 'cast_video' + r.ext);
@@ -664,13 +695,32 @@ async function realCastVideo(job, ctx) {
   const framePaths = await extractFrames(ctx.cfg, ctx, vidAbs, ctx.workDir, CAST_VID.frames);
   const files = [{ field: 'cast_video', filename: 'cast_video' + r.ext, abs: vidAbs }];
   const frames = [];
+  // 参考脸须为 var 下真实文件（facegate ROOTS 白名单）；URL 解析不到 var 时回退原值（仍会 403，但不崩）
+  const refCast = resolvePublic(refSrc, ctx.cfg) || refSrc;
   for (let i = 0; i < framePaths.length; i++) {
     files.push({ field: 'frame_' + (i + 1), filename: path.basename(framePaths[i]), abs: framePaths[i] });
-    const s = await facegateScore(ctx.cfg, ctx, framePaths[i], p.cast_image);
+    const s = await facegateScore(ctx.cfg, ctx, framePaths[i], refCast);
     frames.push({ file: 'frame_' + (i + 1), score: s.score, pass: s.pass, yaw: s.yaw, pitch: s.pitch });
   }
   await ctx.progress(95, '定妆视频完成');
   return { result: { files: { cast_video: 'cast_video' }, duration_sec: CAST_VID.sec, frames, meta: { comfy: true } }, files };
+}
+
+// mv_cast（方案一默认）：女主原图 I2V 首帧直出定妆视频 + 抽帧 + 逐帧 facegate（SP6 方案一，首帧锁脸）
+async function realCastI2V(job, ctx) {
+  const p = job.payload || {};
+  const portraitAbs = await resolveSrc(p.portrait_path, ctx);
+  if (!portraitAbs) throw laneErr('COMFY_REFERENCE_REQUIRED', '方案一定妆需要真实人像（portrait_path）');
+  // 首帧=女主原图（SP6 方法 A/B：首帧锁脸 + prompt 换景/转头，一条生成内保脸）
+  return castI2VCore(portraitAbs, p.portrait_path, job, ctx, p.desc || '自然转头与表情，多角度展示');
+}
+
+// mv_cast_video（遗留分支）：定妆候选照 → h3-fl2va I2V → 抽帧 → facegate 逐帧
+async function realCastVideo(job, ctx) {
+  const p = job.payload || {};
+  const castAbs = await resolveSrc(p.cast_image, ctx);
+  if (!castAbs) throw laneErr('SRC_MISSING', '定妆照源文件不存在');
+  return castI2VCore(castAbs, p.cast_image, job, ctx, p.motion || 'natural head turn, subtle expression');
 }
 
 // mv_storyboard（架构 §4.1/mv-plan §4.7.1）：
@@ -708,15 +758,17 @@ async function realStoryboard(job, ctx) {
       abs = path.join(ctx.workDir, 'board_' + id + r.ext);
       fs.writeFileSync(abs, r.bytes);
       // 身份门：对照 viewRef 打分，低分 → inswapper ×2（非致命；不可达透传注记）
-      let sc = (await facegateScore(ctx.cfg, ctx, abs, vr)).score;
+      // viewRef 须为 var 下真实文件（facegate ROOTS 白名单），URL 解析不到才回退原值
+      const refVr = resolvePublic(vr, ctx.cfg) || vr;
+      let sc = (await facegateScore(ctx.cfg, ctx, abs, refVr)).score;
       let swaps = 0;
       while (sc !== null && sc < gate && swaps < 2) {
-        const sw = await facegateSwap(ctx.cfg, ctx, abs, vr);
+        const sw = await facegateSwap(ctx.cfg, ctx, abs, refVr);
         if (!sw || sw.unreachable) { notes.push('board_' + id + ':facegate_unreachable'); break; }
         fs.writeFileSync(abs, sw.bytes);
         swaps++;
         sc = sw.score !== null && sw.score !== undefined ? sw.score
-          : (await facegateScore(ctx.cfg, ctx, abs, vr)).score;
+          : (await facegateScore(ctx.cfg, ctx, abs, refVr)).score;
         ctx.log('board_' + id + ' 低分降级：inswapper 第 ' + swaps + ' 次（score=' + (sc === null ? 'n/a' : sc) + '）');
       }
       if (swaps > 0) notes.push('board_' + id + ':swapped×' + swaps);
@@ -799,7 +851,7 @@ async function realLipsync(job, ctx) {
   let res;
   try {
     res = await net.request('POST', url + '/lipsync', {
-      headers: { 'content-type': 'application/json' },
+      headers: workerHeaders(ctx.cfg),
       body: JSON.stringify({ video: videoAbs, audio: audioWin }),
       timeoutMs: TMO.lipsync,
     });
@@ -834,7 +886,7 @@ async function realAlign(job, ctx) {
   let asrDegraded = null;
   try {
     const res = await net.request('POST', url + '/asr', {
-      headers: { 'content-type': 'application/json' },
+      headers: workerHeaders(ctx.cfg),
       body: JSON.stringify({ path: masterAbs, timestamp: true }),
       timeoutMs: TMO.align,
     });
@@ -1139,6 +1191,7 @@ async function realCompose(job, ctx) {
 
 // ---------- 统一入口 ----------
 const BRANCH = {
+  mv_cast: 'vidspark',              // 方案一：女主原图 I2V 首帧定妆（2026-11-26）
   mv_cast_image: 'imgspark', mv_storyboard: 'imgspark',
   mv_cast_video: 'vidspark', mv_shot: 'vidspark',
   mv_lipsync: 'lipsync',
@@ -1166,6 +1219,7 @@ async function runMvJob(job, ctx, helpers) {
   }
   if (mock) {
     switch (type) {
+      case 'mv_cast': return mockCastI2V(job, ctx);
       case 'mv_cast_image': return mockCastImage(job, ctx);
       case 'mv_cast_video': return mockCastVideo(job, ctx);
       case 'mv_storyboard': return mockStoryboard(job, ctx);
@@ -1177,6 +1231,7 @@ async function runMvJob(job, ctx, helpers) {
     }
   }
   switch (type) {
+    case 'mv_cast': return realCastI2V(job, ctx);
     case 'mv_cast_image': return realCastImage(job, ctx);
     case 'mv_cast_video': return realCastVideo(job, ctx);
     case 'mv_storyboard': return realStoryboard(job, ctx);

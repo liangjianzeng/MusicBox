@@ -1,4 +1,4 @@
-// src/executor/selftest/mv_mock_e2e.mjs —— EXECUTOR_MOCK 下 8 类 mv_* job 端到端自检（无 ffmpeg/无 Spark，手动运行）
+// src/executor/selftest/mv_mock_e2e.mjs —— EXECUTOR_MOCK 下 9 类 mv_* job（含方案一 mv_cast）端到端自检（无 ffmpeg/无 Spark，手动运行）
 // 用法：node src/executor/selftest/mv_mock_e2e.mjs
 // 断言：runMvJob 8 类全通过；产物文件存在+魔数合法；result.files 映射齐；字节桩诚实标注 meta.stub；
 //       compose/preview 契约形状（sidecar/preview）、align timings 形状；同 payload 双跑字节稳定（stub 路径）。
@@ -63,31 +63,39 @@ try {
     checkFiles('cast_image 产物 png×3', out, ['cast_image_1', 'cast_image_2', 'cast_image_3']);
     ok('cast_image face_scores 形状', Array.isArray(out.result.face_scores) && out.result.face_scores.length === 3);
   }
-  // ② mv_cast_video
+  // ② mv_cast（方案一默认：女主原图 I2V 首帧直出定妆视频 + 抽帧 + facegate）
+  {
+    const { out } = await run('mv_cast', { project_id: 'p1', character_id: 'c1', gender: 'f', desc: '自然光半身棚拍，多角度自然转头与表情', portrait_path: srcPng, cast_method: 'i2v_first_frame', seed: 11 });
+    checkFiles('cast mp4+13 帧（方案一）', out, ['cast_video', ...Array.from({ length: 13 }, (_, i) => 'frame_' + (i + 1))]);
+    ok('cast result.frames×13', out.result.frames.length === 13);
+    ok('cast 首帧锁脸 portrait_path 透传', out.result.files && out.result.files.cast_video === 'cast_video', JSON.stringify(out.result.files));
+    ok('cast 默认方案一 + mock 字节桩诚实标注', out.result.mock === true && out.result.meta && out.result.meta.stub === 'mp4-container', 'stub=' + (out.result.meta && out.result.meta.stub));
+  }
+  // ③ mv_cast_video
   {
     const { out } = await run('mv_cast_video', { cast_image: srcPng, seed: 2, motion: 'head turn' });
     checkFiles('cast_video mp4+13 帧', out, ['cast_video', ...Array.from({ length: 13 }, (_, i) => 'frame_' + (i + 1))]);
     ok('cast_video result.frames×13', out.result.frames.length === 13);
   }
-  // ③ mv_storyboard
+  // ④ mv_storyboard
   {
     const { out } = await run('mv_storyboard', { shots: [{ id: 's1', desc: 'a' }, { id: 's2', desc: 'b' }], viewrefs: {} });
     checkFiles('storyboard board×2', out, ['board_s1', 'board_s2']);
   }
-  // ④ mv_shot
+  // ⑤ mv_shot
   {
     const { out } = await run('mv_shot', { shot: { id: 's1', sec: 4, singing: '副歌句', first_frame: srcPng }, project_kind: 'vocal', seed: 3, tier: 'quality' });
     checkFiles('shot clip mp4', out, ['clip_s1']);
     ok('shot tier 透传', out.result.tier === 'quality');
   }
-  // ⑤ mv_lipsync（透传源片 + sync_score=0.95）
+  // ⑥ mv_lipsync（透传源片 + sync_score=0.95）
   {
     const { out } = await run('mv_lipsync', { video: srcMp4, audio_master: srcWav, win: { start_sec: 1, dur_sec: 3 } });
     checkFiles('lipsync synced mp4', out, ['synced']);
     ok('lipsync sync_score=0.95', out.result.sync_score === 0.95, out.result.sync_score);
     ok('lipsync 透传源片字节', sha(out.files[0].abs) === sha(srcMp4));
   }
-  // ⑥ mv_align
+  // ⑦ mv_align
   {
     const { out } = await run('mv_align', { audio_master: srcWav, lyrics: '第一句歌词\n第二句更长的歌词\n第三句', structure: null, duration_sec: 30 });
     const t = out.result.timings;
@@ -96,13 +104,13 @@ try {
     const d = (x) => x.end - x.start;
     ok('align 按字数加权（长句窗口最大）', d(t[1]) > d(t[0]) && d(t[0]) > d(t[2]), JSON.stringify(t));
   }
-  // ⑦ mv_preview
+  // ⑧ mv_preview
   {
     const { out } = await run('mv_preview', { board_urls: [srcPng, srcPng, srcPng], audio_master: srcWav, seg_sec: 2 });
     checkFiles('preview mp4', out, ['preview']);
     ok('preview boards=3', out.result.boards === 3, out.result.boards);
   }
-  // ⑧ mv_compose（含 subtitles/degraded_shots/broll_subtitle 契约形状）
+  // ⑨ mv_compose（含 subtitles/degraded_shots/broll_subtitle 契约形状）
   {
     const { out } = await run('mv_compose', {
       takes: [{ video: srcMp4, start_sec: 0, strip_audio: true, dur_sec: 4 }, { video: srcMp4, start_sec: 4, strip_audio: true, dur_sec: 4 }],
@@ -116,7 +124,7 @@ try {
     ok('compose sidecar degraded_shots 透传', sc.degraded_shots.includes('broll_subtitle'), JSON.stringify(sc.degraded_shots));
     ok('compose mock 字节桩诚实', out.result.meta && out.result.meta.stub !== undefined);
   }
-  // ⑨ 字节稳定：stub 路径下同 payload 双跑一致
+  // ⑩ 字节稳定：stub 路径下同 payload 双跑一致
   {
     const payload = { takes: [{ video: srcMp4, dur_sec: 3 }], audio_master: srcWav, title: '稳定性', subtitles: ['x'] };
     const a = await run('mv_compose', JSON.parse(JSON.stringify(payload)));

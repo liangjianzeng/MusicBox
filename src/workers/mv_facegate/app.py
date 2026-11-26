@@ -6,19 +6,53 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+# —— 内部令牌（2026-11-26 抢救 P0-4）：worker 默认只监听回环；跨机部署必须设 MB_WORKER_TOKEN ——
+WORKER_TOKEN = os.environ.get("MB_WORKER_TOKEN", "").strip()
+
+
+def _require_token(x_worker_token: str = Header(default="")):
+    """纵深防御：即便被端口转发/反向代理暴露到局域网，未带令牌也无法调用推理口。"""
+    if WORKER_TOKEN and (x_worker_token or "").strip() != WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="WORKER_UNAUTHORIZED")
+    return True
+
+
+def _default_roots():
+    """可信素材根：去掉 /opt/musicbox 与 E:/Work 历史路径，改为当前部署可解析的位置。"""
+    return ",".join([str(Path.home() / "MusicBox" / "var"), str(Path("var").resolve())])
+
+
 PORT = int(os.environ.get("MB_FACEGATE_PORT", "8395"))
-MODEL_ROOT = Path(os.environ.get("MB_FACEGATE_MODELS", "/opt/musicbox/var/models/facegate")).resolve()
+MODEL_ROOT = Path(os.path.expanduser(os.environ.get(
+    "MB_FACEGATE_MODELS", str(Path.home() / "MusicBox" / "var" / "models" / "facegate")))).resolve()
 MODEL_NAME = os.environ.get("MB_FACEGATE_MODEL_NAME", "buffalo_l")
 FACEGATE_GATE = float(os.environ.get("MB_FACEGATE_GATE", "0.6"))
 ROOTS = [Path(p).resolve() for p in os.environ.get(
-    "MB_FACEGATE_ROOTS", "/opt/musicbox/var,E:/Work/MusicBox/var"
+    "MB_FACEGATE_ROOTS", _default_roots()
 ).split(",") if p.strip()]
 MAX_IMAGE_B64 = int(os.environ.get("MB_FACEGATE_MAX_IMAGE_B64", str(12 * 1024 * 1024)))
 
 app = FastAPI(title="musicbox-mv-facegate", version="1.0.0")
+
+# —— 内部令牌（2026-11-26 抢救 P0-4）：worker 默认只监听回环；跨机部署必须设 MB_WORKER_TOKEN ——
+WORKER_TOKEN = os.environ.get("MB_WORKER_TOKEN", "").strip()
+
+
+def _require_token(x_worker_token: str = Header(default="")):
+    """纵深防御：即便被端口转发/反向代理暴露到局域网，未带令牌也无法调用推理口。"""
+    if WORKER_TOKEN and (x_worker_token or "").strip() != WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="WORKER_UNAUTHORIZED")
+    return True
+
+
+def _default_roots():
+    """可信素材根：去掉 /opt/musicbox 与 E:/Work 历史路径，改为当前部署可解析的位置。"""
+    home_var = str(Path.home() / "MusicBox" / "var")
+    return ",".join([home_var, str(Path("var").resolve())])
+
 _app = None
 _swapper = None
 _lock = threading.Lock()
@@ -127,7 +161,7 @@ def health():
 
 
 @app.post("/score")
-def score(req: ScoreIn):
+def score(req: ScoreIn, _auth: bool = Depends(_require_token)):
     engine = _require_engine()
     with _lock:
         if not req.ref_file:
@@ -136,7 +170,7 @@ def score(req: ScoreIn):
 
 
 @app.post("/swap")
-def swap(req: SwapIn):
+def swap(req: SwapIn, _auth: bool = Depends(_require_token)):
     global _swapper
     engine = _require_engine()
     image, reference = _decode(req.img_b64), _reference(req.ref_file)

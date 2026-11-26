@@ -47,7 +47,9 @@ function loadConfig() {
   }
   const lanes = String(args.lanes || process.env.MB_LANES || 'music,intent,ffmpeg')
     .split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
-  const varDir = path.resolve(process.env.MB_VAR_DIR || path.join(process.cwd(), 'var'));
+  // 与 server 侧 MB_VAR_ROOT 对齐（同义双名是既有坑：只设 MB_VAR_ROOT 时执行器会解析到错误 var 根，
+  // 而 lib/paths.js 的可信目录收敛依赖它 —— 2026-11-26 抢救 P0-4）
+  const varDir = path.resolve(process.env.MB_VAR_DIR || process.env.MB_VAR_ROOT || path.join(process.cwd(), 'var'));
   return {
     api: String(args.api || process.env.MB_API_URL || 'http://127.0.0.1:7900').replace(/\/+$/, ''),
     token: String(args.token || process.env.MB_EXECUTOR_TOKEN || ''),
@@ -60,6 +62,7 @@ function loadConfig() {
     comfyUrl: process.env.MB_COMFY_URL || 'http://127.0.0.1:8188',
     lipsyncUrl: process.env.MB_LIPSYNC_URL || 'http://127.0.0.1:8390',
     facegateUrl: process.env.MB_FACEGATE_URL || 'http://127.0.0.1:8395',
+    workerToken: process.env.MB_WORKER_TOKEN || '', // 传给 worker 的内部令牌（抢救 P0-4）
     mvAsrUrl: process.env.MB_MV_ASR_URL || 'http://127.0.0.1:8391',
     mvFontFile: process.env.MB_MV_FONT || '', // compose 叠层 drawtext 字体（可选，Spark Linux 默认 fontconfig 即可）
     mvAspectRatio: args.mvAspectRatio || process.env.MB_MV_ASPECT_RATIO || '9:16',
@@ -105,6 +108,7 @@ const ROUTE = {
   music: 'music', adjust: 'music', extend: 'music', cover: 'music', variation: 'music',
   intent_voice: 'intent', intent_image: 'intent', intent_text: 'intent',
   transcode: 'ffmpeg', dsp: 'ffmpeg',
+  mv_cast: 'vidspark',
   mv_cast_image: 'imgspark', mv_storyboard: 'imgspark',
   mv_cast_video: 'vidspark', mv_shot: 'vidspark',
   mv_lipsync: 'lipsync',
@@ -148,6 +152,7 @@ function pickRunner(type) {
     case 'transcode': return ffmpeg.runTranscode;
     case 'dsp': return ffmpeg.runDsp;
     // MV 家族（二期）：五 lane 全部汇聚到 lanes/mv.js 的分支表（mock 真产物桩 / 真 mode lib/comfy.js）
+    case 'mv_cast':
     case 'mv_cast_image': case 'mv_storyboard':
     case 'mv_cast_video': case 'mv_shot':
     case 'mv_lipsync': case 'mv_align':
