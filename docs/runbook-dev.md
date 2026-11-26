@@ -467,3 +467,25 @@ MB_SEC=30 MB_COUNT=1 bash tmp/real_music_run.sh                                 
 引擎侧性能实测：单候选（30s 目标时长）在 5060 Ti 上约 **10–11 分钟**（含首次加载；服务「响应后释放显存」，所以每次都可能重载）。**这直接决定 `config.engine.leaseMs=10min` 偏紧**：count=3 的串行生成远超租约，是音乐线在真机上长期「跑不完 + 反复回队 + 退款」的结构性原因（见 `docs/musicbox-rescue-refactor-plan.md` M2 吞吐项）。
 
 `/healthz` 的 `online` 是 **App 的 WSS 连接数，不是执行器数量** —— 判执行器死活要看 `executors.last_seen`（`scripts/verify_real_music.mjs` 的 A4b 就是这么做的）。
+
+#### 6.6.1 真机验收结论（2026-11-27，GeekPro 5060 Ti + DGX qwen38-fp4）
+
+`scripts/verify_real_music.mjs` 共 30 条判据，实测 **29 通过 / 1 真实失败**。通过的硬证据（不是 status=done 就算过）：
+候选 mp3 真下载 1,201,965B、ffprobe `dur=30.02s codec=mp3 sr=48000 ch=2`、`mean_volume −16.9dB/−20.8dB`（非静音）、
+2/2 唯一 sha256（同 seed 也真出不同版本）、扣费 30⚡、`Σdelta==余额`、助手 `mode=llm+rule caps.llm=true`、
+读工具对话零扣费。唯一失败：**「帮我看看还有多少积分」被当闲聊回了自我介绍**（详见下）。
+
+两个**必须显式配置否则功能不出现**的开关（都属于"看着像坏了"的那类）：
+
+| 开关 | 默认 | 不开的后果 |
+|---|---|---|
+| `MB_PUBLIC_BASE_URL` | `http://127.0.0.1:7900` | 候选/作品的 `audio_url` 指向默认 :7900，换端口或反代后手机**取不到声音**（验证判据 A10b 专防这个） |
+| `MB_MUSIC_ASSISTANT` + `MB_MUSIC_ASSISTANT_CHAT` | `0` / `0` | 助手恒为 `rule` 模式、`capabilities.llm=false`，用户体感"AI 助手没接大模型" |
+
+助手的 LLM 节点由 `model_nodes` 种子 `mn_llm → MB_LLM_VLM_URL / MB_LLM_VLM_MODEL` 提供；`llm+rule` 还要
+`AC.featureOn('assistant_chat_music')` 与 `M.probeNode('llm')` 探活为 healthy，任一不满足即静默退化为 rule（不报错）。
+
+已实测的助手工具面（14 个，`src/server/l2assistant/core.js`）：`music.adjust_params / set_title / set_card /
+regenerate / extend / cover / query_status`、`library.search`、`assistant.task_query / ticket_query / context /
+task / message / event`。**契约三张工具表（CONTRACTS.md :608 / :764-765 / :830-831）均未声明积分/余额读工具**，
+所以「查积分」只能落到 LLM 自由发挥并回出自介绍 —— 判据 A21b 把它单独量化，待产品裁决（加只读工具需先入契约）。

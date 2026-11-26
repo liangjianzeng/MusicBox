@@ -165,8 +165,11 @@ if (!job || job.status !== 'done') finish();
 console.log('▶ 3 候选音频物理判据（status=done 不算通过，必须能解码/非静音/互不相同）');
 // 实现的真实形态：job.result.candidates[]（**候选**，采纳后才成为 work）——
 // 早期版本按 result.work_ids 找候选，结果真跑通了也报「候选数量 0」，把成功判成失败。
-const cands = (job.result && Array.isArray(job.result.candidates) ? job.result.candidates : []);
-check('A10', `候选数量 == ${COUNT}`, cands.length === COUNT, `result.candidates=${cands.length}${cands.length !== COUNT ? '（keys=' + Object.keys(job.result || {}).join(',') + '）' : ''}`);
+// GET /v1/jobs/:id 的真实形态：候选在**顶层 body.candidates**（store.candidateOf 投影：
+// {id,seq,title,audio_url,duration_sec,format,waveform_url,meta}）；result 列只给内部用，HTTP 不外露。
+const cands = (Array.isArray(job.candidates) ? job.candidates
+  : (job.result && Array.isArray(job.result.candidates) ? job.result.candidates : []));
+check('A10', `候选数量 == ${COUNT}`, cands.length === COUNT, `body.candidates=${cands.length}（响应顶层键=${Object.keys(job || {}).join(',')}）`);
 // audio_url 的 host:port 必须是真实可达的对外地址：历史坑是 MB_PUBLIC_BASE_URL 没配，
 // URL 落到默认 :7900，手机按这个地址取音频必然取不到（真机「候选能生成不能播」的一类成因）。
 for (const c of cands) {
@@ -182,9 +185,9 @@ for (const c of cands) {
 const works = cands.map((c) => ({
   id: c.id, title: c.title,
   audio_master: c.audio_url, audio_playback: c.audio_url,
-  tags: (c.meta && c.meta.raw && c.meta.raw.tags) || [],
+  tags: (c.meta && c.meta.tags) || (c.meta && c.meta.raw && c.meta.raw.tags) || [],
   files: { audio_master: c.audio_url },
-  duration_sec: c.duration_sec,
+  duration_sec: c.duration_sec, format: c.format,
 }));
 const clips = [];
 for (const w of works) {
@@ -241,8 +244,11 @@ if (DB && fs.existsSync(DB)) {
   fs.writeFileSync(path.join(EVID, 'ledger.json'), JSON.stringify(rows, null, 2));
   const debits = rows.filter((r) => r.delta < 0).length; const refunds = rows.filter((r) => r.delta > 0).length;
   const failedCandidates = COUNT - works.length;
-  check('A19', '失败候选有配对退款', failedCandidates === 0 || refunds >= failedCandidates,
-    `失败候选≈${failedCandidates}，退款行=${refunds}（明细 ${path.relative(ROOT, EVID)}/ledger.json）`);
+  check('A19', '候选缺口必须有配对退款（钱货两清）',
+    cands.length >= COUNT || refunds >= (COUNT - cands.length),
+    cands.length >= COUNT
+      ? `${COUNT} 个候选全部成功，无需退款（退款行=${refunds}）`
+      : `缺 ${COUNT - cands.length} 个候选，退款行=${refunds}（明细 var/evidence/…/ledger.json）`);
   note(`最近账本行：${rows.slice(0, 4).map((r) => `${r.reason}:${r.delta}`).join(' ')}`);
 } else {
   note('未给 MB_DB → 跳过白盒账本对账（强烈建议给，账本问题只有白盒能抓到）');
@@ -255,18 +261,36 @@ if (!has('skip-assistant')) {
   check('A20', '助手 bootstrap 可用', boot.status === 200 && boot.json && boot.json.available === true,
     `HTTP ${boot.status} mode=${boot.json && boot.json.mode} caps=${JSON.stringify((boot.json || {}).capabilities || {})}`);
   if (boot.status === 200 && boot.json && boot.json.available) {
-    const cases = [
-      ['帮我看看还有多少积分', ['credit', 'assistant']],
-      ['查询任务进度', ['assistant.task_query', 'music.query_status']],
-      ['这首音乐进度如何', ['music.query_status', 'work.explain']],
-      ['搜索星河', ['library.search']],
-      ['把这首歌改得更明亮一点', ['music', 'work', 'assistant']],
-      ['还有票吗', ['assistant.ticket_query', 'assistant']],
-    ];
+    // 用例表必须对齐**实现里真实注册的工具面**（src/server/l2assistant/core.js：
+//   music.adjust_params / music.set_title / music.set_card / music.regenerate / music.extend /
+//   music.cover / music.query_status / library.search / assistant.task_query / assistant.ticket_query /
+//   assistant.context / assistant.task / assistant.message / assistant.event）
+// 期望写错工具名会把好行为判成失败，这不是严格，是假故障。
+const cases = [
+  ['查询任务进度', ['assistant.task_query', 'music.query_status']],
+  ['这首音乐进度如何', ['music.query_status', 'assistant.task_query']],
+  ['搜索星河', ['library.search']],
+  ['把这首歌改得更明亮一点', ['music.adjust_params']],
+  ['把标题改成《星河》', ['music.set_title']],
+  ['刚才那张确认票还在吗', ['assistant.ticket_query']],
+];
+// 单独一条「无能力时必须诚实」：助手工具面里**没有**积分/余额读工具（grep 实证：credits 只出现在价格估算），
+// 于是「还有多少积分」只能靠 LLM 自由回答。历史行为是回一段自我介绍（"我在。可以查任务和确认票…"），
+// 用户听起来像被忽略 —— 这正是「助手看着不能用」的体感来源，必须单独量化，不许混进合格率里被平均掉。
+const SELF_INTRO = /我在。可以|我可以帮你|作为.*(助手|AI)|可以查任务和确认票/;
+{
+  const r = await req('POST', '/v1/assistant/messages', { token, body: { text: '帮我看看还有多少积分', client_msg_id: 'verify-cap-' + Date.now() } });
+  const j = r.json || {}; const body = String(j.reply || (j.message && j.message.content) || '');
+  const calledTool = !!((j.meta || {}).tool);
+  const honest = r.status === 200 && !SELF_INTRO.test(body) && (/积分|余额|不能|无法|暂不/.test(body) || calledTool);
+  check('A21b', '无对应能力时必须直接回应问题（不得回自我介绍搪塞）', honest,
+    `tool=${(j.meta || {}).tool || '-'} mode=${(j.meta || {}).mode || '-'} 回复=「${body.slice(0, 90)}」`
+    + (SELF_INTRO.test(body) ? ' ← 自我介绍式搪塞' : ''));
+}
     const balA = balOf(await req('GET', '/v1/credits', { token }));
     let hit = 0; const bad = [];
     for (const [text, wantAny] of cases) {
-      const r = await req('POST', '/v1/assistant/messages', { token, body: { text } });
+      const r = await req('POST', '/v1/assistant/messages', { token, body: { text, client_msg_id: 'verify-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10) } });
       const j = r.json || {}; const meta = j.meta || {};
       const tool = String(meta.tool || '');
       const okTool = r.status === 200 && wantAny.some((w) => tool.startsWith(w));
