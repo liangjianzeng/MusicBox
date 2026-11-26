@@ -25,7 +25,7 @@ const TOOLS = {
   'music.set_title': { params: { title: { kind: 'string', min: 1, max: 60 } } },
   'music.set_card': {
     params: {
-      mood: { kind: 'string', min: 1, max: 60, optional: true },
+      mood: { kind: 'string', min: 1, max: gov.FIELD_LIMITS.mood, optional: true }, // 单一真源，防与 l2music 漂移
       vocal: { kind: 'enum', values: ['song', 'instrumental', 'unknown'], optional: true },
       sec: { kind: 'integer', min: config.gen.sec_min, max: config.gen.sec_max, optional: true },
       bpm: { kind: 'integer', min: 40, max: 200, optional: true },

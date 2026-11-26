@@ -8,6 +8,7 @@ const rules = require('../core/rules');
 const auth = require('./auth');
 const credits = require('./credits');
 const U = require('../core/util');
+const FL = require('../core/fields').FIELD_LIMITS; // 字段长度真源（v5.2.4），防 api/l2 两处各写一个上限
 const dict = require('../prompts/dictionary');
 const adjustPrompt = require('../prompts/adjust');
 const M = require('../core/modelnodes');
@@ -17,10 +18,10 @@ const requireUser = auth.requireUser;
 const G = config.gen;
 
 // —— 归一化生乐参数 + 派单（先扣分后派单，幂等命中不扣分）——
-function buildMusicPayload(params) {
+function buildMusicPayload(params, actor) {
   const textForScan = [params.prompt, (params.tags || []).join(' '), params.mood, (params.lyrics || '').slice(0, 300)].join('\n');
   const scan = dict.scan(textForScan);
-  const mood = String(params.mood || scan.moods[0] || '中性').slice(0, 20);
+  const mood = String(params.mood || scan.moods[0] || '中性').slice(0, FL.mood);
   const tags = U.unionArr(scan.tags, U.toArr(params.tags), 6);
   const sec = params.sec == null ? G.sec_default : U.clamp(Math.round(Number(params.sec)), G.sec_min, G.sec_max);
   const count = params.count == null ? G.count_default : U.clamp(Math.round(Number(params.count)), G.count_min, G.count_max);
@@ -32,8 +33,16 @@ function buildMusicPayload(params) {
   if (params.persona_id) {
     const p = store.get('SELECT * FROM personas WHERE id=?', params.persona_id);
     if (!p) throw new U.ApiError('NOT_FOUND', '声音人格不存在');
+    // 声纹属**敏感个人信息**，用他人声纹做克隆 = 未经同意的深度合成（契约 v5.2.5）。
+    // 公开人格（is_public=1）仅可浏览元数据，不得被他人拿去变声；要开放须先有"本人授权"字段，
+    // 那是产品决策（见 docs 待决清单），不是把这行删掉的理由。
+    if (!actor || p.user_id !== actor.id) {
+      store.log('persona.use_denied', { by: actor ? actor.id : 'anonymous', persona_id: p.id, owner: p.user_id, is_public: !!p.is_public });
+      throw new U.ApiError('FORBIDDEN', '仅可使用自己的声音人格进行克隆（他人声纹需本人授权）');
+    }
     persona = {
-      ref_abs_path: p.voice_ref ? path.join(config.paths.out, p.voice_ref) : null,
+      id: p.id, // 执行器据此经鉴权取件口取声纹（跨机时绝对路径必然不可读）
+      ref_abs_path: p.voice_ref ? (require('./personas').resolveVoiceRef(p.voice_ref) || null) : null,
       cover_strength: params.cover_strength == null ? 0.2 : U.clamp(params.cover_strength, 0, 1),
       clone_mode: params.clone_mode === 'full' ? 'full' : 'fast',
     };
@@ -73,7 +82,7 @@ function dispatchMusic(user, kind, params, opts) {
     return { status: 202, body: { job_id: ex.id, credits_charged: 0, idempotent: true } };
   }
   const cost = opts.cost == null ? AC.credits().per_candidate * (params.count || G.count_default) : opts.cost;
-  const payload = buildMusicPayload(params);
+  const payload = buildMusicPayload(params, user);
   // 模型选择（APK 未设置则后端默认；后台 locked 时强制默认，见 core/modelnodes.pickNodeForJob）
   const musicNode = M.pickNodeForJob('music', params.model);
   if (musicNode && musicNode.endpoint) { payload.music_endpoint = musicNode.endpoint; payload.music_engine = musicNode.engine; }
@@ -217,7 +226,7 @@ function listWorks(ctx) {
     where.push('user_id=?'); args.push(u.id);
   }
   if (q.genre) { where.push('genres LIKE ?'); args.push('%' + String(q.genre).slice(0, 30) + '%'); }
-  if (q.mood) { where.push('mood LIKE ?'); args.push('%' + String(q.mood).slice(0, 30) + '%'); }
+  if (q.mood) { where.push('mood LIKE ?'); args.push('%' + String(q.mood).slice(0, FL.mood) + '%'); } // 搜索词也不得宽于落库上限，否则长 mood 永远搜不到
   if (q.bpm_min) { where.push('bpm>=?'); args.push(Number(q.bpm_min) || 0); }
   if (q.bpm_max) { where.push('bpm<=?'); args.push(Number(q.bpm_max) || 999); }
   if (q.q) {
@@ -274,7 +283,7 @@ function patchWork(ctx) {
 function patchWorkInternal(user, w, b) {
   const sets = []; const args = [];
   if (b.title !== undefined) { rules.moderateFields([b.title]); sets.push('title=?'); args.push(String(b.title).slice(0, 80)); }
-  if (b.mood !== undefined) { rules.moderateFields([b.mood]); sets.push('mood=?'); args.push(String(b.mood).slice(0, 20)); }
+  if (b.mood !== undefined) { rules.moderateFields([b.mood]); sets.push('mood=?'); args.push(String(b.mood).slice(0, FL.mood)); }
   if (b.genres !== undefined) { rules.moderateFields([b.genres]); sets.push('genres=?'); args.push(U.toArr(b.genres).slice(0, 8).join(',')); }
   if (b.rating !== undefined) {
     const r = Number(b.rating);

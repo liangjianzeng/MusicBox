@@ -23,7 +23,7 @@ const TOOLS = {
   'music.set_card': {              // 免费：改意图卡参数（mood/vocal/sec/bpm/count/scene_desc）——意图卡指挥
     expensive: false,
     params: {
-      mood: { kind: 'string', min: 1, max: 20, optional: true },
+      mood: { kind: 'string', min: 1, max: core.FIELD_LIMITS.mood, optional: true }, // 单一真源，防与助手侧漂移
       vocal: { kind: 'enum', values: ['song', 'instrumental', 'unknown'], optional: true },
       sec: { kind: 'integer', min: config.gen.sec_min, max: config.gen.sec_max, optional: true },
       bpm: { kind: 'integer', min: 40, max: 200, optional: true },

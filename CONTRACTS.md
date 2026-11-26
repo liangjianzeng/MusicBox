@@ -892,3 +892,17 @@ POST /v1/assistant/feedback  {message_id,result}
 | v5.1.2 | 机审指纹 `scriptHash()` 只随**用户面剧本内容**变化：派生身份、生成 id、时间窗、对齐结果等派生字段变化**不得**让机审过期；用户可见的剧本语义（如 `shots[].desc`）变化**必须**让机审过期。 | 要么机审永不重跑（违规剧本长期在线），要么每次执行都重复审（成本与延迟爆炸） | 同上第 2 例 |
 | v5.1.3 | 库里以文本存的 JSON 数组列必须经 `U.toArr()` 归一：`'[]'→[]`、`'["a","b"]→[a,b]'`、逗号串 `'a,b'→[a,b]`；不得把整个 JSON 串当单元素返回。 | 前端拿到一个巨型字符串，标签/候选类字段整块显示异常 | 同上第 3 例 |
 
+## v5.2 声纹样本私有化与字段长度真源（2026-11-27 追加，append-only）
+
+> 由来：契约草案复核判定出两条真缺陷（`docs/contract-draft-adjudications.md` 判定 2、判定 4），
+> 验收见 `test/acceptance/v30_persona_privacy.test.js`（5 例）。
+
+| # | 判据 | 违反后果 | 验收 |
+|---|---|---|---|
+| v5.2.1 | 用户上传的**声纹样本属敏感个人信息**，必须存私有目录 `var/voices/`（**不在** `/f/*` 公共静态映射内），`personas.voice_ref` 以 `voices/` 前缀标记；经 `GET /v1/personas/:id/voice` 取件，响应必须 `cache-control: private, no-store` | 任何持 URL 者可下载他人声纹（未经同意的声纹扩散） | V30-①② |
+| v5.2.2 | 取件口按身份把关：**属主本人**或持 `X-Executor-Token` 的执行器可取；他人 403、未登录 401；**人格 `is_public=1` 只公开元数据，绝不公开声纹**；列表响应不得带出 `voice_ref` | 公开人格成为声纹泄露面；执行器取不到参考音频 → 声线克隆静默失效 | V30-②③ |
+| v5.2.3 | 历史行（曾误存 `out` 的裸相对路径）必须仍可解析（`resolveVoiceRef` 兼容），加固不得把用户已有数据判死 | 升级即丢声纹，用户需重新录音 | V30-④ |
+| v5.2.5 | **不得使用他人的人格做声音克隆**：`POST /v1/works/generate` 携带 `persona_id` 时必须校验归属，非属主一律 `403`（含 `is_public=1`）并记 `persona.use_denied` 审计；未经同意使用他人声纹属深度合成违规。公开人格仅可浏览元数据，若要开放复用须先引入"本人授权"字段（产品待决，不是删掉本条校验的理由） | 任何人可用他人声纹变声（深度合成/人身权益事故） | V31-① |
+| v5.2.6 | 执行器侧声纹参考必须**真实可读**才允许声称已克隆：`payload.persona` 必须带 `id`；执行机读不到 `ref_abs_path`（跨机必然）时经 `GET {apiUrl}/v1/personas/:id/voice`（执行器令牌）回捞；取不到则 `meta.clone.applied=false` + `ref_unavailable=true` 诚实降级，**不得**报 `persona_applied=true`。同一 job 的 guide 与 cover 必须打到同一引擎（`payload.music_endpoint`） | 用户以为克隆生效其实从未发生；变声打到另一台机器 | V31-②③④ |
+| v5.2.4 | 同一字段的长度上限必须**单点供给**：`mood` 由 `l2/governance_core.FIELD_LIMITS.mood` 提供，且必须等于落库截断长度（`api/works.js` 的 `slice(0,20)`） | 助手放行 60 字、写库截成 20 字 → 用户静默丢字，且两处会各自漂移 | V30-⑤ |
+

@@ -9,6 +9,9 @@
 const U = require('../core/util');
 const store = require('../core/store');
 
+// 字段长度真源见 core/fields.js（此处转出不改历史引用路径）。
+const FIELD_LIMITS = require('../core/fields').FIELD_LIMITS;
+
 const TICKET_TTL_MS = 60000; // 确认票 TTL 60s（与契约 v2.14 同源）
 const FUSE_RATIO = 1.2;      // 助手侧熔断比例（与 v2.11/v2.14.1 同源）
 
@@ -267,7 +270,7 @@ function recentResults(sessionId, n) {
 }
 
 module.exports = {
-  INJECTION_PATTERNS, TICKET_TTL_MS, FUSE_RATIO,
+  INJECTION_PATTERNS, TICKET_TTL_MS, FUSE_RATIO, FIELD_LIMITS,
   isInjection, gateTool,
   issueTicket, fetchPendingTickets, verifyAndConsumeTicket, denyTicket, sweepExpiredTickets, ticketShape, ticketHash, canonicalArgs,
   fuseCheck, createSession, getSession, recordResult, recentResults,

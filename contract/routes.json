@@ -58,6 +58,20 @@
 
   "routes": [
     {
+      "id": "C-API-PERSONA-VOICE-READ-107",
+      "method": "GET",
+      "path": "/v1/personas/:id/voice",
+      "module": "personas.js",
+      "auth": "user",
+      "authCalls": ["auth.requireUser", "X-Executor-Token（执行器可用）"],
+      "contract": "v5.2 声纹样本私有化（PIPL 敏感个人信息）",
+      "request": { "id": "path；人格 id" },
+      "response": { "status": 200, "body": "音频字节流；content-type 按扩展名（wav/mp3/m4a）；cache-control: private, no-store" },
+      "errors": ["UNAUTHORIZED", "FORBIDDEN（非属主）", "NOT_FOUND（人格或样本不存在）"],
+      "credits": { "charged": 0 },
+      "notes": "声纹属**敏感个人信息**：样本存 var/voices（不在 /f/* 公共静态映射内），只能经本路由由**属主本人**或持执行器令牌者取件；公开人格（is_public=1）也只公开元数据，绝不把声纹发给第三方。旧行（曾误存 out）由 resolveVoiceRef 向后兼容。"
+    },
+    {
       "id": "C-API-CORE-HEALTH-ONLINE-READ-102",
       "method": "GET",
       "path": "/healthz.online",

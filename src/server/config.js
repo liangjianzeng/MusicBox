@@ -123,6 +123,7 @@ const config = {
     db: path.join(VAR, 'db', 'musicbox.sqlite'),
     out: path.join(VAR, 'out'),           // 公共可读产物（/f/* 映射此目录）
     uploads: path.join(VAR, 'uploads'),   // 私有上传暂存（72h TTL）
+    voices: path.join(VAR, 'voices'),      // 声纹样本（PIPL 敏感个人信息）：**不在 /f/* 公共静态目录下**，仅属主/执行器经鉴权取件
     config: path.join(VAR, 'config'),     // 运营侧配置（审核词库等）
   },
   moderationWordFile: path.join(VAR, 'config', 'moderation_words.txt'),

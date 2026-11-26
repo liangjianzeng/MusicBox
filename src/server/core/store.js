@@ -367,7 +367,7 @@ function init() { return openDb(); }
 function openDb(maxVersion) {
   if (db) return db; // 守卫必须在 openDb 内：init() 被每个请求调用，绝不能每次新建连接
   fs.mkdirSync(path.dirname(config.paths.db), { recursive: true });
-  for (const d of ['out', 'uploads', 'config']) fs.mkdirSync(config.paths[d], { recursive: true });
+  for (const d of ['out', 'uploads', 'config', 'voices']) fs.mkdirSync(config.paths[d], { recursive: true });
   const { DatabaseSync } = require('node:sqlite');
   db = new DatabaseSync(config.paths.db);
   db.exec('PRAGMA journal_mode=WAL;');

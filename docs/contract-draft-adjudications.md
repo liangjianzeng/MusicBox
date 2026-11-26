@@ -12,6 +12,13 @@
 | 5 | `mv.shot_reshoot.shot_id` kind 漂移 | 契约 `CONTRACTS.md:441` 写 `shot_id:string`；实现 `l2mv/governance.js:54` 是 `kind:'shotId'` | **契约写少了，改契约** | 实现更严（`shotId` 会做归属校验）。收敛方向是提高契约精度，**不是**把实现降级成 string |
 | 6 | `works.js` dsp 退款 `ref_type` 不配对 | `api/works.js:410,417` | **不成立（口径需在契约里写明）** | 幂等命中退款与扣费用**同一元组** `('dsp','work',w.id)`，配对正确；终态失败退款由引擎按 `('job',job.id)` 记账，可经 `jobs.credits_cost` 关联 —— 两种口径用途不同，契约应分别写明，避免今后被误判成 bug |
 
+## 复核中新追加的两条（判定 2 的连带发现，已修 + 已验）
+
+| # | 缺陷 | 现场 | 修法 | 验收 |
+|---|---|---|---|---|
+| 7 | **任何人可用他人人格克隆声音**：派单取 persona 只按 id 查，不校验归属；公开人格同样可被取用 | `api/works.js` `buildMusicPayload` 内 `SELECT * FROM personas WHERE id=?`（无 user_id 条件） | 非属主一律 403 + `persona.use_denied` 审计（含 `is_public=1`）；契约 v5.2.5 | V31-① |
+| 8 | **跨机声线克隆静默失效**：`payload.persona.ref_abs_path` 是服务端绝对路径；执行器只判断"字段是否存在"就把不存在的路径发给引擎，且 `meta.clone.applied` 提前写死 true | `api/works.js:37` 组 payload；`executor/lanes/music.js` 旧 `const persona = p.persona && p.persona.ref_abs_path ? …` | payload 带 `persona.id`；执行器经鉴权取件口回捞（带 TTL 缓存，避免逐候选重复下载）；取不到则诚实降级；顺带修 guide 走 `payload.music_endpoint` 而 cover 走 `cfg.musicUrl` 的**异机分裂** | V31-②③④ |
+
 ## 附：本轮一并核对的实测口径（写进契约防再犯）
 
 - `/healthz.online` 的 `online` 是 **App WSS 连接数**，不是执行器个数（真机排障时把它当执行器数，误判过"执行器没起来"）。

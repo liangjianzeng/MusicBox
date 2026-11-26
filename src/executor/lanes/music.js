@@ -2,7 +2,9 @@
 // 失败口径：不可达→MUSIC_UNREACHABLE / 非200→MUSIC_HTTP / 超时→MUSIC_TIMEOUT；单候选 seed=seed_base+seed_delta
 'use strict';
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const net = require('../lib/net.js');
 
 const MUSIC_TIMEOUT_MS = 300000; // 单次生成最长 300s
@@ -72,6 +74,65 @@ async function ingestArtifact(genRes, destAbs, log, musicUrl) {
   throw laneErr('MUSIC_HTTP', '音乐生成产物缺失，无法取回；file 字段=' + s + '（且响应无 id，无法走 /music/{id}/file）');
 }
 
+// 人格声纹参考 —— 与产物取件口同一类问题（2026-11-27 真机语境：server 在 DGX、ACE-Step 在 GeekPro）。
+// payload.persona.ref_abs_path 是**服务端**算出的绝对路径，执行器与 server 不同机时必然读不到；
+// 旧代码 `p.persona && p.persona.ref_abs_path ? ... : null` 只看"有没有这个字段"，
+// 于是变声阶段拿着一个不存在的路径去请求引擎（或整段静默跳过），用户以为克隆生效了其实没有。
+// 现在：本机可读 → 直读；否则按鉴权取件口 GET {apiUrl}/v1/personas/{id}/voice 回捞（执行器令牌）。
+const PERSONA_REF_TTL_MS = 10 * 60 * 1000;
+const PERSONA_REF_MAX = 16;
+const personaRefCache = new Map(); // `${apiUrl}|${personaId}` → {abs, bytes, at}
+function personaRefPut(key, val) {
+  personaRefCache.set(key, val);
+  while (personaRefCache.size > PERSONA_REF_MAX) {
+    const oldest = personaRefCache.keys().next().value;
+    const old = personaRefCache.get(oldest);
+    try { if (old && old.abs) fs.unlinkSync(old.abs); } catch (e) { /* 临时文件清理尽力而为 */ }
+    personaRefCache.delete(oldest);
+  }
+}
+const CT_EXT = { 'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/mpeg': '.mp3', 'audio/mp4': '.m4a' };
+
+async function resolvePersonaRef(persona, cfg, log) {
+  if (!persona) return null;
+  const abs = persona.ref_abs_path ? String(persona.ref_abs_path) : '';
+  try { if (abs && fs.existsSync(abs) && fs.statSync(abs).size >= 100) return abs; } catch (e) { /* 当作读不到，走回捞 */ }
+  const id = String(persona.id || '').trim();
+  const base = String((cfg && cfg.apiUrl) || '').replace(/\/+$/, '');
+  const tok = (cfg && cfg.executorToken) || process.env.MB_EXECUTOR_TOKEN || '';
+  if (!id || !base || !tok) {
+    if (log) log('人格声纹不可用且无法回捞（ref_abs_path=' + (abs || '空') + '，persona.id=' + (id || '缺')
+      + '，apiUrl=' + (base || '缺') + '，token=' + (tok ? '有' : '缺') + '）—— 本候选按不克隆交付，不谎称已克隆');
+    return null;
+  }
+  const key = base + '|' + id;
+  const hit = personaRefCache.get(key);
+  if (hit && Date.now() - hit.at < PERSONA_REF_TTL_MS && fs.existsSync(hit.abs) && fs.statSync(hit.abs).size === hit.bytes) {
+    return hit.abs; // 同一 job 多候选复用，避免每候选重复下载
+  }
+  const url = base + '/v1/personas/' + encodeURIComponent(id) + '/voice';
+  let res;
+  try {
+    res = await net.request('GET', url, { headers: { 'X-Executor-Token': tok }, timeoutMs: 60000 });
+  } catch (e) {
+    if (log) log('人格声纹取件网络失败（' + (e.netCode || e.message) + '）：' + url + ' —— 本候选按不克隆交付');
+    return null;
+  }
+  if (res.status !== 200 || res.body.length < 100) {
+    if (log) log('人格声纹取件失败 HTTP ' + res.status + '：' + url + ' —— 本候选按不克隆交付，不谎称已克隆');
+    return null;
+  }
+  const ct = String(res.headers && res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  const dir = path.join(os.tmpdir(), 'musicbox-persona-refs');
+  fs.mkdirSync(dir, { recursive: true });
+  const sha = crypto.createHash('sha256').update(res.body).digest('hex').slice(0, 12);
+  const tmp = path.join(dir, id + '-' + sha + (CT_EXT[ct] || '.wav'));
+  fs.writeFileSync(tmp, res.body);
+  personaRefPut(key, { abs: tmp, bytes: res.body.length, at: Date.now() });
+  if (log) log('人格声纹按鉴权取件口回捞成功（ref_abs_path 是异机路径 ' + (abs || '空') + '）：' + url);
+  return tmp;
+}
+
 // runMusic(job, ctx) → {result, files}；files=[{field, filename, abs}]，由 daemon 统一 multipart 上传
 async function runMusic(job, ctx) {
   const cfg = ctx.cfg;
@@ -86,7 +147,8 @@ async function runMusic(job, ctx) {
   const sec = Math.max(15, Math.min(240, Number(p.sec) || 45));
   const tags = Array.isArray(p.tags) ? p.tags : String(p.tags || '').split(/[,，]/).filter(Boolean);
   const instrumental = !!p.instrumental;
-  const persona = p.persona && p.persona.ref_abs_path ? p.persona : null;
+  const persona = p.persona && (p.persona.ref_abs_path || p.persona.id) ? p.persona : null;
+  let cloneAppliedAny = false;
 
   const files = [];
   const resultCandidates = [];
@@ -120,24 +182,33 @@ async function runMusic(job, ctx) {
 
     // ② persona：cover 变声（ref_audio + cover_strength）；失败诚实降级交 ①
     if (persona) {
+      const refAbs = await resolvePersonaRef(persona, cfg, ctx.log);
+      if (!refAbs) {
+        // 诚实降级：拿不到声纹就**不假装克隆过**（applied=false），并保留 ① 的完整歌，用户仍有可交付产物。
+        meta.clone = { applied: false, stage2_failed: false, ref_unavailable: true, mode: persona.clone_mode || 'full' };
+      } else {
       meta.clone = { applied: true, stage2_failed: false, mode: persona.clone_mode || 'full', cover_strength: Number(persona.cover_strength) || 0.2 };
       try {
         const body2 = Object.assign({}, baseBody, {
           src_audio: finalAbs,                       // ① 的完整歌
-          ref_audio: persona.ref_abs_path,           // 人格声纹参考
+          ref_audio: refAbs,                         // 人格声纹参考（本机直读或经鉴权取件口回捞，必须真实可读）
           cover_strength: Number(persona.cover_strength) || 0.2,
           instrumental: false,
         });
-        const r2 = await callMusic(cfg.musicUrl, body2, ctx.log);
+        // 必须与 ① 同一个 musicUrl：写死 cfg.musicUrl 会让"guide 走 payload.music_endpoint、变声走本机默认"，
+        // 跨机拓扑下等于向另一台机器要 cover（要么不可达要么风格不一致）。
+        const r2 = await callMusic(musicUrl, body2, ctx.log);
         const coverAbs = path.join(ctx.workDir, 'cand_' + seq + '.cover.wav');
-        await ingestArtifact(r2, coverAbs, ctx.log, cfg.musicUrl);
+        await ingestArtifact(r2, coverAbs, ctx.log, musicUrl);
         fs.renameSync(coverAbs, finalAbs);
         finalSeconds = Number(r2.seconds) || finalSeconds;
         meta.clone.gen_seconds = r2.gen_seconds;
+        cloneAppliedAny = true;
       } catch (e) {
         ctx.log('候选' + seq + ' 变声阶段失败，降级使用初版：' + (e.failMessage || e.message));
         meta.clone.stage2_failed = true;
         meta.clone.stage2_error = e.failCode || 'INTERNAL';
+      }
       }
     }
 
@@ -156,10 +227,10 @@ async function runMusic(job, ctx) {
   const result = {
     files: {}, // {逻辑名: 上传字段名}，daemon 上传时同样填充
     candidates: resultCandidates,
-    persona_applied: !!persona,
+    persona_applied: cloneAppliedAny, // 只报"真的克隆成功了几个"，不因 payload 带 persona 就谎称已克隆
     mock: false,
   };
   return { result, files };
 }
 
-module.exports = { runMusic, callMusic, classifyNetErr, MUSIC_TIMEOUT_MS };
+module.exports = { runMusic, callMusic, classifyNetErr, resolvePersonaRef, MUSIC_TIMEOUT_MS };
