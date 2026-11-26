@@ -29,6 +29,8 @@
   - **设备经 Tailscale 到 API 的编排请求被鉴权中间件拒（device_key 新 token 从设备必 401）**；已知 token `at_5da9640b…` 从设备有效但 17:42(上海)过期。
   - 设备**连不上 LAN 文件 URL**（192.168.1.10）。
 - 解法：**主机驱动 C1–C7 全编排**（host 拿稳定 token、可直取 LAN 产物做肉眼复核）。设备仅用于：①portrait 真机上传（真输入）②最终 mv_video 推设备真机播放。
+> ⛔ **该步为不合规跑法（P1-6 已废止）**：灌余额使 402 余额不足、失败退款配对、预算双熔断三条真机必检路径全部失效，
+>   其积分相关 ✅ 一律作废。复测见 realdevice-test-plan 的红线说明与运营面加额做法。
 - 积分：灌 `host-flow-1612` guest 余额 1000000（`seed_guest.js`，先锁 `credit_reset_day` 防 daily_expire 清零）。
 
 ## 1 C1–C3 实测（主机驱动，产物已下 `deploy/spark/evidence/flow-1126-1614/`）
@@ -69,3 +71,12 @@
 - `保脸对比_INPUT_vs_cast.png`（INPUT vs 3 候选 + C3 两帧）
 - `c2_cast_1/2/3.png`、`c3_cast_video.mp4`、`c3_frames/f1|f2.jpg`
 - 复现：`test/client_drive/host_flow.sh`（bash 版）/ `host_flow_py.py`（python 版，直查 DB 取 clip）
+
+> **红线（抢救计划 P1-6，2026-11-27 起为闸门判据）：真机验收禁止灌余额。**
+> 用 `store.appendLedger` 把 guest 余额灌到百万级、或把 `mv_projects.budget_credits` 设成 1000000，
+> 会一次性废掉四条最该在真机上被检验的路径：**余额不足 402、扣费与派单的原子性、失败退款配对、
+> 预算双熔断（BUDGET_EXCEEDED/paused）**。本轮加固时实证这些路径上确实存在"扣钱无 job""同一笔退两次"
+> 等资损缺陷 —— 灌余额的跑法会把它们全部掩盖成 ✅。
+> 正确做法：按真实定价跑（访客每日 50⚡ + 真实扣费），需要更多额度就走**运营面** `/v1/admin/credits/adjust`
+> 并留 `reason`，让账本与审计一起成立；预算不足就如实让熔断发生，再按契约用人工提高预算恢复。
+> 历史跑法（灌至 1000050 / budget 1000000）保留在下表仅作留痕，其"积分校验 ✅"一律作废，不计通过。

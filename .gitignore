@@ -89,3 +89,10 @@ services/*/venv/
 services/*/models/
 services/*/*-repo/
 services/*/.cache/
+
+# ── 本机 ACE-Step 运行接线（指向仓外权重/venv 的符号链接，换机即失效，绝不入仓）──
+# 注意：它们是**符号链接**，上面的 venv/ 目录型规则匹配不到，必须逐条显式忽略
+services/acestep/venv
+services/acestep/models
+services/acestep/acestep-repo
+services/acestep/.cache/
