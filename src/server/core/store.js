@@ -336,8 +336,36 @@ ALTER TABLE admins ADD COLUMN token_expire_at TEXT;
   },
 ];
 
-function init() {
+// 迁移容忍执行（抢救计划 P1-5「幂等 ALTER」）：历史库/半成品库升级到最新时，表或列常常**已经存在**
+// （旧实现直接抛 duplicate column / already exists，整套升级卡死，也就没人敢从旧库升）。
+// 策略：快路径整段执行；只有整段失败时才逐条重试，跳过"重复"类错误，其余错误照抛。
+let migrationSkips = 0;
+function getMigrationSkips() { return migrationSkips; }
+function execMigrationSql(conn, sql) {
+  try { conn.exec(sql); return; }
+  catch (e) {
+    for (const frag of String(sql).split(/;\s*(?:\n|$)/)) {
+      const one = frag.trim();
+      if (!one) continue;
+      try { conn.exec(one + ';'); }
+      catch (e2) {
+        const msg = String((e2 && e2.message) || e2);
+        if (/duplicate column name|already exists/i.test(msg)) { migrationSkips++; continue; }
+        throw new Error('迁移语句失败：' + one.slice(0, 70) + ' … ' + msg);
+      }
+    }
+  }
+}
+
+// 只升到指定版本（升级演练用：先造历史库，再用正常 init() 升到最新）
+function initTo(maxVersion) {
   if (db) return db;
+  return openDb(maxVersion);
+}
+// 正常入口：升到最新
+function init() { return openDb(); }
+function openDb(maxVersion) {
+  if (db) return db; // 守卫必须在 openDb 内：init() 被每个请求调用，绝不能每次新建连接
   fs.mkdirSync(path.dirname(config.paths.db), { recursive: true });
   for (const d of ['out', 'uploads', 'config']) fs.mkdirSync(config.paths[d], { recursive: true });
   const { DatabaseSync } = require('node:sqlite');
@@ -349,16 +377,17 @@ function init() {
   let ver = cur ? cur.version : 0;
   for (const m of MIGRATIONS) {
     if (m.version <= ver) continue;
+    if (maxVersion != null && m.version > maxVersion) break; // 演练用：只升到历史版本
     db.exec('BEGIN');
     try {
-      db.exec(m.sql);
+      execMigrationSql(db, m.sql);
       if (ver === 0) db.prepare('INSERT INTO schema_version VALUES(?)').run(m.version);
       else db.prepare('UPDATE schema_version SET version=?').run(m.version);
       db.exec('COMMIT');
       ver = m.version;
     } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
+      try { db.exec('ROLLBACK'); } catch (e2) { /* 已回滚 */ }
+      throw new Error('迁移 v' + m.version + ' 失败：' + ((e && e.message) || e));
     }
   }
   return db;
@@ -546,7 +575,7 @@ function publicUrl(rel) {
 }
 
 module.exports = {
-  init, db: () => init(), run, get, all, tx, log, norm,
+  init, initTo, db: () => init(), run, get, all, tx, log, norm, getMigrationSkips,
   getBalance, lastLedger, appendLedger, hasLedgerEntry, refundOnce, onCommit, getAuditFailures,
   getPref, setPref, allPrefs,
   workOf, candidateOf, intentOf, publicUrl,
