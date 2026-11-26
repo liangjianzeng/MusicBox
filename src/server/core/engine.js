@@ -132,7 +132,9 @@ async function poll(lanesWanted, executorId, isAlive) {
 
 function assertOwned(job, executorId) {
   if (!ACTIVE.includes(job.status)) throw new U.ApiError('BAD_REQUEST', '任务状态不允许该操作');
-  if (executorId && job.executor_id && job.executor_id !== executorId) {
+  // 抢救 P0-4：租约归属必须强制比对。旧写法 `if (executorId && job.executor_id && ...)`
+  // 让调用方「不带 X-Executor-Id」即可绕过，配合默认令牌可对任意 job 发 progress/complete/fail。
+  if (!executorId || !job.executor_id || job.executor_id !== executorId) {
     throw new U.ApiError('FORBIDDEN', '任务租约不属于当前执行器');
   }
 }
@@ -221,6 +223,7 @@ function completeMvGeneric(job, result, savedMap) {
 // —— MV 二期完成分流（契约 v2.8 / 架构 §3.1：parent-child 链，仿 finalizeMusicParent）——
 function completeMv(job, result, savedMap) {
   switch (job.type) {
+    case 'mv_cast': return completeMvCast(job, result, savedMap);
     case 'mv_cast_image': return completeMvCastImage(job, result, savedMap);
     case 'mv_cast_video': return completeMvCastVideo(job, result, savedMap);
     case 'mv_storyboard': return completeMvStoryboard(job, result, savedMap);
@@ -314,6 +317,34 @@ function completeMvCastImage(job, result, savedMap) {
 }
 
 // mv_cast_video：定妆视频 + 抽帧评分落角色
+// mv_cast（方案一）：定妆视频 + 抽帧评分落角色（与 cast_video 同构；拍板仍走 cast/confirm）
+function completeMvCast(job, result, savedMap) {
+  backfillFileUrls(result, savedMap);
+  finishDone(job, result);
+  const payload = U.jparse(job.payload, {}) || {};
+  if (payload.character_id && store.get('SELECT id FROM mv_characters WHERE id=?', payload.character_id)) {
+    const rels = {};
+    const cv = String(result.cast_video_url || '').split('/f/')[1] || null;
+    const frames = Array.isArray(result.frames) ? result.frames : [];
+    rels.frames = frames.map((f, i) => ({
+      url: result['frame_' + (f.idx || i + 1) + '_url'] || f.url || null,
+      score: f.score == null ? null : f.score,
+      pass: !!f.pass,
+      yaw: f.yaw || null,
+      pitch: f.pitch || null,
+    }));
+    // 方案一抽帧回填 viewrefs（拍板帧库 [{url,score,sel}]），供 storyboard 角色镜 ref / shoot 取用（补全 SP6 漏写链路）
+    rels.viewrefs = rels.frames
+      .map((f) => ({ url: f.url, score: f.score, sel: !!f.pass }))
+      .filter((f) => f.url)
+      .slice(0, 3);
+    store.run('UPDATE mv_characters SET cast_video_url=?, frames_json=?, viewrefs_json=? WHERE id=?',
+      cv, U.jstr(rels.frames), U.jstr(rels.viewrefs), payload.character_id);
+  }
+  store.log('job.mv.cast', { job_id: job.id, character_id: payload.character_id || null, cast_method: payload.cast_method || 'i2v_first_frame' });
+  if (payload.project_id) broadcastMvProgress(payload.project_id, '定妆视频已出，请在帧格中挑角度并拍板');
+  return { ok: true };
+}
 function completeMvCastVideo(job, result, savedMap) {
   backfillFileUrls(result, savedMap);
   finishDone(job, result);
