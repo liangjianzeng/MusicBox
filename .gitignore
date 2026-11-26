@@ -84,3 +84,8 @@ deploy/spark/evidence/
 # ── 本机私密配置（口令/token 只在此，绝不入仓；样例见 deploy/spark/spark.env.example）──
 etc/*.env
 !etc/*.env.example
+# ── vendored 引擎依赖（190G 级模型/venv/上游仓，绝不入仓；部署时另行拉取）──
+services/*/venv/
+services/*/models/
+services/*/*-repo/
+services/*/.cache/
