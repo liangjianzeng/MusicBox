@@ -4,10 +4,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/speech/asr_engine.dart';
 import '../../core/speech/speech_service.dart';
 import '../../core/speech/speech_settings.dart';
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_surface.dart';
 import '../player/player_provider.dart';
 import 'mv_state.dart';
 import 'widgets/mv_theme.dart';
 
+/// ⚠ 已废弃（Phase 5 UI 合一 / D-2 薄壳）：入口 `showMvAssistant` 已降级为跳转
+/// 统一 surface 的薄壳；下方 `MvAssistantSheet` 为遗留实现（仍被
+/// `mv_review_fixes_test.dart` 引用），待 Phase 6 清理。
 /// 制片助手 bottom-sheet（mv-plan §5.2 / 架构 §2，N2 灰度 D11）。
 /// 治理纪律：
 /// · 拍板权在人 —— 助手永不代拍板；昂贵动作只发确认票（票面按钮批准才执行），
@@ -29,21 +34,15 @@ Future<void> showMvAssistant(
   bool chatEnabled = false,
   String? modeHint,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: context.mvColors.surface,
-    shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-    builder: (_) => MvAssistantSheet(
-      projectId: projectId,
-      projectTitle: projectTitle,
-      shotLabel: shotLabel,
-      shotId: shotId,
-      chatEnabled: chatEnabled,
-      modeHint: modeHint,
-    ),
-  );
+  // D-2 薄壳（Phase 5 UI 合一）：跳转统一 surface 并预绑定 project/shot ref，
+  // MV 动作（重排/删镜/重拍等）由统一助手 19 工具覆盖，语音/图片同面可用。
+  return showGlobalAssistant(
+      context,
+      surface: 'mv',
+      refs: [
+        AssistantRef('project', projectId),
+        if (shotId != null && shotId.isNotEmpty) AssistantRef('shot', shotId),
+      ]);
 }
 
 class MvAssistantSheet extends ConsumerStatefulWidget {

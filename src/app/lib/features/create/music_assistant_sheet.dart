@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
 import '../../core/state.dart'; // apiClientProvider
+import '../assistant/assistant_models.dart';
+import '../assistant/assistant_surface.dart';
 
 /// 音乐助手 bottom-sheet（契约 v3.1 / 架构 l2，二期跨模块助手）。
 /// 治理纪律（对齐 MV 制片助手）：
@@ -15,7 +17,12 @@ import '../../core/state.dart'; // apiClientProvider
 
 const bool kMusicAssistantForce = false; // 联调强制钩子（生产以 RemoteConfig 为准）
 
-/// 打开音乐助手（入口按钮一律在 musicAssistant 判定后调用）
+/// ⚠ 已废弃（Phase 5 UI 合一 / D-2 薄壳）：入口 `showMusicAssistant` 已降级为跳转
+/// 统一 surface 的薄壳；本文件下方的 `MusicAssistantSheet`/`MusicAssistantNotifier`
+/// 等为遗留实现（仍被 `create_flow_sync_test.dart` 引用），待 Phase 6 清理。
+/// 打开音乐助手（入口按钮一律在 musicAssistant 判定后调用）。
+/// D-2 薄壳（Phase 5 UI 合一）：跳转统一 surface 并预绑定 work/intent ref，
+/// 音乐动作（微调/重出/翻自/续长等）由统一助手 19 工具覆盖，语音/图片同面可用。
 Future<void> showMusicAssistant(
   BuildContext context, {
   required String subjectType, // 'work' | 'intent'
@@ -24,20 +31,8 @@ Future<void> showMusicAssistant(
   bool chatEnabled = false,
   String? modeHint,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: const Color(0xFF17181F),
-    shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-    builder: (_) => MusicAssistantSheet(
-      subjectType: subjectType,
-      subjectId: subjectId,
-      subjectLabel: subjectLabel,
-      chatEnabled: chatEnabled,
-      modeHint: modeHint,
-    ),
-  );
+  return showGlobalAssistant(context, surface: 'music',
+      refs: [AssistantRef(subjectType, subjectId)]);
 }
 
 /// 端侧禁词/引擎名过滤（与 MV mvHuman 同口径的最小集，避免跨域 import）。

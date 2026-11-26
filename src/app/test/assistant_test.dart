@@ -188,6 +188,31 @@ void main() {
     expect(api.sentClientIds.toSet().length, 2);
   });
 
+  test('send 带 imageId 时把图片 ref 挂进消息', () async {
+    final api = _FakeAssistantApi(_bootstrap());
+    final container = await _container(api);
+    final notifier = container.read(assistantProvider.notifier);
+    await notifier.bootstrap();
+    container.read(assistantContextProvider.notifier).state =
+        const AssistantContext(surface: 'create', refs: []);
+    await notifier.send('描述这张图', imageId: 'ul_abc123');
+    final refs = api.sentRefs.last;
+    expect(refs, hasLength(1));
+    expect(refs.first.type, 'image');
+    expect(refs.first.id, 'ul_abc123');
+  });
+
+  test('send 不带 imageId 时不注入图片 ref', () async {
+    final api = _FakeAssistantApi(_bootstrap());
+    final container = await _container(api);
+    final notifier = container.read(assistantProvider.notifier);
+    await notifier.bootstrap();
+    container.read(assistantContextProvider.notifier).state =
+        const AssistantContext(surface: 'create', refs: []);
+    await notifier.send('讲讲');
+    expect(api.sentRefs.last, isEmpty);
+  });
+
   test('HTTP 首响保留用户气泡且只显示一条助手回复', () async {
     final api = _FakeAssistantApi(_bootstrap());
     final container = await _container(api);
@@ -322,5 +347,51 @@ void main() {
     final panel = tester.getSize(find.byType(AssistantPanel));
     expect(panel.height, lessThanOrEqualTo(600 * .57));
     expect(panel.width, lessThanOrEqualTo(440));
+  });
+
+  testWidgets('薄壳预绑定：初始 surface/refs 注入统一 surface 上下文', (tester) async {
+    final api = _FakeAssistantApi(_bootstrap());
+    final container = await _container(api);
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp(
+        home: AssistantPanel(
+          initialSurface: 'music',
+          initialRefs: const [AssistantRef('work', 'w1')],
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final ctx = container.read(assistantContextProvider);
+    expect(ctx.surface, 'music');
+    expect(ctx.refs, hasLength(1));
+    expect(ctx.refs.first.type, 'work');
+    expect(ctx.refs.first.id, 'w1');
+  });
+
+  testWidgets('薄壳：未注入时上下文清空（dock 打开）', (tester) async {
+    final api = _FakeAssistantApi(_bootstrap());
+    final container = await _container(api);
+    container.read(assistantContextProvider.notifier).state =
+        const AssistantContext(surface: 'music', refs: [AssistantRef('work', 'w1')]);
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: container,
+      child: const MaterialApp(home: AssistantPanel()),
+    ));
+    await tester.pumpAndSettle();
+    final ctx = container.read(assistantContextProvider);
+    expect(ctx.refs, isEmpty);
+    expect(ctx.surface, 'create');
+  });
+
+  testWidgets('统一 surface 聊天 tab 含拍照入口（图片上传）', (tester) async {
+    final api = _FakeAssistantApi(_bootstrap());
+    final container = await _container(api);
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: container,
+      child: const MaterialApp(home: AssistantPanel()),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.camera_alt_outlined), findsOneWidget);
   });
 }

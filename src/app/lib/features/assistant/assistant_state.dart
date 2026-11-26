@@ -202,7 +202,7 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
     }
   }
 
-  Future<void> send(String text, {bool attachContext = true}) async {
+  Future<void> send(String text, {bool attachContext = true, String? imageId}) async {
     final input = text.trim();
     if (input.isEmpty || state.sending || !state.available) return;
     if (!state.available) {
@@ -211,6 +211,9 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
     }
     final context = _ref.read(assistantContextProvider);
     final refs = attachContext ? context.refs : const <AssistantRef>[];
+    final allRefs = imageId != null
+        ? [...refs, AssistantRef('image', imageId)]
+        : refs;
     final clientId = 'c_${DateTime.now().microsecondsSinceEpoch}';
     final optimistic = AssistantMessage(
         id: clientId,
@@ -228,7 +231,7 @@ class AssistantNotifier extends StateNotifier<AssistantState> {
         clientMsgId: clientId,
         text: input,
         surface: context.surface,
-        refs: refs,
+        refs: allRefs,
       );
       final messages = [...state.messages];
       final optimisticIndex = messages.indexWhere((m) => m.id == clientId);

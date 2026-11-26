@@ -215,7 +215,9 @@ Future<ProviderContainer> _container(_FakeMvApi api) async {
 void main() {
   test('MV 外来文案保留正常信息且屏蔽费用运营话术', () {
     expect(mvUserVisibleText('镜头已进入拍摄队列'), '镜头已进入拍摄队列');
-    expect(userVisibleText('本次需要支付 10 元'), '本次操作未完成，请稍后重试');
+    // 共享 userVisibleText 只原样透出（助手正常回复不再被整条吞掉）；
+    // 费用话术的屏蔽由 MV 侧的 mvUserVisibleText 负责
+    expect(userVisibleText('本次需要支付 10 元'), '本次需要支付 10 元');
     expect(mvUserVisibleText('本次消耗 40 积分，余额不足'), '本次操作未完成，请稍后重试');
     expect(
       mvUserVisibleError(

@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -59,6 +60,21 @@ class AssistantApiClient {
               },
             })) as Map;
     return AssistantMessageResult.fromMap(data);
+  }
+
+  /// 上传照片到统一助手（POST /v1/assistant/image，multipart；PIPL consent=true）。
+  /// 返回 image_id，供消息 context.refs 使用。
+  Future<String> uploadImage(String filePath, {String? filename}) async {
+    final fd = FormData();
+    fd.fields.add(MapEntry('consent', 'true'));
+    fd.files.add(MapEntry(
+        'file',
+        await MultipartFile.fromFile(filePath,
+            filename:
+                filename ?? (filePath.toLowerCase().endsWith('.png') ? 'photo.png' : 'photo.jpg'))));
+    final d =
+        await _api.send(() => _api.http.post('/v1/assistant/image', data: fd)) as Map;
+    return '${d['image_id']}';
   }
 
   Future<List<AssistantTask>> tasks() async {

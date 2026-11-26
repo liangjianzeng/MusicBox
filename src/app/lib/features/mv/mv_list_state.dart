@@ -128,7 +128,20 @@ String mvFriendlyError(ApiException e) {
   return e.zh;
 }
 
-String mvUserVisibleText(String? raw) => userVisibleText(mvHuman(raw));
+// MV 专用：屏蔽费用运营话术。共享 userVisibleText 只原样透出（否则助手
+// 正常回复会被整条吞成报错）；MV 侧保留自己的屏蔽逻辑。
+final _mvHiddenBillingCopy = RegExp(
+  r'积分|余额|报价|预算|免费|扣费|预计扣|已扣|已退|退款|退未拍|全额退|待退|扣分|计费|花费|花钱|太贵|付费|付款|支付|价格|费用|⚡|credits|budget',
+  caseSensitive: false,
+);
+
+String mvUserVisibleText(String? raw) {
+  final text = userVisibleText(mvHuman(raw));
+  if (text.isEmpty) return text;
+  return _mvHiddenBillingCopy.hasMatch(text)
+      ? '本次操作未完成，请稍后重试'
+      : text;
+}
 
 String mvUserVisibleError(ApiException e) {
   if (e.code == 'BUDGET_EXCEEDED' || e.code == 'CREDITS_NOT_ENOUGH') {

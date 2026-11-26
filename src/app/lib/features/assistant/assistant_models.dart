@@ -13,6 +13,7 @@ class AssistantRef {
         'project' => 'MV 项目',
         'shot' => '镜头',
         'persona' => '声音人格',
+        'image' => '图片',
         _ => type,
       };
 

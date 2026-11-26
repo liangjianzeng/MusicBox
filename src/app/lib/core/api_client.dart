@@ -46,16 +46,9 @@ String zhForCode(String code, [String? detail]) {
   }
 }
 
-final _hiddenBillingCopy = RegExp(
-  r'积分|余额|报价|预算|免费|扣费|预计扣|已扣|已退|退款|退未拍|全额退|待退|扣分|计费|花费|花钱|太贵|付费|付款|支付|价格|费用|⚡|credits|budget',
-  caseSensitive: false,
-);
-
-String userVisibleText(String? raw) {
-  final text = raw?.trim() ?? '';
-  if (text.isEmpty) return text;
-  return _hiddenBillingCopy.hasMatch(text) ? '本次操作未完成，请稍后重试' : text;
-}
+/// 用户可见文案：直接返回原文（计费信息不敏感，正常显示）。
+/// 历史实现会把含计费词的整条文案替换成报错，导致助手正常回复被吞掉，已去掉。
+String userVisibleText(String? raw) => raw?.trim() ?? '';
 
 /// REST 客户端：Bearer 注入 / 401→refresh 单飞重试 / 错误码→中文
 class ApiClient {
