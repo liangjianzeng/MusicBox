@@ -200,6 +200,15 @@ POST /v1/mv/image             multipart(file; jpg/png ≤8MB)        → 200 {im
 POST /v1/mv/projects/:id/cast/confirm  {character_id, cast_image_url, frame_sel[]:{url,score,sel}}
                               → 200 {character}                  # 拍板固化 viewRefs（身份真源）
                               # 校验 project 存在/归属 + character 归属 project；frame_sel 镜头级勾选
+### v2.19 定脸方案点（cast_method，2026-11-26 · 方案一默认）
+- **分支点**：`mv_characters.cast_method`（每角色独立）+ `mv_projects.cast_method`（项目级覆盖/继承基线）。
+- **白名单**：`i2v_first_frame`（**默认＝方案一**）、`h3_image_cast`（遗留，已证伪，仅显式启用）、`ref2va`、`likeness_lora`（未来）。
+- **上传角色图后默认走方案一**：`POST /v1/mv/projects` 接受 `character.cast_method`（或顶层 `b.cast_method`），缺省/非法一律回退 `i2v_first_frame`；非法值 → 400。
+- **统一定妆派发**：`POST /jobs {type:"cast", params:{cast_method?}}` 按 `cast_method` 分流 → `i2v_first_frame`=`mv_cast`（20⚡，女主原图 I2V 首帧直出定妆视频+抽帧+逐帧 facegate）；`h3_image_cast`=`mv_cast_image`（10⚡，遗留）。幂等键含 `cast_method`，不同方案各自幂等。
+- **方案一实现**（executor `lanes/mv.js` `realCastI2V`）：女主原图 `portrait_path` → `h3-fl2va` I2V（首帧锁脸，SP6 方法 A/B：首帧+prompt 换景/转头）→ ffmpeg 抽 ~13 帧 → facegate 逐帧对照原图（score/yaw/pitch/pass）。与遗留 `realCastVideo`（取 candidate 为首帧）共享 `castI2VCore` 抽帧/facegate 核心。
+- **默认不可被静默切**：新增方案只往白名单追加，默认恒 `i2v_first_frame`；回滚靠项目/角色级 `cast_method='h3_image_cast'`（显式、可逐项目）。
+- **形状**：`characterShape` 输出新增 `cast_method`（缺省回填 `i2v_first_frame`）。
+
 PATCH /v1/mv/projects/:id     {title?, brief?, script_json?, queue_mode?:'normal'|'night', ver}
                               → 200 {project} | 409 STALE        # ver CAS（script_ver 恒≥1）
 GET  /v1/mvs                  ?mine=1&cursor                      → 200 {items:[mv], next_cursor}
@@ -230,9 +239,12 @@ job.progress/job.done 语义不变。
 ## v2.3 mv_* job type payload 契约（lane → payload）
 
 ```js
-// type="mv_cast_image"（lane imgspark）—— files{cast_image_1..3} + face_scores[]
-{gender:'m'|'f', desc, portrait_path|null, anchor_refs[], seed}
-// type="mv_cast_video"（lane vidspark）—— files{cast_video:mp4, frame_1..13:png}
+// type="mv_cast"（lane vidspark）—— 定脸方案一：女主原图 I2V 首帧直出定妆视频+抽帧+逐帧 facegate（保脸成立，默认）
+//   派单入口 type:"cast"（jobs 端点）按 cast_method 分流：i2v_first_frame→mv_cast；h3_image_cast→mv_cast_image
+{gender:'m'|'f', desc, portrait_path, cast_method:'i2v_first_frame'|'h3_image_cast'|'ref2va'|'likeness_lora', seed}
+// type="mv_cast_image"（lane imgspark）—— files{cast_image_1..3} + face_scores[]（遗留分支，已证伪，仅显式启用）
+{gender:'m'|'f', desc, portrait_path|null, anchor_refs[], seed, cast_method?}
+// type="mv_cast_video"（lane vidspark）—— files{cast_video:mp4, frame_1..13:png}（遗留分支）
 {cast_image, seed, motion}
 // type="mv_storyboard"（lane imgspark）—— files{board_<shotId>:png} ×N
 {shots:[{id,desc,camera,cast_ids,background}], viewrefs:{char:['url',...]}}
@@ -255,12 +267,28 @@ job.progress/job.done 语义不变。
 //   takes[].dur_sec / mv_align.duration_sec —— ffprobe/ASR 缺席时的时长兜底（默认按 shot.sec）
 ```
 
+## v2.12 mv_* payload 增补批注（2026-11-24 · executor 自测已实现，均有安全默认值）
+
+> 编号补位说明：本批字段此前只以「v2.12 增补批注」形式活在上方 v2.3 payload 代码块的注释里，**没有对应章节**，
+> 而 `test/acceptance/v14_mv_instrumental.test.js` 等 3 处代码注释引用了「契约 v2.12」。本节把它正式落位
+> （append-only 纪律：不改写 v2.3 既往，仅补齐编号与口径）。
+
+- `takes[].segment` `string|number` —— 段落身份；相邻段取值不同 → 该边界加 xfade，否则段内硬切。
+- `takes[].xfade` `bool` —— 强制该边界淡入淡出（覆盖 segment 推导）。
+- `takes[].degraded` `string[]` —— 逐镜降级标记（如 `broll_subtitle` → 字幕强调），汇入 `sidecar.degraded_shots`。
+- `sidecar.degraded_shots` `string[]` —— 项目级降级标记（sidecar 为真源，App 侧据此出横幅）。
+- `sidecar.subtitles` `string[] | [{line|text,start,end}]` —— 来自 align timings；存在片名卡时整体自动 +2s 平移。
+- `takes[].dur_sec` / `mv_align.duration_sec` —— ffprobe/ASR 缺席时的时长兜底（默认按 `shot.sec`）。
+
+Status: 生效（编号补位，字段语义与上方批注一致）
+
 ## v2.4 积分口径（config.mv.credits，可调；照 v1 先扣后派单）
 
 | 项 | 值 | 说明 |
 |---|---|---|
-| mv_cast_image | 10 / 角色 | H3-Image ×3 候选 |
-| mv_cast_video | 20 / 角色 | 定妆视频+抽帧评分 |
+| **mv_cast** | **20 / 角色** | **定脸方案一：I2V 首帧直出定妆视频+抽帧+逐帧 facegate（默认，保脸成立）** |
+| mv_cast_image | 10 / 角色 | H3-Image ×3 候选（遗留分支，已证伪，仅显式启用） |
+| mv_cast_video | 20 / 角色 | 定妆视频+抽帧评分（遗留分支，取 candidate 照为首帧） |
 | mv_storyboard | 5 / 镜 | 关键帧 |
 | mv_shot | 40 / 镜（quality） | 拍摄（fast 档 15 留 N3） |
 | mv_lipsync | 20 / 镜（仅歌唱曲演唱镜） | 口型 |
@@ -283,7 +311,7 @@ job.progress/job.done 语义不变。
 | lane | types | timeoutMs | ladder 纪律 |
 |---|---|---|---|
 | imgspark | mv_cast_image, mv_storyboard | 900s | steps 8→4 恒定 turbo，重试保真；同参 OOM 不重试（铁律） |
-| vidspark | mv_cast_video, mv_shot | 3600s | 帧网格≤362；steps 恒定 4；不降分辨率档（计费诚信） |
+| vidspark | mv_cast, mv_cast_video, mv_shot | 3600s | 帧网格≤362；steps 恒定 4；不降分辨率档（计费诚信）；mv_cast=方案一 I2V 首帧定妆 |
 | lipsync | mv_lipsync | 1800s | 推理步数 30→20 一次；仍败 → B-roll 降级（非 fail 全片） |
 | align | mv_align | 120s | 纯 CPU 直落 |
 | ffmpeg | mv_preview, mv_compose（+ 一期 transcode/dsp）| 600s（mv_*） | — |
@@ -304,11 +332,12 @@ job.progress/job.done 语义不变。
 
 ### v2.8.1 派单（先扣后派单）
 ```
-POST /v1/mv/projects/:id/jobs   {type:"cast_image"|"cast_video"|"storyboard"|"preview"|"shoot"|"compose", params?}
+POST /v1/mv/projects/:id/jobs   {type:"cast"|"cast_image"|"cast_video"|"storyboard"|"preview"|"shoot"|"compose", params?}
                                 → 202 {job_id, credits_charged, idempotent}   # 幂等键=hash(user+project+type+ver+params)；
                                 #   命中活跃/近期同参 → 同一 job、不重复扣分（credits_charged=0, idempotent:true）
                                 # 扣分成功但 enqueue 抛错 → 即时全额 refund（reason=refund，账本配对）
-                                # params：cast_video 需 {cast_image_url}；shoot 需 {shot_id}；storyboard 无参（整项目关键帧，5×镜数）
+                                # params：cast 需 {cast_method?}（缺省/非法→方案一 i2v_first_frame）；cast_video 需 {cast_image_url}；shoot 需 {shot_id}；storyboard 无参（整项目关键帧，5×镜数）
+                                #   cast 前置=角色有上传人像（portrait_upload）；分流：i2v_first_frame→mv_cast（20⚡，默认）；h3_image_cast→mv_cast_image（10⚡，遗留）
                                 #   cast_video 前置=已有 cast_image_url；shoot 前置=项目 status≥scripting 且镜未成片
                                 # 项目 paused=1 时一切计费派单一律 402 BUDGET_EXCEEDED（恢复见 v2.11）
 POST /v1/mv/projects/:id/preview → 202 {job_id, credits_charged, idempotent}
@@ -773,3 +802,73 @@ POST /v1/assistant/feedback  {message_id,result}
 - App `test/speech_test.dart`：WAV 往返与「采样率跟着结果走」、契约字段不编造（无情绪就不出 `emotion` 键）、
   语音偏好 k=v 字符串落盘回读、清单只含 int8 且中文声库带 lexicon/dict、用户可见文案不含引擎型号名；
   首次模型准备先确认再下载、进度可取消、失败可重试、创作页可选择服务端而 MV 助手明确阻断、下载完成后不自动开录。
+
+## v5.0 统一端侧多模态全场景业务助手（2026-11-26 追加，append-only）
+
+### 定位与兼容边界
+
+- v5.0 把 v3.1 音乐助手、v2.13 制片助手、v4.0 统一助手收敛为「一个统一助手：一套工具白名单、一套确认票、一套上下文」。原三套端点（`/v1/music/assistant/*`、`/v1/mv/assistant/*`、`/v1/assistant/*`）行为保留兼容；统一助手在 `/v1/assistant/*` 下覆盖全场景，是默认入口。
+- 全场景 = 音乐（查询/改标题/改意图卡/微调/重出/翻唱/续长）+ MV（片名/简介/队列档/编剧改稿/重排/删镜/重拍）+ 通用（上下文/任务/票/曲库/解释）。统一助手共 19 个工具 = 音乐 7 + MV 7 + 通用 5；原入口可做的事，统一助手都能做（在相应开关下），但原入口不迁移、不废弃。
+- 端侧策略（D-1）：LLM 留在服务端（`assistant_chat_music` 开关 + LLM 端点可达时增强理解与工具选择），端侧保留规则层作为 always-available 基线；完整 LLM 不下沉到端侧，但保留可插拔解释层接口，供未来端侧小模型（N3）接入。
+- 多模态（D-3）：图片理解走服务端 VLM（:8090），端侧仅拍摄/选择本地图片并上传；继承既有同意与 72h TTL 规则。
+- 所有实体 ID 只接受服务端验证过的 `context.refs`；文本或 LLM 给出的 ID 不参与实体解析。跨用户引用丢弃，确认票归属与会话归属再次校验。
+- 拍板权在人：所有写操作先展示 diff/预估，由用户点击票面确认；助手回复不能说「已完成」，只能说「已提交确认」或「已开始执行」。
+
+### 工具白名单（19 项）
+
+| 工具 | 域 | 类型 | 说明 |
+|---|---|---|---|
+| `assistant.context` | 通用 | free | 校验并固化当前 refs/surface，输出人话上下文摘要 |
+| `assistant.task_query` | 通用 | free | 查询当前 job/project 或最近任务，不派单 |
+| `assistant.ticket_query` | 通用 | free | 查询当前用户待处理与最近确认票 |
+| `library.search` | 曲库 | free | 复用既有曲库检索，只返回当前用户可见作品 |
+| `music.query_status` | 音乐 | free | 查询作品/任务进度、位次、ETA |
+| `work.explain` | 音乐 | free | 基于当前作品字段给结构化解释，不虚构模型内幕 |
+| `music.set_title` | 音乐 | free + confirm | 改作品标题；先 diff 再确认 |
+| `music.set_card` | 音乐 | free + confirm | 改意图卡参数（mood/vocal/sec/bpm/count/scene_desc）；先 diff 再确认 |
+| `music.adjust_params` | 音乐 | paid + confirm | 自然语言微调；`assistant_actions` 闸门 |
+| `music.regenerate` | 音乐 | paid + confirm | 按当前参数重出 N 个候选；`assistant_actions` 闸门 |
+| `music.cover` | 音乐 | paid + confirm | 用某声音人格翻唱；`assistant_actions` 闸门 |
+| `music.extend` | 音乐 | paid + confirm | 续写时长；`assistant_actions` 闸门 |
+| `mv.set_title` | MV | free + confirm | 改片名；先 diff 再确认 |
+| `mv.set_brief` | MV | free + confirm | 改故事基调简介；先 diff 再确认 |
+| `mv.set_queue_mode` | MV | free + confirm | 切换正常档/夜间档；先 diff 再确认 |
+| `mv.script_suggest_edit` | MV | free + confirm | AI 编剧生成新版建议（不替换现行剧本，挂草稿） |
+| `mv.shot_reorder` | MV | paid + confirm | 重排镜头（需选中全部镜头）；`assistant_actions` 闸门 |
+| `mv.shot_delete` | MV | paid + confirm | 删除未成片镜头；`assistant_actions` 闸门 |
+| `mv.shot_reshoot` | MV | paid + confirm | 重拍镜头；`assistant_actions` 闸门 |
+
+- 分类纪律：免费读工具直接执行、不发票；所有写工具先确认票、再执行；付费工具另受 `assistant_actions` 闸门。`music.regenerate/cover/extend` 与 `mv.shot_reorder/shot_delete` 是 v5.0 新扩入统一助手的动作（原入口保留，不迁移）。
+- 执行复用既有内核：音乐写复用 `l2music.executeMusicTicketAction`，MV 写复用 `api/mv.executeTicketAction`；不重写计费与派单，唯一扣费点不变。
+
+### 确认票
+
+- 统一助手所有写操作走 `chat_tickets`（`scope='assistant'`），复用既有五连校验（hash12 + ver + TTL 60s + 一票一次 + 归属）；状态机 `pending → executing → succeeded|failed|reconciling|compensated`，`denied/expired` 为终态。
+- 付费动作无批准票绝不派单、不扣费；确认后才执行，重复 confirm 返回同一 ticket/job，不新增 job、不重复扣费。
+- 免费写（`set_title/set_card/set_brief/set_queue_mode/script_suggest_edit`）票面 `est:{credits:0,minutes:0}`，不受 `assistant_actions` 闸门限制；付费写（`adjust_params/regenerate/cover/extend/shot_reorder/shot_delete/shot_reshoot`）受闸门限制，默认关时返回 `gated`、不发票。
+- 既有条目：`mv_tickets` 与 `chat_tickets(scope='music')` 保留兼容，不做数据迁移；统一助手新票一律 `scope='assistant'`。
+
+### 开关与灰度收敛
+
+- `assistant_core`：全局助手总闸（关闭时 v5 端点 404）；种子默认开启、灰度 1.0。
+- `assistant_actions`：统一助手付费动作闸门，种子默认关闭；v5.0 在 V21 全绿后灰度开启。
+- `assistant_chat_music`：统一助手 LLM 增强开关；关闭或 LLM 不可达时 `mode:'rule'`。
+- 收敛：`music_assistant`/`assistant_chat` 保留原端点语义（v3.1/v4 兼容），不再作为统一助手入口；新入口一律走 `/v1/assistant/*`。
+- `GET /v1/assistant/bootstrap` 的 `capabilities` 固定为 `{chat,voice,actions,music,mv,llm}` 六字段，不新增字段，保持端侧兼容。
+
+### 数据形状
+
+- `entity_ref = {type:'work'|'intent'|'job'|'project'|'shot'|'persona', id}`（v5.0 核心）；`shot` 必须属于 refs 中同项目或当前会话固化的项目；refs 去重，最多 12 个。
+- `assistant_message` 增可选 `image` 字段（v5.0 扩展，阶段三）：`{image:{type:'image', id, url?, caption?}}`；端侧上传后由服务端 VLM 理解，继承同意与 72h TTL。文本消息体不变。
+- 统一会话/票表沿用 v13 既有列；v5.0 阶段一 schema-neutral（不新增列）。
+
+### 增量迁移
+
+- 阶段一（v5.0 后端统一）：schema-neutral，沿用 v13；`chat_tickets` 已含 `scope/session_id/meta_json/job_id/reply/expires_at/started_at/finished_at/failure_code`，`chat_sessions` 已含 `scope/surface/title`。
+- v14（预留，阶段三）：引入图片引用时新增 `assistant_images(id,user_id,session_id,ref_id,url,token_hash,expires_at,created_at)` 等；本版本不实现。
+
+### 验收
+
+- V21 统一助手全场景：19 工具白名单（读直接执行、免费写确认票、付费写 `assistant_actions` 闸门）；跨域动作（音乐重出/翻唱/续长、MV 片名/简介/队列档/编剧改稿/重排/删镜）复用既有执行内核且不重放；确认票五连与重复 confirm 不重派/不重复扣费；注入红线与工具越界；规则降级；离线事件补发；V13/V16/V17/V19 零回归。
+- V22（阶段三）：`image` ref 上传、服务端 VLM 理解、继承同意与 72h TTL；端侧仅拍摄/选择本地文件。
+- 端侧：统一入口承接音乐/MV 场景；旧音乐、MV 助手页转为薄壳（重定向到统一表面并预绑定 surface/refs）；端侧语音（阶段二）接入统一表面。

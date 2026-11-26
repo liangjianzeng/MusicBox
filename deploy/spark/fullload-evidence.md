@@ -8,7 +8,7 @@
 | 阶段 | 结果 |
 |---|---|
 | A 部署物料落 `~/MusicBox` | 通过（62 文件 src 落位，bin/etc/run/var 落位，ACE-Step 服务落位） |
-| B 全加载（生乐 + 生图 + 生视频 同时驻） | 通过，`ram_free` 40.4G→44.6G，阈值 20G 留裕 |
+| B 全加载（生乐 + 生图 + 生视频 同时驻） | 通过：11-25 fresh 加载 `ram_free` 40.4→44.6G；**11-26 全量后端 resident 复测三发连续无 unload/OOM**（收尾 ram_free 12.3G，视频族最重、留裕偏紧但稳定） |
 | C 客户端全链（小米13 直 USB） | 通过：音乐 66s · 定妆照 15.2s · 定妆视频 269.7s · 拍板推进 scripting |
 | C′ K40 验证（上传人像真路径，即 落位 首 版） | 通过：音乐 16s · 定妆照 26s · 定妆视频 275s · 拍板 scripting · facegate 四项真反馈 |
 | 阻塞 | 无（三项待跟进，见 §6） |
@@ -75,6 +75,21 @@ MISSING_ON_DGX  executor/templates/h3-image-broll.json
   后续请求即 `einx.errors.CallOperationError … Expected all tensors on the same device (cuda:0 vs cpu)`（ResidualFSQ 码book 半卸）。
 - DGX 档：`INIT.offload_to_cpu=False` · `LM_INIT.offload_to_cpu=False` · `ACESTEP_KEEP_RESIDENT=1` ⇒ `_release_gpu_vram()` 即只统计不卸。
 - 实测：重启后 C1 客户端生乐 66s 通过（无 warmup 即常驻）；`vram_peak_mb` 6848 即生乐 档 int8 DiT + 5Hz-LM 常驻。
+
+## 2b 阶段 B · 全加载复测（2026-11-26，全量后端 resident）
+
+背景：11-26 阶段 A 一次性拉起全量后端（ACE-Step :8190 · workers :8390/8391/8395 · sensevoice :8191 · API :7900 · executor 7 lane · ComfyUI :8188 · facegate :8395），随即跑 `fullload_real.mjs all`（音乐→图→视频三发，**不卸载**，前后内存采样）。
+
+| 步 | 产物 | 墙时 | 内存 ram_free |
+|---|---|---|---|
+| B1 生乐 | `1795667128795_music.wav` 8,640,044B · 45s | 69.2s（warmup 55.4 + model 13.8） | 25.9→18.7GB · `vram_peak_mb:9249` |
+| B2 生图 | `1795667149848_cast.png` 1,765,440B 864×1536 (h3-image-cast) | 21.0s | 18.7→19.9GB |
+| B3 生视频 | `1795667442629_cast_video.mp4` 4,613,091B 736×1312 (h3-fl2va, LENGTH 124 STEPS 4) | 292.8s | 19.9→12.3GB |
+
+host_available 全程（`/proc/meminfo`）：26568→19149→20363→12576 MB。
+三族引擎全驻（H3 图像+视频族自 SP6/11-25 多次加载后持续 resident），三发连续无 unload、无 OOM、无崩溃 ⇒ **功能通过**。
+
+观察：视频族为最重步骤，单步抽走 ~7.6GB，收尾 `ram_free` 12.3GB、host_available ~12.6GB，**低于 20G 留裕阈值**（11-25 档三族 fresh 加载收尾仍有 40.4–44.6G）。差异来自本次前置已全量起服务 + H3 族长期 resident，基线偏高；系统稳定未 OOM，但"全 resident + 全视频"是最坏情形，留裕偏紧。
 
 ## 5 待跟进
 
