@@ -189,6 +189,27 @@ EXECUTOR_MOCK=1 node src/executor/index.js \
 
 ### 3.4 终端 C — 验收
 
+#### 3.4.0 一条命令跑完所有整改判据（推荐先跑这个）
+
+```bash
+node scripts/verify_remediation.mjs              # 约 2.5 分钟，35 项一张表
+node scripts/verify_remediation.mjs --quick      # 只跑静态+从零链路+LLM 三面（约 1 分钟）
+node scripts/verify_remediation.mjs --ticket     # 追加 P1-1 门票 verify.sh --repeat 20（约 30 分钟）
+node scripts/verify_remediation.mjs --music      # 追加真机音乐链（需 GeekPro ACE-Step + SSH 隧道先起）
+```
+
+输出是「整改项 → 判据 → 实测数字 → 结论」的表，退出码即判据。它和三件套（`verify.sh` / 验收 / 冒烟）的关系是**编排而不是替代**：
+它自己去跑 `verify.sh --full`、逐个复跑 10 个整改套件、再从空 var 起服跑完整冒烟、最后打本机 LLM 三面。
+
+三条设计上的硬规矩（都是被坑过之后写进去的，别为了变绿去改它们）：
+1. 套件类判据要求 `fail==0` **且 `pass>=minCases`** —— 删套件或偷偷砍用例都会判红；
+2. 跑不了的东西记 **BLOCKED** 并写明前置条件（真机 GPU、真人像 C2、跨机音乐链），**绝不记 PASS**；
+3. 全程不碰仓内 `var/`，从零链路一律 `/tmp` 隔离 var。
+
+**2026-11-27 实测**：`合计 35 项：PASS=32 INFO=1 BLOCKED=2`，退出码 0；两个 BLOCKED 是 C2 真人像
+（本机 :8395/:8390/:8188 未跑）与跨机音乐链（需 GeekPro），均为环境未就绪而非代码不成立。
+
+
 ```bash
 cd ~/MusicBox
 node scripts/e2e_smoke.mjs http://127.0.0.1:7900        # 端到端 21 项，秒级~十几秒

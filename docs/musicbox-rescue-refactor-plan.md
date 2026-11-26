@@ -231,14 +231,17 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 | P0-7 仓库卫生 | ✅ | `git ls-files --others` = 0；`var-test` 由"只按个数回收"改为**个数 + 总量双上界**（20 轮全量跑完曾到 224M 顶破判据，现一轮全量后 151M / 32 目录）；`services/acestep/{venv,models,acestep-repo}` 是指向仓外的**符号链接**（`venv/` 目录型规则匹配不到）已显式忽略；`bin/status.sh` 无 DEAD |
 | P0-8 双 runbook | ✅ | **两份都从零实跑过**：`runbook-dev.md` §3 → `/healthz ok:true` + 执行器数据目录同源 + `e2e_smoke` **21/21**（mp3 1,202,721B / peaks 400 点 / adjust 谱系），产物隔离在 `/tmp/mb-p08/var`(37M) 未污染仓内 `var/`；`deploy/spark/README.md` §2 三发自检 **3/3 绿**（`/v1/models`→`qwen38-fp4`、文本 JSON、1x1 白图被如实描述）；`bin/status.sh` 无 DEAD、LLM `:8090 /v1/models` 200。顺带修掉两处"照抄必红"的文档坑：① spark README 引用的 `deploy/spark/sample.png` 不存在；② `e2e_smoke` 直接 fetch 服务端绝对产物 URL，换端口时去连 `192.168.1.10:7900` 报 ECONNREFUSED |
 
-> 一期"止血"的可交付定义已达成：**闸门常绿、随时可演示**。P2 之前先补 P0-8 与下面三条真缺陷。
+> 一期"止血"的可交付定义已达成：**闸门常绿、随时可演示**。P0-8 与下面三条真缺陷均已修完并验（见本表末行与契约 v5.2/v5.3）。
+>
+> **一条命令复验全部整改**：`node scripts/verify_remediation.mjs`（35 项一张表，退出码即判据；
+> `--ticket` 追加 20 轮 flake 门票，`--music` 追加跨机真机音乐链）。2026-11-27 实测 PASS=32 / INFO=1 / BLOCKED=2 / FAIL=0。
 | v5.3 追加：并发写冲突 | ✅ | 实机日志 `ERROR INTERNAL database is locked @ store.js:366` 落在"扣钱+派单"单事务上。`store.tx` 原为 deferred `BEGIN` → WAL 下读后升级写**立刻** SQLITE_BUSY（`busy_timeout` 在此不生效）。改 `BEGIN IMMEDIATE` + 503 `SERVICE_BUSY` 可重试 + 不污染 `audit_failures`。`test/acceptance/v32_db_busy.test.js`（3 例，真持锁逼竞争）：持锁 6.5s 必须 503 且**真的等过 4s**、余额不变、`Σdelta==balance` 成立、名下零 job；锁释放后重试必须 202 且扣款/账本/job 三者配对；短锁必须静默成功。**该套件当场抓出我引入的自伤**：`BEGIN IMMEDIATE` 放 `try` 外会打乱 BEGIN/COMMIT 配对，`txDepth` 泄漏后全站写路径静默失去原子性 |
 
-#### 一期复核中新发现、尚未修的真缺陷（不掩盖，按优先级）
+#### 一期复核中新发现的三条真缺陷（**均已修 + 已验**，保留原文以便追溯当初查到了什么）
 
-1. **声纹样本公共可读（PIPL 敏感个人信息）**：`api/personas.js:50` 把用户上传的声纹样本 `U.saveToOut(config.paths.out, …)` 落进 **`/f/*` 公共静态目录**，任何拿到 URL 的人都能下载别人的声纹（`fromWork` 复用作品母带，性质较轻）。修法：私有目录 + 属主鉴权取件路由 + 契约与合规用例。
-2. **人格参考音频跨机必失效**：`api/works.js:36` 把 `ref_abs_path` 以**服务端绝对路径**塞进 payload，执行器 `lanes/music.js:89` 直接用。当前拓扑（server 在 DGX、ACE-Step 在 GeekPro）下该路径在异机不存在 → 声线克隆静默不生效。与产物取件口同类问题，产物侧已用"按协议取件口回捞"修好，persona 侧还没有。
-3. `music.set_card` 的 `mood` 长度上限在 `l2assistant/core.js` 是 60、`l2music/governance.js` 是 20，而 `api/works.js:23` canonical 是 `slice(0,20)` → 助手路径放行、写入被截断（静默丢字）。应统一到单一共享常量。
+1. ✅ **声纹样本公共可读（PIPL 敏感个人信息）**（已修：私有目录 `var/voices` + 属主/执行器鉴权取件口 + `private, no-store`；验收 `v30_persona_privacy.test.js`）：`api/personas.js:50` 把用户上传的声纹样本 `U.saveToOut(config.paths.out, …)` 落进 **`/f/*` 公共静态目录**，任何拿到 URL 的人都能下载别人的声纹（`fromWork` 复用作品母带，性质较轻）。修法：私有目录 + 属主鉴权取件路由 + 契约与合规用例。
+2. ✅ **人格参考音频跨机必失效**（已修：payload 带 `persona.id`，执行器经鉴权取件口回捞 + TTL 缓存，取不到则诚实降级；并修掉 guide/cover 异机分裂；验收 `v31_persona_crosshost.test.js`）：`api/works.js:36` 把 `ref_abs_path` 以**服务端绝对路径**塞进 payload，执行器 `lanes/music.js:89` 直接用。当前拓扑（server 在 DGX、ACE-Step 在 GeekPro）下该路径在异机不存在 → 声线克隆静默不生效。与产物取件口同类问题，产物侧已用"按协议取件口回捞"修好，persona 侧还没有。
+3. ✅ `music.set_card` 的 `mood` 长度上限在 `l2assistant/core.js` 是 60、`l2music/governance.js` 是 20，而 `api/works.js:23` canonical 是 `slice(0,20)` → 助手路径放行、写入被截断（静默丢字）。应统一到单一共享常量。
 
 
 ### P2 收敛重复（2–4 周，边跑业务边绞杀）
