@@ -68,6 +68,9 @@ function makeApi(baseUrl) {
     let body;
     if (opts.json !== undefined) { headers['Content-Type'] = 'application/json'; body = Buffer.from(JSON.stringify(opts.json), 'utf8'); }
     else if (opts.multipart) { const mp = buildMultipart(opts.multipart.fields, opts.multipart.files); headers['Content-Type'] = mp.contentType; body = mp.body; }
+    // 必须显式给 Content-Length：Node 客户端在 GET+body 时既不补 Content-Length 也不补 Transfer-Encoding，
+    // 线上请求缺帧 → 被服务端解析层直接 400（无 JSON 错误体），排查时极易误判成"鉴权/路由有问题"。
+    if (body) headers['Content-Length'] = String(Buffer.byteLength(body));
     if (opts.token) headers['Authorization'] = 'Bearer ' + opts.token;
     if (opts.executorToken) headers['X-Executor-Token'] = opts.executorToken;
     const r = await httpReq(method, baseUrl + pathname, { headers, body, timeoutMs: opts.timeoutMs });

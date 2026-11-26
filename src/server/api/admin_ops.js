@@ -158,9 +158,12 @@ function creditsAdjust(ctx) {
   const u = store.get('SELECT id FROM users WHERE id=?', userId);
   if (!u) throw new U.ApiError('NOT_FOUND', '用户不存在');
   const reason = 'admin_adjust:' + String(b.reason || 'manual').slice(0, 60);
-  const after = store.tx(() => store.appendLedger(userId, delta, reason, 'admin', actor(ctx)));
-  const bus = require('../core/bus');
-  try { bus.creditDelta(userId, delta, after); } catch (e) { /* 在线推送失败无碍 */ }
+  const after = store.tx(() => {
+    const bal = store.appendLedger(userId, delta, reason, 'admin', actor(ctx));
+    const bus = require('../core/bus');
+    store.onCommit(() => { try { bus.creditDelta(userId, delta, bal); } catch (e) { /* 在线推送失败无碍 */ } }); // 提交后再推
+    return bal;
+  });
   store.log('admin.credit_adjust', { by: actor(ctx), user_id: userId, delta, balance_after: after, reason });
   return { status: 200, body: { ok: true, balance_after: after } };
 }

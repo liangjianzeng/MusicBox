@@ -253,6 +253,18 @@ function main() {
   server.on('upgrade', handleUpgrade);
   server.headersTimeout = 60000;
   server.requestTimeout = 120000; // long-poll 25s + LLM 20s*2 余量
+  // 解析层错误（畸形请求行/请求头）默认由 Node 裸回 "HTTP/1.1 400 Bad Request"，无 body、无 code ——
+  // 契约规定所有错误响应都是 JSON {code,message}，这里补齐信封，避免客户端只能靠状态码猜。
+  server.on('clientError', (err, socket) => {
+    if (!socket || socket.writableEnded || socket.destroyed) return;
+    const code = String((err && err.code) || 'PARSE_ERROR');
+    const payload = JSON.stringify({ code: 'BAD_REQUEST', message: '请求行或请求头不合法（' + code + '）' });
+    try {
+      socket.end('HTTP/1.1 400 Bad Request\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: ' +
+        Buffer.byteLength(payload) + '\r\nconnection: close\r\n\r\n' + payload);
+    } catch (e) { try { socket.destroy(); } catch (e2) { /* 已断开 */ } }
+  });
+
   server.listen(config.port, config.bind, () => {
     console.log(new Date().toISOString(), `[MusicBox] 服务端已启动 http://${config.bind}:${config.port} ；产物 /f/* ；WSS /ws ；健康 /healthz`);
     if (config.bind !== '127.0.0.1' && config.bind !== 'localhost' && SEC.audit().length) {
