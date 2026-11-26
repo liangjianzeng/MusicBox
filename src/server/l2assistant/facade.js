@@ -53,7 +53,7 @@ async function bootstrap(user) {
   };
 }
 
-// 助手语音能力跟随识别服务真实健康（此前硬编码 false，与「v3.2 端侧语音已上线」自相矛盾）。
+// 助手语音能力跟随识别服务真实健康（此前硬编码 false，与「v3.3 端侧语音已上线」自相矛盾）。
 // 5s 缓存避免每次 bootstrap 都打 ASR；探测失败只影响麦克风提示，文字对话恒可用（产品底线）。
 let _voiceCache = { at: 0, ok: false };
 async function voiceAvailable() {

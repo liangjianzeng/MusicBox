@@ -200,7 +200,10 @@ POST /v1/mv/image             multipart(file; jpg/png ≤8MB)        → 200 {im
 POST /v1/mv/projects/:id/cast/confirm  {character_id, cast_image_url, frame_sel[]:{url,score,sel}}
                               → 200 {character}                  # 拍板固化 viewRefs（身份真源）
                               # 校验 project 存在/归属 + character 归属 project；frame_sel 镜头级勾选
-### v2.19 定脸方案点（cast_method，2026-11-26 · 方案一默认）
+### v2.23 定脸方案点（cast_method，2026-11-26 · 方案一默认）
+
+> 编号更正（2026-11-27）：本节此前误标 `v2.19`，与音乐线「意图卡点改落库」重号。
+> 保留 `v2.19`＝音乐线意图卡点改（v1 §2 与 V8 的引用指向它，零改动）；定脸方案点改号 `v2.23`。语义未变。
 - **分支点**：`mv_characters.cast_method`（每角色独立）+ `mv_projects.cast_method`（项目级覆盖/继承基线）。
 - **白名单**：`i2v_first_frame`（**默认＝方案一**）、`h3_image_cast`（遗留，已证伪，仅显式启用）、`ref2va`、`likeness_lora`（未来）。
 - **上传角色图后默认走方案一**：`POST /v1/mv/projects` 接受 `character.cast_method`（或顶层 `b.cast_method`），缺省/非法一律回退 `i2v_first_frame`；非法值 → 400。
@@ -659,7 +662,10 @@ POST /v1/music/tickets/:id/deny     {} → 200 { ok:true }         # 记 denied�
 
 
 
-## v3.2 端侧语音：本机管手感、服务端管准（2026-11-25 追加，append-only）
+## v3.3 端侧语音：本机管手感、服务端管准（2026-11-25 追加，append-only）
+
+> 编号更正（2026-11-27）：本节此前误标 `v3.2`，与「创作选择项目录下发」重号。
+> 保留 `v3.2`＝创作选择项目录（App 的 style_options / 词典同源引用指向它，零改动）；端侧语音改号 `v3.3`。语义未变。
 
 ### 动机（2026-11-24 排查实录）
 语音线此前只有服务端一条路。`:8191` worker 没人启动时，`intent_voice` job 仍报 `done/100/"意图卡已生成"`，

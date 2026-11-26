@@ -265,7 +265,7 @@ class ApiClient {
     return '${d['intent_id']}';
   }
 
-  /// 文本意图线（契约 v3.2 POST /v1/intent/text）：端侧识别出的逐字、或在
+  /// 文本意图线（契约 v3.3 POST /v1/intent/text）：端侧识别出的逐字、或在
   /// 「你说的话」确认页改过的字，直接进理解链（不再过 ASR）。
   /// 带 [intentId] 时原地重编译——改字即重新理解，不用重录。
   Future<String> intentText(String text, {String? intentId, String? hint}) async {
@@ -286,7 +286,7 @@ class ApiClient {
     return '${d['intent_id']}';
   }
 
-  /// 语音能力自检（契约 v3.2 GET /v1/health/speech）：服务端识别服务在不在、
+  /// 语音能力自检（契约 v3.3 GET /v1/health/speech）：服务端识别服务在不在、
   /// 为什么不在。原样回传 Map，由设置页诚实呈现，这里不下结论。
   Future<Map<String, dynamic>> speechHealth() async {
     final d = await _do(() => _dio.get('/v1/health/speech')) as Map;
