@@ -357,6 +357,33 @@ async function adjust(ctx) {
   return d;
 }
 
+// 素材路径收敛（2026-11-26 抢救 P0-4）：dsp 的 params.srcs 由用户可控，旧实现
+//   /^[\w./-]+$/.test(s) ? path.join(out, s) : s
+// 同时犯两个错：① 字符类放行 . 与 /，`../../../../etc/passwd` 直接通过并被 join 归一化逃出 out；
+// ② 不匹配时原样透传 → 绝对路径更佳。执行器 lib/paths.js 首选按绝对路径取文件，等于任意文件读 + 可写回落。
+// 现在：只允许落在 config.paths.out 内（含 /f/<rel> 形式），且必须是该用户名下作品/候选引用过的产物。
+function confineArtifactSrc(user, s) {
+  const raw = String(s || '').trim();
+  if (!raw) throw new U.ApiError('BAD_REQUEST', '素材路径不能为空');
+  const m = /^https?:\/\//i.test(raw) ? raw.match(/\/f\/(.+)$/) : null;
+  const rel = m ? m[1] : (/^file:\/\//i.test(raw) ? '' : raw);
+  if (!rel || rel.indexOf('\0') >= 0) throw new U.ApiError('BAD_REQUEST', '素材路径不合法');
+  const root = path.resolve(config.paths.out);
+  const abs = path.isAbsolute(rel) ? path.resolve(rel) : path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw new U.ApiError('BAD_REQUEST', '素材路径不合法');
+  const base = path.basename(abs);
+  const p1 = base, p2 = '%/' + base;
+  const owns = store.get(
+    `SELECT 1 AS ok FROM works WHERE user_id=? AND (audio_master=? OR audio_master LIKE ? OR audio_playback=? OR audio_playback LIKE ? OR waveform_ref=? OR waveform_ref LIKE ?)
+     UNION ALL
+     SELECT 1 FROM candidates c JOIN works w ON w.id=c.work_id
+       WHERE w.user_id=? AND (c.audio_master=? OR c.audio_master LIKE ? OR c.audio_playback=? OR c.audio_playback LIKE ?)
+     LIMIT 1`,
+    user.id, p1, p2, p1, p2, p1, p2, user.id, p1, p2, p1, p2);
+  if (!owns) throw new U.ApiError('BAD_REQUEST', '素材不存在或不属于当前用户');
+  return abs;
+}
+
 // —— POST /v1/works/:id/dsp {op,params} ——
 function dsp(ctx) {
   const user = auth.requireUser(ctx); ctx.user = user;
@@ -369,12 +396,12 @@ function dsp(ctx) {
   if (!w.audio_master) throw new U.ApiError('BAD_REQUEST', '该作品暂无音频源文件');
   credits.charge(user.id, AC.credits().dsp, 'dsp', 'work', w.id);
   const srcs = [path.join(config.paths.out, w.audio_master)]
-    .concat(U.toArr(params.srcs).map(s => /^[\w./-]+$/.test(s) ? path.join(config.paths.out, s) : s));
+    .concat(U.toArr(params.srcs).map(s => confineArtifactSrc(user, s)));
   const r = engine.enqueue({
     type: 'dsp', payload: { op, src: srcs[0], srcs, params, work_id: w.id }, userId: user.id,
     idemKey: normalizeForIdem(user, 'dsp', { op, params, candidate_id: w.id }), creditsCost: AC.credits().dsp,
   });
-  if (!r.idempotent) { /* 已扣分 */ } else { credits.refund(user.id, AC.credits().dsp, 'dsp', 'work'); }
+  if (!r.idempotent) { /* 已扣分 */ } else { credits.refund(user.id, AC.credits().dsp, 'dsp', 'work', w.id); }
   return { status: 202, body: { job_id: r.job.id } };
 }
 

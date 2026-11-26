@@ -7,6 +7,10 @@ const U = require('./util');
 
 let db = null;
 
+// —— MV 定脸方案白名单（契约：方案一默认 i2v_first_frame；新增方案只追加、不改默认）——
+const CAST_METHODS = ['i2v_first_frame', 'h3_image_cast', 'ref2va', 'likeness_lora'];
+const CAST_METHOD_DEFAULT = 'i2v_first_frame'; // 方案一：女主原图 I2V 首帧（SP6 实测定档）
+
 // —— 迁移：schema_version 表驱动，追加新版本即可 ——
 const MIGRATIONS = [
   {
@@ -314,6 +318,22 @@ CREATE INDEX IF NOT EXISTS idx_mv_tickets_session ON mv_tickets(session_id, stat
 CREATE INDEX IF NOT EXISTS idx_mv_tickets_job ON mv_tickets(job_id);
 `,
   },
+  {
+    // v14 · 定脸方案点（方案一 I2V 首帧为默认，2026-11-26）：
+    //   mv_characters.cast_method（每角色独立）+ mv_projects.cast_method（项目级覆盖/继承基线）
+    version: 14,
+    sql: `
+ALTER TABLE mv_projects ADD COLUMN cast_method TEXT DEFAULT 'i2v_first_frame';
+ALTER TABLE mv_characters ADD COLUMN cast_method TEXT DEFAULT 'i2v_first_frame';
+`,
+  },
+  {
+    // v15 · 抢救 P0-3（2026-11-26）：管理员令牌加过期（此前 admin token 明文单列且永不过期）
+    version: 15,
+    sql: `
+ALTER TABLE admins ADD COLUMN token_expire_at TEXT;
+`,
+  },
 ];
 
 function init() {
@@ -473,4 +493,5 @@ module.exports = {
   getBalance, lastLedger, appendLedger,
   getPref, setPref, allPrefs,
   workOf, candidateOf, intentOf, publicUrl,
+  CAST_METHODS, CAST_METHOD_DEFAULT,
 };

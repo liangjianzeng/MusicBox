@@ -25,8 +25,11 @@ function envFloat(name, dflt) {
 }
 
 const config = {
+  // —— 运行环境（2026-11-26 抢救 P0-3）：prod 下任何不安全默认值直接拒绝启动，见 core/security.js ——
+  env: envStr('MB_ENV', 'dev'),
   // —— 服务端口与对外地址 ——
   port: envInt('MB_PORT', 7900),
+  bind: envStr('MB_BIND', '0.0.0.0'), // 真机调试需局域网可达；生产建议 127.0.0.1 + 反向代理
   publicBaseUrl: envStr('MB_PUBLIC_BASE_URL', 'http://127.0.0.1:7900'),
   // —— 执行器与引擎端点（CONTRACTS §0 定稿）——
   executorToken: envStr('MB_EXECUTOR_TOKEN', 'dev-executor-token'),
@@ -72,7 +75,7 @@ const config = {
     // credits.mv 定价（架构 §6 / mv-plan §6，照 v1 先扣后派单）：
     // preview 首次免（D9）；系统自动补拍恒 0（initiated_by=system）
     credits: {
-      align: 5, cast_image: 10, cast_video: 20, storyboard: 5,
+      align: 5, cast: 20, cast_image: 10, cast_video: 20, storyboard: 5,
       shot: 40, lipsync: 20, preview: 5, compose: 10,
       reshoot_system: 0,
     },
@@ -101,7 +104,11 @@ const config = {
     },
   },
   // —— 开发开关 ——
-  DEV_OTP: envStr('MB_DEV_OTP', '1') === '1' ? '888888' : null, // 固定验证码（仅开发）
+  // 固定验证码（仅开发）：2026-11-26 抢救 P0-3 把默认值由 '1' 翻为 '0'（fail-closed）。
+  // 开发机需免短信登录时显式导出 MB_DEV_OTP=1；prod 下带此开关会被 assertBootable 拒绝启动。
+  DEV_OTP: envStr('MB_DEV_OTP', '0') === '1' ? '888888' : null,
+  // worker 内部令牌（ASR/口型/换脸/对齐）：非空时 server 侧健康探测与执行器调用一律带 x-worker-token
+  workerToken: envStr('MB_WORKER_TOKEN', ''),
   otpTtlMs: 5 * 60000,
   accessTokenTtlMs: 2 * 60 * 60000,
   refreshTokenTtlMs: 30 * 24 * 3600 * 1000,

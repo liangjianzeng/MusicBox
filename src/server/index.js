@@ -226,6 +226,9 @@ function handleUpgrade(req, socket) {
 
 // —— 启动 ——
 function main() {
+  // 抢救 P0-3：启动前安全审计。MB_ENV=prod 且存在不安全默认值 → 拒绝启动（退出码 2）。
+  const SEC = require('./core/security');
+  if (!SEC.assertBootable().ok) process.exit(2);
   store.init();
   // 模型节点/管理员种子（空表时写入默认，保证节点不写死且服务可启动）
   const modelnodes = require('./core/modelnodes');
@@ -247,10 +250,25 @@ function main() {
   server.on('upgrade', handleUpgrade);
   server.headersTimeout = 60000;
   server.requestTimeout = 120000; // long-poll 25s + LLM 20s*2 余量
-  server.listen(config.port, () => {
-    console.log(new Date().toISOString(), `[MusicBox] 服务端已启动 http://127.0.0.1:${config.port} ；产物 /f/* ；WSS /ws ；健康 /healthz`);
+  server.listen(config.port, config.bind, () => {
+    console.log(new Date().toISOString(), `[MusicBox] 服务端已启动 http://${config.bind}:${config.port} ；产物 /f/* ；WSS /ws ；健康 /healthz`);
+    if (config.bind !== '127.0.0.1' && config.bind !== 'localhost' && SEC.audit().length) {
+      console.warn(new Date().toISOString(), `[security] 正在监听 ${config.bind}（非回环）且仍有 ${SEC.audit().length} 项开发默认值 ——`
+        + ' 局域网内任意主机都能打到本服务，上线前请改绑 127.0.0.1 或置于反向代理之后');
+    }
   });
   process.on('uncaughtException', (e) => console.error(new Date().toISOString(), 'FATAL', U.sanitizeEngineNames(e && e.message || String(e))));
+  // 抢救 P1（此前无优雅退出）：SIGTERM/SIGINT 停止接新连接后退出；long-poll 会挂住连接，故加 500ms 强制兜底。
+  let shuttingDown = false;
+  const shutdown = (sig) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(new Date().toISOString(), `[MusicBox] 收到 ${sig}，停止接收新连接`);
+    try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
+    setTimeout(() => process.exit(0), 500).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
   return server;
 }
 
