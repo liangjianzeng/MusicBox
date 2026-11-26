@@ -31,7 +31,7 @@ const LANES = {
     ladder(payload) { return { ...payload }; }, // steps 8→4 恒定 turbo，重试保真；同参 OOM 不重试（铁律）
   },
   vidspark: {
-    types: ['mv_cast_video', 'mv_shot'],        // i2v：定妆视频/拍摄
+    types: ['mv_cast', 'mv_cast_video', 'mv_shot'], // i2v：定妆视频（含方案一）/拍摄
     timeoutMs: 3600000,                         // 3600s
     ladder(payload) { return { ...payload }; }, // 帧网格≤362/steps 恒 4/不降分辨率档——计费诚信（DEV-LADDER-PAY），不降交付维度
   },

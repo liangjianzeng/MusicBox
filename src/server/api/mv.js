@@ -82,6 +82,7 @@ function characterShape(r) {
   return {
     id: r.id, project_id: r.project_id, gender: r.gender || 'f', name: r.name || '',
     source: r.source || 'ai', portrait_upload: r.portrait_upload || null,
+    cast_method: r.cast_method || store.CAST_METHOD_DEFAULT, // 定脸方案（默认方案一 i2v_first_frame）
     cast_image_url: r.cast_image_url ? store.publicUrl(r.cast_image_url) : null,
     cast_video_url: r.cast_video_url ? store.publicUrl(r.cast_video_url) : null,
     viewrefs: U.jparse(r.viewrefs_json, []) || [],
@@ -89,6 +90,12 @@ function characterShape(r) {
     frames: U.jparse(r.frames_json, []) || [],           // 定妆视频抽帧评分（机检写入）
     confirmed_at: r.confirmed_at || null,
   };
+}
+
+// 定脸方案解析（契约白名单）：非法/缺省一律回退方案一默认，不动默认分支
+function resolveCastMethod(v) {
+  const m = String(v || '').trim();
+  return store.CAST_METHODS.includes(m) ? m : store.CAST_METHOD_DEFAULT;
 }
 function shotShape(r) {
   if (!r) return null;
@@ -159,21 +166,23 @@ function createProject(ctx) {
   if (brief) rules.moderateFields([brief]);
   const dup = store.get("SELECT id FROM mv_projects WHERE work_id=? AND status NOT IN ('failed','canceled')", workId);
   if (dup) throw new U.ApiError('BAD_REQUEST', '该作品已有进行中的 MV 项目，请先取消或完成它', 409);
+  // 上传角色图后默认走「方案一」（i2v_first_frame）；非法/缺省一律回退默认，不动默认分支
+  const castMethod = resolveCastMethod(b.cast_method || (ch.cast_method || ''));
   const id = U.uid('mvp_');
   const now = U.nowIso();
   const lic = MV.mvModelLicense;
   store.tx(() => {
     store.run(
       `INSERT INTO mv_projects(id,user_id,work_id,title,kind,status,brief,cast_json,script_json,script_ver,
-        budget_credits,paused,credits_cost,credits_refunded,ai_label,license_model,license_usage,queue_mode,created_at,updated_at)
-       VALUES(?,?,?,?,?, 'casting', ?, '[]', NULL, 1, ?, 0, 0, 0, 1, ?, ?, 'normal', ?, ?)`,
+        budget_credits,paused,credits_cost,credits_refunded,ai_label,license_model,license_usage,cast_method,queue_mode,created_at,updated_at)
+       VALUES(?,?,?,?,?, 'casting', ?, '[]', NULL, 1, ?, 0, 0, 0, 1, ?, ?, ?, 'normal', ?, ?)`,
       id, user.id, workId, String(work.title || '未命名 MV').slice(0, 80), kind, brief || null,
-      MV.budgetDefault, lic.model, lic.usage, now, now);
+      MV.budgetDefault, lic.model, lic.usage, castMethod, now, now);
     const cid = U.uid('mvc_');
     store.run(
-      'INSERT INTO mv_characters(id,project_id,gender,name,source,portrait_upload,viewrefs_json) VALUES(?,?,?,?,?,?,?)',
+      'INSERT INTO mv_characters(id,project_id,gender,name,source,portrait_upload,viewrefs_json,cast_method) VALUES(?,?,?,?,?,?,?,?)',
       cid, id, ch.gender, String(ch.name || '').slice(0, 40) || (ch.gender === 'm' ? '男主角' : '女主角'),
-      ch.source, uploadRow ? uploadRow.id : null, U.jstr([]));
+      ch.source, uploadRow ? uploadRow.id : null, U.jstr([]), castMethod);
     store.run('UPDATE mv_projects SET cast_json=? WHERE id=?', U.jstr([cid]), id);
   });
   store.log('mv.project.create', { user_id: user.id, project_id: id, work_id: workId, kind });
@@ -675,6 +684,29 @@ async function mvJobs(ctx) {
   const work = projectWork(p);
   const shots = store.all('SELECT * FROM mv_shots WHERE project_id=? ORDER BY seq ASC', p.id);
 
+  if (type === 'cast') {
+    // 统一定妆派发（方案一默认）：按 cast_method 分流
+    //   i2v_first_frame（默认）→ mv_cast：女主原图 I2V 首帧直出定妆视频+抽帧+逐帧 facegate（SP6 方案一，保脸成立）
+    //   h3_image_cast         → mv_cast_image：遗留分支（h3-image-cast ×3 陌生候选，已证伪，仅显式启用）
+    if (!ch) throw new U.ApiError('NOT_FOUND', '角色不存在');
+    const method = resolveCastMethod((params && params.cast_method) || ch.cast_method);
+    const portraitPath = ch.portrait_upload ? (store.get('SELECT path FROM uploads WHERE id=?', ch.portrait_upload) || {}).path || null : null;
+    if (!portraitPath) throw new U.ApiError('BAD_REQUEST', '角色缺少上传人像（portrait），请先 POST /v1/mv/image 上传');
+    const desc = lex.sanitize([p.brief, ch.name].filter(Boolean).join('，') || '自然光半身棚拍，多角度自然转头与表情');
+    if (method === 'h3_image_cast') {
+      return chargeThenEnqueue(user, p, {
+        jobType: 'mv_cast_image', cost: MV.credits.cast_image, reason: 'mv_cast_image',
+        payload: { project_id: p.id, character_id: ch.id, gender: ch.gender, desc, portrait_path: portraitPath, anchor_refs: [], seed: U.randInt(900000) + 1000, cast_method: method },
+        idemKey: idemOf(user, p, 'cast', { m: method, kind: 'cast_image' }),
+      });
+    }
+    // 方案一默认：I2V 首帧直出定妆视频（首帧=女主原图锁脸）+ 抽帧 + facegate 逐帧评分
+    return chargeThenEnqueue(user, p, {
+      jobType: 'mv_cast', cost: MV.credits.cast, reason: 'mv_cast',
+      payload: { project_id: p.id, character_id: ch.id, gender: ch.gender, desc, portrait_path: portraitPath, cast_method: method, seed: U.randInt(900000) + 1000 },
+      idemKey: idemOf(user, p, 'cast', { m: method, kind: 'i2v' }),
+    });
+  }
   if (type === 'cast_image') {
     if (!ch) throw new U.ApiError('NOT_FOUND', '角色不存在');
     return chargeThenEnqueue(user, p, {
@@ -734,7 +766,7 @@ async function mvJobs(ctx) {
   if (type === 'preview' || type === 'shoot' || type === 'compose') {
     return dispatchPreviewShootCompose(user, p, type, params, shots, work, ch);
   }
-  throw new U.ApiError('BAD_REQUEST', 'type 仅支持 cast_image/cast_video/storyboard/preview/shoot/compose/align');
+  throw new U.ApiError('BAD_REQUEST', 'type 仅支持 cast/cast_image/cast_video/storyboard/preview/shoot/compose/align');
 }
 
 // preview / shoot / compose 派单（jobs 与专用端点共用）

@@ -98,6 +98,34 @@ function gateTool(tools, tool, args, ctx, opts) {
         return { ok: false, code: (r && r.code) || 'FORBIDDEN', message: (r && r.message) || ('该 ' + spec.of + ' 不属于当前上下文，已拒绝') };
       }
       clean[key] = r.value;
+    } else if (spec.kind === 'shotId') {
+      const id = String(v).trim();
+      const r = entityCheck ? entityCheck('shot', id, ctx) : { ok: true, value: id };
+      if (!r || !r.ok) {
+        store.log(auditKind + '.audit', {
+          action: 'entity_rejected', tool, key, of: 'shot', id: id.slice(0, 40),
+          user_id: ctx && ctx.user && ctx.user.id || null, subject_id: ctx && ctx.subject && ctx.subject.id || null,
+        });
+        return { ok: false, code: (r && r.code) || 'FORBIDDEN', message: (r && r.message) || '该镜头不属于当前上下文，已拒绝' };
+      }
+      clean[key] = r.value;
+    } else if (spec.kind === 'shotIds') {
+      if (!Array.isArray(v)) return { ok: false, code: 'BAD_REQUEST', message: key + ' 需为镜头 id 数组' };
+      const ids = v.map((x) => String(x).trim()).filter(Boolean);
+      if (ids.length > spec.max || ids.length < spec.min || new Set(ids).size !== ids.length) {
+        return { ok: false, code: 'BAD_REQUEST', message: key + ' 需为不重复的完整镜头 id 数组' };
+      }
+      for (const id of ids) {
+        const r = entityCheck ? entityCheck('shot', id, ctx) : { ok: true, value: id };
+        if (!r || !r.ok) {
+          store.log(auditKind + '.audit', {
+            action: 'entity_rejected', tool, key, of: 'shot', foreign: [id].slice(0, 3),
+            user_id: ctx && ctx.user && ctx.user.id || null, subject_id: ctx && ctx.subject && ctx.subject.id || null,
+          });
+          return { ok: false, code: (r && r.code) || 'FORBIDDEN', message: (r && r.message) || '镜头清单含非当前上下文镜头，已拒绝' };
+        }
+      }
+      clean[key] = ids;
     } else {
       return { ok: false, code: 'INTERNAL', message: '工具参数域配置异常' };
     }

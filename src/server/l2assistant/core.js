@@ -10,9 +10,12 @@ const lex = require('../rules/mv_lexicon');
 const gov = require('../l2/governance_core');
 
 const AUDIT = 'assistant';
-const REF_TYPES = ['work', 'intent', 'job', 'project', 'shot', 'persona'];
-const PAID_ACTIONS = ['music.adjust_params', 'mv.shot_reshoot'];
-const WRITE_ACTIONS = ['music.set_title', 'music.set_card', ...PAID_ACTIONS];
+const REF_TYPES = ['work', 'intent', 'job', 'project', 'shot', 'persona', 'image'];
+// 付费动作（expensive 且扣费）：统一助手下由 assistant_actions 闸门控制；免费写（set_title/set_card 等）仍走确认票但不受该闸门限制。
+const PAID_ACTIONS = ['music.adjust_params', 'music.regenerate', 'music.cover', 'music.extend', 'mv.shot_reorder', 'mv.shot_delete', 'mv.shot_reshoot'];
+// 所有写操作（免费写 + 付费写）：统一助手中一律先确认票、再执行。
+const WRITE_ACTIONS = ['music.set_title', 'music.set_card', 'mv.set_title', 'mv.set_brief', 'mv.set_queue_mode', 'mv.script_suggest_edit', ...PAID_ACTIONS];
+// 统一工具白名单（19 项，契约 v5.0）：音乐 7 + MV 7 + 只读/解释 5。复用 l2music/execute 与 api/mv 既有执行内核。
 const TOOLS = {
   'assistant.context': { params: {}, readOnly: true },
   'assistant.task_query': { params: {}, readOnly: true },
@@ -32,6 +35,35 @@ const TOOLS = {
   },
   'work.explain': { params: {}, readOnly: true },
   'music.adjust_params': { params: { text: { kind: 'string', min: 1, max: 200 } }, expensive: true },
+  'music.regenerate': {
+    params: { count: { kind: 'integer', min: config.gen.count_min, max: config.gen.count_max, optional: true } },
+    expensive: true,
+    est: (args) => ({ credits: (AC.credits().per_candidate || 15) * (Number(args && args.count) || config.gen.count_default), minutes: 2 }),
+  },
+  'music.cover': {
+    params: { persona_id: { kind: 'entity', of: 'persona' }, cover_strength: { kind: 'integer', min: 0, max: 100, optional: true } },
+    expensive: true,
+    est: () => ({ credits: AC.credits().cover || 20, minutes: 3 }),
+  },
+  'music.extend': {
+    params: { sec: { kind: 'integer', min: config.gen.sec_min, max: config.gen.sec_max, optional: true } },
+    expensive: true,
+    est: () => ({ credits: AC.credits().extend || 20, minutes: 2 }),
+  },
+  'mv.set_title': { params: { title: { kind: 'string', min: 1, max: 60 } }, expensive: false, est: () => ({ credits: 0, minutes: 0 }) },
+  'mv.set_brief': { params: { brief: { kind: 'string', min: 1, max: 300 } }, expensive: false, est: () => ({ credits: 0, minutes: 0 }) },
+  'mv.set_queue_mode': { params: { queue_mode: { kind: 'enum', values: ['normal', 'night'] } }, expensive: false, est: () => ({ credits: 0, minutes: 0 }) },
+  'mv.script_suggest_edit': { params: { instruction: { kind: 'string', min: 1, max: 200 } }, expensive: false, est: () => ({ credits: 0, minutes: 2 }) },
+  'mv.shot_reorder': {
+    params: { order: { kind: 'shotIds', min: 1, max: 64 } },
+    expensive: true,
+    est: (args) => { const c = AC.credits().mv || config.mv.credits; return { credits: (args.order || []).length * (c.storyboard || 0) + (c.compose || 0), minutes: 2 + Math.max(1, Math.round(config.mv.est.compose / 60)) }; },
+  },
+  'mv.shot_delete': {
+    params: { shot_id: { kind: 'shotId' } },
+    expensive: true,
+    est: () => { const c = AC.credits().mv || config.mv.credits; return { credits: c.compose || 0, minutes: Math.max(1, Math.round(config.mv.est.compose / 60)) }; },
+  },
   'mv.shot_reshoot': {
     params: { shot_id: { kind: 'entity', of: 'shot' }, reason: { kind: 'string', min: 1, max: 120, optional: true } },
     expensive: true,
@@ -146,6 +178,11 @@ function resolveRefs(user, refsIn, session) {
       const p = project && sh && project.id === sh.project_id ? entities.get('project:' + project.id) : null;
       if (sh && p) row = sh;
     }
+    else if (ref.type === 'image') {
+      // 图片 = 上传对象：仅认本用户且未过 72h TTL 的 uploads 行
+      const up = store.get('SELECT * FROM uploads WHERE id=? AND user_id=? AND expire_at> ?', ref.id, user.id, U.nowIso());
+      if (up) row = up;
+    }
     if (row) put(ref, row); else rejected.push(ref.type);
   }
   if (rejected.length) audit('refs.rejected', { user_id: user.id, session_id: session && session.id, count: rejected.length });
@@ -155,8 +192,13 @@ function refOf(type, entities) {
   for (const [key, row] of entities) if (key.startsWith(type + ':') && row) return { type, id: row.id };
   return null;
 }
+function imageRow(resolved) {
+  if (!resolved || !resolved.entities) return null;
+  for (const [key, row] of resolved.entities) if (key.startsWith('image:') && row && row.path) return row;
+  return null;
+}
 function contextSummary(resolved, surface) {
-  const names = { work: '作品', intent: '意图卡', job: '任务', project: 'MV 项目', shot: '镜头', persona: '声音人格' };
+  const names = { work: '作品', intent: '意图卡', job: '任务', project: 'MV 项目', shot: '镜头', persona: '声音人格', image: '图片' };
   if (!resolved.refs.length) return '当前没有已核验的创作对象；你可以先描述需求，或从作品、任务、MV 中选择上下文。';
   return '已核验上下文（' + (surface || 'global') + '）：' + resolved.refs.map((r) => names[r.type] + ' ' + r.id.slice(0, 12)).join('、') + '。跨用户对象已自动忽略。';
 }
@@ -410,7 +452,7 @@ function notifyJob(job, status) {
 
 module.exports = {
   AUDIT, TOOLS, PAID_ACTIONS, WRITE_ACTIONS,
-  audit, cleanText, cleanMeta, validSurface, resolveRefs, refOf, contextSummary, withEvents, ticketEvent,
+  audit, cleanText, cleanMeta, validSurface, resolveRefs, refOf, imageRow, contextSummary, withEvents, ticketEvent,
   createSession, ownSession, recentSession, sessionShape, touchSession,
   appendMessage, getMessages, storedResponse,
   ticketShape, ownTicket, listTickets, issueTicket, claimTicket, denyTicket, finishTicket, replayAction, sweepTickets,

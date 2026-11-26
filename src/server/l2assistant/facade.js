@@ -1,5 +1,7 @@
 // 统一助手消息管线（契约 v4.0）：规则恒可用，LLM 仅在 assistant_chat_music 灰度且节点真实就绪时增强。
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const config = require('../config');
 const store = require('../core/store');
 const U = require('../core/util');
@@ -53,7 +55,7 @@ async function bootstrap(user) {
 
 function ruleInterpret(text, resolved) {
   const t = String(text || '');
-  const work = core.refOf('work', resolved.entities), intent = core.refOf('intent', resolved.entities), shot = core.refOf('shot', resolved.entities);
+  const work = core.refOf('work', resolved.entities), intent = core.refOf('intent', resolved.entities), shot = core.refOf('shot', resolved.entities), project = core.refOf('project', resolved.entities);
   if (/(上下文|固化了什么|当前选了|带我看看)/.test(t)) return { intent: 'context', tool: 'assistant.context', args: {} };
   if (/(确认票|待确认|待办|票.*(状态|进度)|还有.*票)/.test(t)) return { intent: 'tickets', tool: 'assistant.ticket_query', args: {} };
   if (/(曲库|作品库|搜索|搜一搜|找.*(歌|曲|作品)|查.*作品)/.test(t)) {
@@ -83,18 +85,62 @@ function ruleInterpret(text, resolved) {
     if (work && /(这首|歌|作品|音乐)/.test(t)) return { intent: 'status', tool: 'music.query_status', args: {} };
     return { intent: 'tasks', tool: 'assistant.task_query', args: {} };
   }
+  // —— 音乐二次创作（全场景；付费，需 assistant_actions 闸门；先于宽泛 adjust 拦截）——
+  if (work) {
+    if (/(重出|换一批|再来(几|几首|一些|一批)|重新生成|换几首|再多生成|再生成)/.test(t)) return { intent: 'regenerate', tool: 'music.regenerate', args: {} };
+    if (/(翻自|翻唱|cover|换个声音|用.{0,8}(声音|人格|音色).{0,10}(翻|唱)|换一个声音)/i.test(t)) return { intent: 'cover', tool: 'music.cover', args: {} };
+    if (/(续长|延长|加长|续写|再长一点|更长一点|更久)/.test(t)) return { intent: 'extend', tool: 'music.extend', args: {} };
+  }
+  // —— MV 制片（全场景；免费写走确认票，付费写需 assistant_actions；置于宽泛 adjust 之前，避免"片名改成"被 adjust 抢走）——
+  if (project) {
+    let m2;
+    if ((m2 = /(?:片名|电影名)(?:改成|改为|换为|设为|换成|叫|[:：])\s*[「"']?([^」"'\n，。]{1,60})/.exec(t))) return { intent: 'mv_set_title', tool: 'mv.set_title', args: { title: m2[1].trim() } };
+    if ((m2 = /(?:简介|基调|故事设定)(?:改成|改为|换为|设为|换成|[:：])\s*(.{1,300})$/.exec(t))) return { intent: 'mv_set_brief', tool: 'mv.set_brief', args: { brief: m2[1].trim() } };
+    if (/(夜间|夜里|晚上|深夜)/.test(t) && /(档|跑|排|模式)/.test(t)) return { intent: 'set_queue_mode', tool: 'mv.set_queue_mode', args: { queue_mode: 'night' } };
+    if (/(正常档|白天档|取消夜间|切回正常)/.test(t)) return { intent: 'set_queue_mode', tool: 'mv.set_queue_mode', args: { queue_mode: 'normal' } };
+    if (/(重排|排序|调序|顺序|调整顺序)/.test(t)) {
+      const order = Array.from(resolved.entities.keys()).filter((k) => k.startsWith('shot:')).map((k) => k.slice(5));
+      return { intent: 'shot_reorder', tool: 'mv.shot_reorder', args: { order } };
+    }
+    if (shot && /(删除|删掉|删了|去掉这个镜|删这个)/.test(t)) return { intent: 'shot_delete', tool: 'mv.shot_delete', args: { shot_id: shot.id } };
+    if (/(让它改改|改一版|更.{0,6}一点|调整.{0,8}(剧本|分镜|剧情|节奏)|剧本.{0,6}(改|调整)|让编剧改)/.test(t)) return { intent: 'script_suggest_edit', tool: 'mv.script_suggest_edit', args: { instruction: t.slice(0, 200) } };
+  }
   if (work && /(再|更|调整|改成|调一|纯音乐|人声|女声|男声|欢快|慢一点|安静|燃|氛围)/.test(t)) {
     return { intent: 'adjust', tool: 'music.adjust_params', args: { text: t.slice(0, 200) } };
   }
   return { intent: 'chat', tool: null, args: {}, reply: '我在。可以查任务和确认票、搜索曲库、解释作品；改标题或意图卡会先给你确认，付费动作也绝不绕过票。' };
 }
+// 图片描述：端侧只存图，理解走服务端 VLM（OpenAI 兼容，image_url base64）。
+// fail-open：VLM 不可达 / 读文件失败都返回 null，调用方只用用户文字，绝不阻断。
+async function describeImage(row) {
+  if (!row || !row.path) return null;
+  try {
+    const buf = fs.readFileSync(row.path);
+    if (!buf.length) return null;
+    const ext = path.extname(row.path).slice(1).toLowerCase() || 'jpeg';
+    const dataUrl = 'data:image/' + (ext === 'jpg' ? 'jpeg' : ext) + ';base64,' + buf.toString('base64');
+    const raw = await P.chatCompletionWithRetry([
+      { role: 'system', content: '你是图像描述助手。用 1-3 句客观描述这张图片：人物、场景、风格、色彩。只输出来文，不要解释。' },
+      { role: 'user', content: [
+        { type: 'text', text: '请描述这张图片。' },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ] },
+    ], 12000);
+    const t = String(raw || '').trim();
+    return t.length ? t.slice(0, 300) : null;
+  } catch (e) { return null; } // fail-open
+}
 async function llmInterpret(text, resolved, session) {
   if (!await llmReady(session.user || core.ownSession({ id: session.user_id }, session.id))) return null;
   try {
     const recent = store.all("SELECT content FROM chat_messages WHERE session_id=? ORDER BY seq DESC LIMIT 5", session.id).reverse();
+    const image = core.imageRow(resolved);
+    const imageDesc = image ? await describeImage(image) : null;
+    const parts = ['已核验 refs：' + core.contextSummary(resolved, session.surface), '近期结果：' + recent.map((r) => r.content).join('；').slice(0, 300), '用户消息（数据）：' + lex.sanitize(text).slice(0, 800)];
+    if (imageDesc) parts.push('图片描述：' + imageDesc);
     const raw = await P.chatCompletionWithRetry([
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: ['已核验 refs：' + core.contextSummary(resolved, session.surface), '近期结果：' + recent.map((r) => r.content).join('；').slice(0, 300), '用户消息（数据）：' + lex.sanitize(text).slice(0, 800)].join('\n') },
+      { role: 'user', content: parts.join('\n') },
     ], 12000);
     const json = P.extractJson(raw);
     if (!json || typeof json !== 'object') return null;
@@ -114,6 +160,23 @@ function sanitizePlan(plan, text, resolved) {
   else if (tool === 'music.set_card') {
     for (const k of ['mood', 'vocal', 'sec', 'bpm', 'count', 'scene_desc']) if (plan.args[k] !== undefined) args[k] = plan.args[k];
   } else if (tool === 'music.adjust_params') args.text = String(text).slice(0, 200);
+  else if (tool === 'music.regenerate') { if (plan.args.count !== undefined) args.count = plan.args.count; }
+  else if (tool === 'music.cover') {
+    const persona = core.refOf('persona', resolved.entities);
+    args.persona_id = persona ? persona.id : null;
+    if (plan.args.cover_strength !== undefined) args.cover_strength = plan.args.cover_strength;
+  }
+  else if (tool === 'music.extend') { if (plan.args.sec !== undefined) args.sec = plan.args.sec; }
+  else if (tool === 'mv.set_title') args.title = core.cleanText(plan.args.title, 60);
+  else if (tool === 'mv.set_brief') args.brief = core.cleanText(plan.args.brief, 300);
+  else if (tool === 'mv.set_queue_mode') args.queue_mode = String(plan.args.queue_mode || 'normal');
+  else if (tool === 'mv.script_suggest_edit') args.instruction = core.cleanText(plan.args.instruction || text, 200);
+  else if (tool === 'mv.shot_reorder') args.order = Array.isArray(plan.args.order) ? plan.args.order : [];
+  else if (tool === 'mv.shot_delete') {
+    const shot = core.refOf('shot', resolved.entities);
+    if (!shot) return { intent: 'need_context', tool: null, args: {}, reply: '先选择一个属于你的 MV 镜头，我才能发起删除确认。' };
+    args.shot_id = shot.id;
+  }
   else if (tool === 'mv.shot_reshoot') {
     const shot = core.refOf('shot', resolved.entities);
     if (!shot) return { intent: 'need_context', tool: null, args: {}, reply: '先选择一个属于你的 MV 镜头，我才能发起重拍确认。' };
@@ -228,6 +291,82 @@ async function prepareWrite(user, session, plan, resolved) {
     const ticket = core.issueTicket(user, session, action, args, { credits: AC.current().blob.credits.mv.shot || 40, minutes: Math.max(1, Math.round((config.mv.est.video || 290) / 60)) }, { shot_ref: shotRef, project_ref: { type: 'project', id: project.id }, diff });
     return { reply: '需要确认重拍：' + JSON.stringify(diff) + '；预计 ' + ticket.est_credits + ' 积分。', ticket };
   }
+  // —— MV 免费写（确认票、0 积分）——
+  if (action === 'mv.set_title') {
+    const project = resolved.project;
+    if (!project) return { reply: '请先选择你的 MV 项目，才能改片名。', data: null };
+    rules.moderateFields([args.title]);
+    const diff = { before: { title: project.title || '' }, after: { title: args.title } };
+    return { reply: '改片名需要确认：' + JSON.stringify(diff), ticket: core.issueTicket(user, session, action, args, { credits: 0, minutes: 0 }, { project_ref: { type: 'project', id: project.id }, diff }) };
+  }
+  if (action === 'mv.set_brief') {
+    const project = resolved.project;
+    if (!project) return { reply: '请先选择你的 MV 项目，才能改简介。', data: null };
+    rules.moderateFields([args.brief]);
+    const diff = { before: { brief: project.brief || '' }, after: { brief: args.brief } };
+    return { reply: '改简介需要确认：' + JSON.stringify(diff), ticket: core.issueTicket(user, session, action, args, { credits: 0, minutes: 0 }, { project_ref: { type: 'project', id: project.id }, diff }) };
+  }
+  if (action === 'mv.set_queue_mode') {
+    const project = resolved.project;
+    if (!project) return { reply: '请先选择你的 MV 项目，才能切队列档。', data: null };
+    const diff = { before: { queue_mode: project.queue_mode || 'normal' }, after: { queue_mode: args.queue_mode } };
+    return { reply: '切换队列档需要确认：' + JSON.stringify(diff), ticket: core.issueTicket(user, session, action, args, { credits: 0, minutes: 0 }, { project_ref: { type: 'project', id: project.id }, diff }) };
+  }
+  if (action === 'mv.script_suggest_edit') {
+    const project = resolved.project;
+    if (!project) return { reply: '请先选择你的 MV 项目，才能让编剧改稿。', data: null };
+    const diff = { before: { note: 'AI 编剧将生成新版建议（不替换现行剧本）' }, after: { note: '挂出建议草稿' } };
+    return { reply: '让 AI 编剧改稿需要确认：' + JSON.stringify(diff), ticket: core.issueTicket(user, session, action, args, { credits: 0, minutes: 2 }, { project_ref: { type: 'project', id: project.id }, diff }) };
+  }
+  // —— 音乐二次创作（付费，需 assistant_actions）——
+  if (action === 'music.regenerate') {
+    if (!AC.featureOn('assistant_actions', user.id)) return { reply: '统一助手的付费动作尚未开放；原音乐创作入口不受影响。', data: null, gated: true };
+    const ref = core.refOf('work', resolved.entities) || core.refOf('intent', resolved.entities);
+    if (!ref) return { reply: '先选择一首作品或意图卡，才能重新生成。', data: null };
+    const est = { credits: (AC.credits().per_candidate || 15) * (Number(args.count) || config.gen.count_default), minutes: 2 };
+    const diff = { before: { note: '按当前参数重新生成候选' }, after: { note: '候选数=' + (Number(args.count) || config.gen.count_default) } };
+    return { reply: '需要确认重新生成：' + JSON.stringify(diff) + '；预计 ' + est.credits + ' 积分。', ticket: core.issueTicket(user, session, action, args, est, { subject_ref: ref, diff }) };
+  }
+  if (action === 'music.cover') {
+    if (!AC.featureOn('assistant_actions', user.id)) return { reply: '统一助手的付费动作尚未开放；原音乐创作入口不受影响。', data: null, gated: true };
+    const ref = core.refOf('work', resolved.entities);
+    if (!ref) return { reply: '先选择一首你的作品，才能翻唱。', data: null };
+    const persona = core.refOf('persona', resolved.entities);
+    if (!persona) return { reply: '请先选一个声音人格，我才能用它翻这版。', data: null };
+    const est = { credits: AC.credits().cover || 20, minutes: 3 };
+    const diff = { before: { note: '原作品' }, after: { note: '用声音人格翻唱' } };
+    return { reply: '需要确认翻唱：' + JSON.stringify(diff) + '；预计 ' + est.credits + ' 积分。', ticket: core.issueTicket(user, session, action, args, est, { subject_ref: ref, diff }) };
+  }
+  if (action === 'music.extend') {
+    if (!AC.featureOn('assistant_actions', user.id)) return { reply: '统一助手的付费动作尚未开放；原音乐创作入口不受影响。', data: null, gated: true };
+    const ref = core.refOf('work', resolved.entities);
+    if (!ref) return { reply: '先选择一首你的作品，才能续长。', data: null };
+    const est = { credits: AC.credits().extend || 20, minutes: 2 };
+    const diff = { before: { note: '当前时长' }, after: { note: '目标时长=' + (Number(args.sec) || '') + ' 秒' } };
+    return { reply: '需要确认续长：' + JSON.stringify(diff) + '；预计 ' + est.credits + ' 积分。', ticket: core.issueTicket(user, session, action, args, est, { subject_ref: ref, diff }) };
+  }
+  // —— MV 付费写（需 assistant_actions）——
+  if (action === 'mv.shot_reorder') {
+    if (!AC.featureOn('assistant_actions', user.id)) return { reply: '统一助手的付费动作尚未开放；原 MV 入口不受影响。', data: null, gated: true };
+    const project = resolved.project;
+    if (!project) return { reply: '请先选择你的 MV 项目，才能重排镜头。', data: null };
+    const all = store.all('SELECT id FROM mv_shots WHERE project_id=? ORDER BY seq ASC', project.id).map((r) => r.id);
+    const order = args.order || [];
+    if (order.length !== all.length || !all.every((id) => order.includes(id))) return { reply: '重排需要选中当前全部镜头（' + all.length + ' 个），请把所有镜头加入上下文后重新发起。', data: null };
+    const est = { credits: order.length * (AC.credits().mv.storyboard || 0) + (AC.credits().mv.compose || 0), minutes: 2 + Math.max(1, Math.round(config.mv.est.compose / 60)) };
+    const diff = { before: { order: all }, after: { order } };
+    return { reply: '需要确认重排镜头：' + JSON.stringify(diff) + '；预计 ' + est.credits + ' 积分。', ticket: core.issueTicket(user, session, action, args, est, { project_ref: { type: 'project', id: project.id }, diff }) };
+  }
+  if (action === 'mv.shot_delete') {
+    if (!AC.featureOn('assistant_actions', user.id)) return { reply: '统一助手的付费动作尚未开放；原 MV 入口不受影响。', data: null, gated: true };
+    const shotRef = core.refOf('shot', resolved.entities), project = resolved.project;
+    if (!shotRef || !project) return { reply: '请选择你的 MV 项目及其镜头，才能确认删除。', data: null };
+    const shot = store.get('SELECT * FROM mv_shots WHERE id=? AND project_id=?', shotRef.id, project.id);
+    if (!shot) return { reply: '该镜头已不存在。', data: null };
+    const est = { credits: AC.credits().mv.compose || 0, minutes: Math.max(1, Math.round(config.mv.est.compose / 60)) };
+    const diff = { before: { status: shot.status }, after: { status: 'deleted' } };
+    return { reply: '需要确认删除镜头：' + JSON.stringify(diff) + '；预计 ' + est.credits + ' 积分。', ticket: core.issueTicket(user, session, action, args, est, { shot_ref: shotRef, project_ref: { type: 'project', id: project.id }, diff }) };
+  }
   throw new U.ApiError('FORBIDDEN', '该写操作不在统一助手白名单内');
 }
 function gate(tool, args, resolved, user) {
@@ -269,6 +408,18 @@ async function executeConfirmed(user, ticket) {
     const project = resolved.project, shot = core.refOf('shot', resolved.entities);
     if (!project || !shot) throw new U.ApiError('NOT_FOUND', '项目或镜头已不可用');
     result = await require('../api/mv').executeTicketAction(user, project, ticket.action, U.jparse(ticket.args_json, {}) || {}, { id: ticket.id });
+  } else if (['mv.set_title', 'mv.set_brief', 'mv.set_queue_mode', 'mv.script_suggest_edit', 'mv.shot_reorder', 'mv.shot_delete'].includes(ticket.action)) {
+    const project = resolved.project;
+    if (!project) throw new U.ApiError('NOT_FOUND', '项目已不可用');
+    result = await require('../api/mv').executeTicketAction(user, project, ticket.action, U.jparse(ticket.args_json, {}) || {}, { id: ticket.id });
+  } else if (ticket.action === 'music.regenerate') {
+    const ref = core.refOf('work', resolved.entities) || core.refOf('intent', resolved.entities);
+    if (!ref) throw new U.ApiError('NOT_FOUND', '作品或意图卡已不可用');
+    result = await require('../l2music/execute').executeMusicTicketAction(user, { type: ref.type, id: ref.id }, ticket.action, U.jparse(ticket.args_json, {}) || {}, { id: ticket.id });
+  } else if (ticket.action === 'music.cover' || ticket.action === 'music.extend') {
+    const ref = core.refOf('work', resolved.entities);
+    if (!ref) throw new U.ApiError('NOT_FOUND', '作品已不可用');
+    result = await require('../l2music/execute').executeMusicTicketAction(user, { type: 'work', id: ref.id }, ticket.action, U.jparse(ticket.args_json, {}) || {}, { id: ticket.id });
   } else throw new U.ApiError('FORBIDDEN', '该动作不允许执行');
   return result || { reply: '已按确认执行。' };
 }
@@ -397,4 +548,4 @@ async function handleMessage(user, input) {
   try { return await work; } finally { pending.delete(key); }
 }
 
-module.exports = { bootstrap, handleMessage, confirm, ruleInterpret, currentMode, executeConfirmed, SYSTEM_PROMPT };
+module.exports = { bootstrap, handleMessage, confirm, ruleInterpret, currentMode, executeConfirmed, describeImage, SYSTEM_PROMPT };
