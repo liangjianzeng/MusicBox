@@ -646,7 +646,7 @@ describe('V13 MV 契约与账本（mock）', () => {
     const g = await S.newGuest();
     const { pid, ids } = await fundedProject(g, { shots: 1 });
     await toPreviewed(g, pid);
-    S.executor.failPlan = { type: 'mv_shot', code: 'RENDER_FAILED', message: '拍摄失败', times: 3 };
+    S.executor.planFail({ type: 'mv_shot', code: 'RENDER_FAILED', message: '拍摄失败', times: 3 }); // planFail：只命中武装之后创建的 job，防被残留 job 蹭掉失败次数
     const estVer = (await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token })).json.project.est_ver;
     const boot = await S.api('POST', '/v1/mv/projects/' + pid + '/boot', { token: g.token, json: { est_ver: estVer } });
     assert.strictEqual(boot.status, 202);

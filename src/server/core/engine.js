@@ -930,6 +930,26 @@ function auditLedgerInvariant(sinceHours) {
   if (bad) console.warn(U.nowIso(), '[MusicBox] 账本不变量破损用户数 =', bad, '（累计', creditViolations, '）');
   return bad;
 }
+// 子任务看护上界（抢救计划 P1-2 资损收口）。旧写法是「有子任务就无上限续租」：子任务被 parked /
+// 执行器永久掉线时，父 job 会**永远**停在 running（用户已扣的积分既不到「交付」也不到「退款」），
+// 属于最难被发现的一类资损。现改为：超过 parentGuardMs 仍无终态的子任务判失败，
+// 让父 job 走各自收口（music → 以已产出的 WAV 候选降级交付；mv_shot → 按已就绪镜头收口）。
+function expireStuckChildren(parentId, parentType) {
+  const guardMs = Math.max(1000, Number(config.engine.parentGuardMs) || 30 * 60 * 1000);
+  const cutoff = new Date(Date.now() - guardMs).toISOString();
+  const stuck = store.all(
+    "SELECT * FROM jobs WHERE parent_job_id=? AND status IN ('queued','leased','running') AND created_at<=? ORDER BY created_at ASC LIMIT 20",
+    parentId, cutoff);
+  for (const c of stuck) {
+    store.log('job.child_guard_timeout', {
+      job_id: c.id, parent_job_id: parentId, parent_type: parentType, type: c.type,
+      attempts: c.attempts === undefined ? null : c.attempts, created_at: c.created_at, guard_ms: guardMs,
+    });
+    requeueOrFail(c, 'CHILD_TIMEOUT', '子任务看护超时（超过 ' + Math.round(guardMs / 60000) + ' 分钟无进展），已放弃该项后处理');
+  }
+  return stuck.length;
+}
+
 let sweepTicks = 0;
 let creditViolations = 0;
 function getCreditViolations() { return creditViolations; }
@@ -948,8 +968,12 @@ function sweep() {
     if (job.type === 'music') {
       const pendingChildren = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id);
       if (pendingChildren.length) {
-        store.run('UPDATE jobs SET lease_expire_at=? WHERE id=?', U.isoAfterMs(2 * config.engine.leaseMs), job.id);
-        continue;
+        expireStuckChildren(job.id, job.type); // 看护上界：卡死的后处理子任务判失败，父 job 才能收口
+        const still = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id);
+        if (still.length) {
+          store.run('UPDATE jobs SET lease_expire_at=? WHERE id=?', U.isoAfterMs(2 * config.engine.leaseMs), job.id);
+          continue;
+        }
       }
       if (finalizeMusicParent(job.id)) continue;
     }
@@ -957,8 +981,12 @@ function sweep() {
     if (job.type === 'mv_shot') {
       const pendingChildren = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id);
       if (pendingChildren.length) {
-        store.run('UPDATE jobs SET lease_expire_at=? WHERE id=?', U.isoAfterMs(2 * config.engine.leaseMs), job.id);
-        continue;
+        expireStuckChildren(job.id, job.type); // 同 music：看护必须有上界
+        const still = store.all("SELECT id FROM jobs WHERE parent_job_id=? AND status NOT IN ('done','failed','canceled')", job.id);
+        if (still.length) {
+          store.run('UPDATE jobs SET lease_expire_at=? WHERE id=?', U.isoAfterMs(2 * config.engine.leaseMs), job.id);
+          continue;
+        }
       }
       if (finalizeMvClipParent(job.id)) continue;
     }

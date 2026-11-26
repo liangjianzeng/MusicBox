@@ -275,7 +275,7 @@ describe('V16 MV 助手治理与确认票（mock）', () => {
     S.seedLedger(g.user.id, 500);
     const pid = await mkProject(S, g);
     const shotId = S.seedMvShot(pid, { seq: 1, kind: 'story', status: 'clipReady' });
-    S.executor.failPlan = { type: 'mv_shot', times: 3, code: 'TEST_FAIL', message: '验收计划失败' };
+    S.executor.planFail({ type: 'mv_shot', times: 3, code: 'TEST_FAIL', message: '验收计划失败' }); // 同上：按计划武装时刻定域
     try {
       const issued = await asst(S, g, { text: '重拍这一镜，因为画面穿帮', chips: chipsOf(pid, [shotId]) });
       const detail = await S.api('GET', '/v1/mv/projects/' + pid, { token: g.token });

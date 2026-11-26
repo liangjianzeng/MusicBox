@@ -62,7 +62,10 @@ describe('V1 账号与账本', () => {
   it('V1-④ 失败 → 自动全额 refund（ledger 增 reason=refund 行，契约 §1/§4）', async () => {
     const g = await S.newGuest();
     // fake executor 连败 3 次 → 服务端 attempts>=3 → failed + 全额 refund（契约 §4）
-    S.executor.failPlan = { type: 'music', code: 'MOCK_ENGINE_ERROR', times: 3, message: '验收模拟：后台生成失败' };
+    // 前面用例 generate 后不等终态，会留下在飞的 music job —— 必须显式排除，
+    // 否则它们把 3 次计划失败吃掉，本用例的 job 就会卡在 progress=90（等一个 parked 的转码子 job）直到 60s 超时。
+    const stale = S.db.all("SELECT id FROM jobs WHERE type='music' AND status NOT IN ('done','failed','canceled')").map((r) => r.id);
+    S.executor.planFail({ type: 'music', code: 'MOCK_ENGINE_ERROR', times: 3, message: '验收模拟：后台生成失败', exclude: stale });
     try {
       const r = await S.generate(g.token, genBody({ count: 1 }));
       assert.strictEqual(r.status, 202, 'V1-④ generate 应 202，实际 ' + r.status + ' ' + r.text.slice(0, 200));

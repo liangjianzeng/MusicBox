@@ -228,7 +228,8 @@ class FakeExecutor {
     this.executorId = null;
     this.pollIntervalMs = 1500;
     this.transcodeMode = 'park'; // 'park'(默认：占住租约不改变 job 状态，保证资金断言无竞态) | 'auto'(按环境) | 'real' | 'fail'
-    this.failPlan = null;        // {type, code, message, times}：连败 N 次逼出 attempts>=3 → failed+refund
+    this.failPlan = null;        // {type, code, message, times, armedAt}：连败 N 次逼出 attempts>=3 → failed+refund
+    // 计划性失败请用 planFail()（自动带 armedAt，只命中武装之后创建的 job）
     this.musicPayloads = [];     // 领到的 music job payload 记录（V8 adjust 断言 delta 用）
     this.seenJobIds = new Set();
     this.errors = [];            // executor 侧异常（complete 失败等），断言不含意外错误时查看
@@ -247,6 +248,16 @@ class FakeExecutor {
     this._loop = this._runLoop(); // 不 await，后台跑
   }
   _exHeaders() { return { 'X-Executor-Id': this._exId }; }
+  // 武装"计划性连败"：armedAt 之后的 job 才算数，前面用例残留的 queued job 不得来蹭这 N 次失败
+  // exclude：已在飞的同型 job id（Set/数组），它们不得来蹭这 N 次计划失败。
+  // 用法：const stale = S.db.all("SELECT id FROM jobs WHERE type='music' AND status NOT IN ('done','failed','canceled')").map(r=>r.id);
+  //       S.executor.planFail({ type:'music', times:3, code:'…', message:'…', exclude: stale });
+  planFail(plan) {
+    const p = Object.assign({}, plan);
+    if (p.exclude) p.exclude = p.exclude instanceof Set ? p.exclude : new Set(p.exclude);
+    this.failPlan = p;
+    return this.failPlan;
+  }
 
   async _runLoop() {
     while (!this.stopping) {
@@ -271,10 +282,19 @@ class FakeExecutor {
     const exJson = (extra) => Object.assign({ executor_id: this._exId }, extra || {});
     try { await this.api('POST', '/executor/heartbeat', { executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(), json: exJson({ job_id: job.id }) }); } catch (e) { /* 心跳尽力而为 */ }
     const type = job.type;
-    // 计划性连败（V1-④ fail→refund）：同型 job 连续 fail times 次，逼服务端走 attempts>=3 → failed+refund
-    if (this.failPlan && this.failPlan.type === type && this.failPlan.times > 0) {
+    // 计划性连败（V1-④ fail→refund）：同型 job 连续 fail times 次，逼服务端走 attempts>=3 → failed+refund。
+    // 必须只命中"计划武装之后创建的 job"：前面用例用 generate 后不等终态，会留下 queued 的 music job，
+    // 它们若把 3 次失败吃掉，本用例的 job 就会走 _music → 停在 progress=90 等一个 parked 的转码子 job，
+    // 表现为 20 轮里偶发 3 次、每次卡满 60s 超时（真 flake 根因，别再用"多等一会儿"糊过去）。
+    // 定域靠**显式排除集**（由用例在白盒里把已在飞的同型 job 取来），不靠 job.created_at：
+    // poll 下发的 lease 载荷并不保证带 created_at，Date.parse(undefined)=NaN 会让计划永不命中，
+    // 于是 job 走 _music → 停在 progress=90 等一个 parked 的转码子 job → 60s 超时（本文件曾这样红过 10/10 轮）。
+    const excl = (this.failPlan && this.failPlan.exclude) || null;
+    const planIsMine = !excl || !excl.has(job.id);
+    if (this.failPlan && this.failPlan.type === type && this.failPlan.times > 0 && planIsMine) {
       this.failPlan.times--;
-      await this.api('POST', `/executor/jobs/${job.id}/fail`, { executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(), json: exJson({ code: this.failPlan.code, message: this.failPlan.message }) });
+      const fr = await this.api('POST', `/executor/jobs/${job.id}/fail`, { executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(), json: exJson({ code: this.failPlan.code, message: this.failPlan.message }) });
+      if (!fr.ok) this.errors.push('planned fail 失败 ' + job.id + ' → ' + fr.status + ' ' + fr.text.slice(0, 160));
       return;
     }
     if (type === 'music') return this._music(job);

@@ -55,7 +55,8 @@ const config = {
   // —— 任务引擎 ——
   engine: {
     pollHoldMs: 25000,      // long-poll 最长挂起
-    leaseMs: 10 * 60000,    // 租约 10min
+    leaseMs: envInt('MB_LEASE_MS', 10 * 60000),    // 租约 10min（可加速供验收观察租约回收/看护上界）
+    parentGuardMs: envInt('MB_PARENT_GUARD_MS', 30 * 60000), // 父 job 等子 job 的看护上界：超时把卡死的后处理子 job 判失败，禁止无限续租挂账（P1-2）
     creditAuditTicks: envInt('MB_CREDIT_AUDIT_TICKS', 12), // 每 N 次 sweep 做一次账本不变量巡检（测试可设 1）
     sweepMs: envInt('MB_SWEEP_MS', 30000), // 租约过期清扫周期（takes TTL 并入此作业，N1-5；验收可加速）
     maxAttempts: 3,         // attempts<3 回队，否则 failed+refund
