@@ -141,8 +141,9 @@ describe('V19 统一创作助手（mock-only）', () => {
     eq(first.status, 200, '总闸开启时 bootstrap 应 200');
     eq(first.json.available, true, 'bootstrap.available 必须为 true');
     eq(first.json.mode, 'rule', 'LLM 增强关闭时 bootstrap 必须为 rule');
-    deep(first.json.capabilities, { chat: true, voice: false, actions: false, music: true, mv: true, llm: false },
-      '默认能力必须明确 voice/actions/llm 关闭');
+    deep(first.json.capabilities, { chat: true, voice: first.json.capabilities.voice, actions: false, music: true, mv: true, llm: false },
+      '默认能力必须明确 actions/llm 关闭');
+    eq(typeof first.json.capabilities.voice, 'boolean', 'capabilities.voice 必须是布尔（跟随识别服务真实健康，不再硬编码）');
     eq(first.json.recent_session, null, '新用户 bootstrap 不应恢复他人会话');
     deep(first.json.pending_tickets, [], '新用户 bootstrap 待确认票必须为空');
     deep(first.json.tasks, [], '新用户 bootstrap 任务必须为空');
@@ -152,11 +153,14 @@ describe('V19 统一创作助手（mock-only）', () => {
     const started = Date.now();
     const degraded = await S.api('GET', '/v1/assistant/bootstrap', { token: guest.token, timeoutMs: 30000 });
     eq(degraded.status, 200, 'LLM 不可达时 bootstrap 仍应 200');
-    eq(degraded.json.mode, 'rule', 'LLM 灰度开但端点不可达时必须降级 rule');
-    eq(degraded.json.capabilities.llm, false, '不可达端点不得冒充 LLM 已就绪');
+    // 本用例的「不可达」前提只在闸门默认配置（MB_LLM_VLM_URL 指向死地址）下成立；
+    // 设 MB_TEST_LLM_URL 跑真 LLM 时，正确行为是如实上报 llm+rule —— 两种配置都必须验，不许只验一边。
+    const wantMode = H.realLLM ? 'llm+rule' : 'rule';
+    eq(degraded.json.mode, wantMode, 'LLM 灰度开时 mode 必须如实反映可达性（当前配置 realLLM=' + H.realLLM + '）');
+    eq(degraded.json.capabilities.llm, !!H.realLLM, '端点不可达不得冒充 LLM 已就绪；可达时也不许装没就绪');
     const reply = await message(S, guest, '你好');
     eq(reply.status, 200, 'LLM 不可达时消息仍应 200，实际 ' + reply.status + ' ' + reply.text.slice(0, 160));
-    eq(reply.json.meta.mode, 'rule', 'LLM 不可达时消息 meta.mode 必须为 rule');
+    eq(reply.json.meta.mode, wantMode, 'LLM 不可达时消息 meta.mode 必须降级 rule；可达时必须如实 llm+rule');
     ok(Date.now() - started < 30000, 'LLM 离线降级必须在 30 秒内返回');
     await setFlag(S, adminToken, 'assistant_chat_music', false, 0);
   });
@@ -288,7 +292,15 @@ describe('V19 统一创作助手（mock-only）', () => {
       eq(r.status, 200, '免费工具 ' + tool + ' 应 200，实际 ' + r.status + ' ' + r.text.slice(0, 160));
       eq(r.json.meta.tool, tool, '「' + text + '」必须命中 ' + tool);
       eq(r.json.meta.status, 'succeeded', '免费工具 ' + tool + ' 必须 succeeded');
-      eq(r.json.meta.mode, 'rule', '免费工具 ' + tool + ' 必须走规则模式');
+      // 契约对免费工具的分类纪律是「直接执行、不扣费、不发票」（见 CONTRACTS v5.0 分类纪律），
+      // 并不禁止 LLM 参与意图解析；因此 mode 随配置而变，真正的不变量是下面两条（不扣费/不发票）。
+      // 契约 §0 只要求「LLM 不可达时必须降级 rule」（离线配置由本套件默认配置验）；
+      // LLM 可达时某一句由规则确定性兜住是合法路径，不得当成缺陷。真正的不变量是下面两行（不扣费/不发票）。
+      if (H.realLLM) {
+        ok(['rule', 'llm+rule'].includes(r.json.meta.mode), '免费工具 ' + tool + ' 的 mode 只能是 rule 或 llm+rule，实际 ' + r.json.meta.mode);
+      } else {
+        eq(r.json.meta.mode, 'rule', '免费工具 ' + tool + ' 在 LLM 不可达时必须走规则模式');
+      }
       eq(r.json.ticket, undefined, '免费工具 ' + tool + ' 不得发票');
     }
     const tasks = await message(S, guest, '查询任务进度', { session_id: session.id });

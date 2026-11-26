@@ -47,10 +47,32 @@ async function bootstrap(user) {
   const recent = core.recentSession(user);
   return {
     available: true, mode,
-    capabilities: { chat: true, voice: false, actions, music: true, mv: true, llm: mode === 'llm+rule' },
+    capabilities: { chat: true, voice: await voiceAvailable(), actions, music: true, mv: true, llm: mode === 'llm+rule' },
     recent_session: core.sessionShape(recent), pending_tickets: core.listTickets(user, 50).filter((t) => t.status === 'pending'),
     tasks: core.listTasks(user, 10), server_time: U.nowIso(),
   };
+}
+
+// 助手语音能力跟随识别服务真实健康（此前硬编码 false，与「v3.2 端侧语音已上线」自相矛盾）。
+// 5s 缓存避免每次 bootstrap 都打 ASR；探测失败只影响麦克风提示，文字对话恒可用（产品底线）。
+let _voiceCache = { at: 0, ok: false };
+async function voiceAvailable() {
+  const now = Date.now();
+  if (now - _voiceCache.at < 5000) return _voiceCache.ok;
+  let ok = false;
+  try {
+    const base = String(config.senseVoiceUrl || '').replace(/\/+$/, '');
+    if (base) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1500);
+      try {
+        const r = await fetch(base + '/healthz', { signal: ctrl.signal });
+        ok = r.ok;
+      } finally { clearTimeout(t); }
+    }
+  } catch (e) { ok = false; }
+  _voiceCache = { at: now, ok };
+  return ok;
 }
 
 function ruleInterpret(text, resolved) {

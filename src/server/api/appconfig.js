@@ -10,7 +10,9 @@ const dict = require('../prompts/dictionary');
 // 可选模型列表（APK 自选用）：未锁定的 kind 才下发；标签中性化，不暴露引擎名（用户面纪律）
 function modelOptions(kind) {
   const def = M.defaultFor(kind);
-  if (def.locked) return null;
+  // 锁定/无可选节点时返回空数组而不是 null：null 会被 App 读成「没有可用模型」，
+  // 用户看到的就是「没模型就不能用」。「后台统一指定」的语义由 routing.<kind>.locked 承担。
+  if (def.locked) return [];
   const rows = store.all('SELECT id, engine FROM model_nodes WHERE kind=? AND enabled=1 ORDER BY priority ASC, rowid ASC', kind);
   return rows.map((r, i) => ({
     id: r.id,

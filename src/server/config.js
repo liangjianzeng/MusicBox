@@ -34,7 +34,9 @@ const config = {
   // —— 执行器与引擎端点（CONTRACTS §0 定稿）——
   executorToken: envStr('MB_EXECUTOR_TOKEN', 'dev-executor-token'),
   musicUrl: envStr('MB_MUSIC_URL', 'http://127.0.0.1:8190'),        // ACE-Step 1.5（5060 Ti）
-  llmVlmUrl: envStr('MB_LLM_VLM_URL', 'http://127.0.0.1:8193/v1'),  // DGX 托管 qwen38-fp4，OpenAI 兼容（内网实值见 deploy/spark/README）
+  // DGX Spark 已托管的 qwen38-fp4（OpenAI 兼容）。2026-11-26 实测 http://127.0.0.1:8090/v1/models → id=qwen38-fp4。
+  // 历史默认 :8193（自建 vLLM 双实例）已随契约 §0 作废，别再往回改。
+  llmVlmUrl: envStr('MB_LLM_VLM_URL', 'http://127.0.0.1:8090/v1'),
   llmVlmModel: envStr('MB_LLM_VLM_MODEL', 'qwen38-fp4'),            // vLLM /models 返回的模型名
   senseVoiceUrl: envStr('MB_SENSEVOICE_URL', 'http://127.0.0.1:8191'),
   llmTimeoutMs: envInt('MB_LLM_TIMEOUT_MS', 60000),                 // 单轮 LLM 超时（思考模型推理耗时，2026-11-23 由 20s 上调）

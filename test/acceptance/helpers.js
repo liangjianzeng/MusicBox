@@ -682,7 +682,10 @@ async function boot(suiteName, opts) {
     MB_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
     MB_VAR_ROOT: varDir,                            // 独立 var 前缀（db/out/uploads/config 全部派生于此）
     MB_PUBLIC_BASE_URL: 'http://127.0.0.1:' + port,
-    MB_LLM_VLM_URL: LLM_DEAD_URL,                   // 不可达 → 确定性启发式兜底（契约 §0），无 GPU/LLM 也能全链路
+    // 默认仍指向不可达地址 → 走确定性启发式（无 GPU 也能跑闸门）。
+    // 设 MB_TEST_LLM_URL 即切到真 LLM（助手线真值验证，DGX 实测 http://127.0.0.1:8090/v1 + qwen38-fp4）。
+    MB_LLM_VLM_URL: process.env.MB_TEST_LLM_URL || LLM_DEAD_URL,
+    MB_LLM_VLM_MODEL: process.env.MB_TEST_LLM_MODEL || 'qwen38-fp4',   // 不可达 → 确定性启发式兜底（契约 §0），无 GPU/LLM 也能全链路
     MB_MUSIC_URL: 'http://127.0.0.1:9',             // 本套件不真打 GPU（fake executor 产 mock 音频）
     MB_SENSEVOICE_URL: 'http://127.0.0.1:9',
     // —— MV 二期（V13）：开灰度总开关；GPU 端点一律指向不可达（严禁触 :8188/:8090/模型）——
@@ -1034,4 +1037,5 @@ module.exports = {
   ROOT, BASE_PORT, EXECUTOR_TOKEN, DEV_OTP, WORD_A, WORD_B, HIGHCONF_MARKER,
   boot, api: makeApi, httpReq, buildMultipart, makeSineWav, makePng, makeMp4Stub, makeMockMp4, findFfmpeg, computePeaks,
   FakeExecutor, makeDb, resolveVarPath, sleep, uniq, wsConnect, openWhiteDb,
+  realLLM: !!process.env.MB_TEST_LLM_URL,   // true → 走真 LLM（DGX qwen38-fp4）；false → 启发式兜底（闸门默认）
 };

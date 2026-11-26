@@ -119,7 +119,9 @@ function routingForApp() {
   for (const appKey of Object.keys(map)) {
     const kind = map[appKey];
     const def = defaultFor(kind);
-    out[appKey] = { engine: def.engine, locked: !!def.locked, node_id: def.node_id || null };
+    // 用户面纪律（契约 §0）：引擎型号名不得出现在面向用户的字符串里。
+    // App 侧实测零消费者（musicDefaultEngine 无人调用），历史上这里泄露过引擎型号名。
+    out[appKey] = { locked: !!def.locked, node_id: def.node_id || null };
   }
   return out;
 }

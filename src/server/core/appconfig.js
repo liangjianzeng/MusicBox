@@ -78,7 +78,7 @@ function save(patch, actor, reason) {
 // 回滚：把历史版本作为新版本再应用（历史链保留，可追溯）
 function rollback(version, actor) {
   const row = store.get('SELECT * FROM app_config WHERE version=?', version);
-  if (!row) throw U.ApiError('NOT_FOUND', '配置版本不存在：' + version);
+  if (!row) throw new U.ApiError('NOT_FOUND', '配置版本不存在：' + version);  // 少写 new 会抛 TypeError → 被兜底成 500（契约要求 404）
   return save(U.jparse(row.blob, {}) || {}, actor, 'rollback to v' + version);
 }
 
@@ -126,7 +126,7 @@ function featureOn(key, userId) {
 }
 
 function setFlag(key, patch, actor) {
-  if (!FLAG_KEYS.includes(String(key))) throw U.ApiError('BAD_REQUEST', '未知功能开关：' + key);
+  if (!FLAG_KEYS.includes(String(key))) throw new U.ApiError('BAD_REQUEST', '未知功能开关：' + key);  // 同上：契约要求 400
   const before = flag(key);
   const now = U.nowIso();
   const enabled = patch.enabled === undefined ? store.norm(before.enabled) : store.norm(!!patch.enabled);

@@ -113,7 +113,8 @@ module.exports = {
     { m: 'POST', p: '/v1/assistant/sessions', h: sessionsCreate },
     { m: 'GET', p: '/v1/assistant/sessions/:id/messages', h: messagesGet },
     { m: 'POST', p: '/v1/assistant/messages', h: messagesPost },
-    { m: 'POST', p: '/v1/assistant/image', h: imagePost },
+    // raw:true 必须显式声明：否则走 index.js 的 1MB JSON body 上限，「图片 ≤8MB」永远先失败
+    { m: 'POST', p: '/v1/assistant/image', h: imagePost, raw: true, limitMb: 12 },
     { m: 'GET', p: '/v1/assistant/tasks', h: tasksGet },
     { m: 'GET', p: '/v1/assistant/tickets', h: ticketsGet },
     { m: 'POST', p: '/v1/assistant/tickets/:id/confirm', h: ticketConfirm },

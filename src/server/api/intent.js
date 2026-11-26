@@ -200,7 +200,7 @@ async function speechHealth(ctx) {
       const r = await fetch(base + '/healthz', { signal: ctrl.signal });
       const j = r.ok ? await r.json().catch(() => ({})) : {};
       asr = r.ok
-        ? { ok: true, reason: j && j.model_loaded ? '就绪' : '在线（模型待首次加载）', model_loaded: !!(j && j.model_loaded), device: j && j.device }
+        ? { ok: true, reason: j && j.model_loaded ? '就绪' : '在线（模型待首次加载）', model_loaded: !!(j && j.model_loaded) } // 不外泄上游设备指纹/模型名
         : { ok: false, reason: '识别服务返回 HTTP ' + r.status };
     } catch (e) {
       const why = e && e.name === 'AbortError' ? '探测超时' : ((e && e.message) || '连不上');
