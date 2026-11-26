@@ -86,7 +86,10 @@ async function handle(req, res) {
   const u = new URL(req.url, 'http://localhost');
   const urlPath = u.pathname;
   if (req.method === 'GET' && urlPath === '/healthz') {
-    const body = { ok: true, ts: U.nowIso(), online: bus.onlineCount() };
+    // audit_failures：审计写入失败计数（抢救 P1-2）。审计曾静默吞异常，运维无从得知"审计在掉"。
+  // audit_failures：审计写入失败计数；credit_violations：账本 Σdelta==balance 巡检破损次数（抢救 P1-2 可见性门票）
+  const body = { ok: true, ts: U.nowIso(), online: bus.onlineCount(),
+    audit_failures: store.getAuditFailures(), credit_violations: engine.getCreditViolations() };
     // mv_metrics（契约 v2.18 / N1-5，架构 §11 最小可观测集）：mv 灰度开启时附 lane 耗时直方 + 队列深度
     if (config.mv.enabled) {
       try { body.mv_metrics = require('./core/metrics').snapshot(); } catch (e) { /* 观测不阻断健康检查 */ }

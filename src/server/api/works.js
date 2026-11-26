@@ -73,25 +73,38 @@ function dispatchMusic(user, kind, params, opts) {
     return { status: 202, body: { job_id: ex.id, credits_charged: 0, idempotent: true } };
   }
   const cost = opts.cost == null ? AC.credits().per_candidate * (params.count || G.count_default) : opts.cost;
-  credits.charge(user.id, cost, opts.reason || 'gen', 'gen', kind);
   const payload = buildMusicPayload(params);
   // 模型选择（APK 未设置则后端默认；后台 locked 时强制默认，见 core/modelnodes.pickNodeForJob）
   const musicNode = M.pickNodeForJob('music', params.model);
   if (musicNode && musicNode.endpoint) { payload.music_endpoint = musicNode.endpoint; payload.music_engine = musicNode.engine; }
   if (opts.lineage) payload.lineage = opts.lineage; // {kind, parent_id}：adopt 时写入谱系
-  let r;
+  // 资损总闸门（抢救计划 P1-2「一期 charge 与 enqueue 是两个事务」）：
+  // 扣钱与 job 落库必须同生共死。旧写法两个事务之间崩溃 = 钱扣了、job 不存在，用户只能等人工退款；
+  // MV 侧 chargeThenEnqueue 早就是单事务，说明作者知道该怎么做，一期没跟上。
+  // 并发同参竞态也不再"扣了再退"（那会在账本留下 -cost/+cost 两行且有时间窗），改为整笔回滚。
+  class IdemRace extends Error {}
+  let out;
   try {
-    r = engine.enqueue({ type: 'music', payload, userId: user.id, idemKey, creditsCost: cost, parentJobId: opts.parentJobId || null });
+    out = store.tx(() => {
+      const again = store.get('SELECT * FROM jobs WHERE idem_key=?', idemKey); // 事务内再查一次幂等
+      if (again && (['queued', 'leased', 'running', 'done'].includes(again.status)
+        || Date.parse(again.created_at) > Date.now() - 10 * 60000)) {
+        return { job_id: again.id, charged: 0, idempotent: true };
+      }
+      if (cost > 0) credits.charge(user.id, cost, opts.reason || 'gen', 'gen', kind);
+      const r = engine.enqueue({ type: 'music', payload, userId: user.id, idemKey, creditsCost: cost, parentJobId: opts.parentJobId || null });
+      if (r.idempotent) throw new IdemRace();
+      store.log('works.dispatch', { user_id: user.id, job_id: r.job.id, kind, cost });
+      return { job_id: r.job.id, charged: cost, idempotent: false };
+    });
   } catch (e) {
-    credits.refund(user.id, cost, 'gen', kind); // 派单失败即时退回，账本平衡
+    if (e instanceof IdemRace) { // 事务已整体回滚：扣费一并消失，账本不留对冲两行
+      const ex3 = store.get('SELECT * FROM jobs WHERE idem_key=?', idemKey);
+      return { status: 202, body: { job_id: ex3 ? ex3.id : null, credits_charged: 0, idempotent: true } };
+    }
     throw e;
   }
-  if (r.idempotent) { // 并发同参竞态：后到者退款
-    credits.refund(user.id, cost, 'gen', kind);
-    return { status: 202, body: { job_id: r.job.id, credits_charged: 0, idempotent: true } };
-  }
-  store.log('works.dispatch', { user_id: user.id, job_id: r.job.id, kind, cost });
-  return { status: 202, body: { job_id: r.job.id, credits_charged: cost, idempotent: false } };
+  return { status: 202, body: { job_id: out.job_id, credits_charged: out.charged, idempotent: out.idempotent } };
 }
 
 // —— POST /v1/works/generate ——

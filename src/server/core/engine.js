@@ -130,7 +130,14 @@ async function poll(lanesWanted, executorId, isAlive) {
   }
 }
 
-function assertOwned(job, executorId) {
+// detail：调用点传入本次上报的摘要（progress 的 note / fail 的 code+message / complete 的结果键）。
+// 教训（V25-④ 抓到）：曾经只替换了 if 块却忘了加这个形参，ReferenceError 被下面的 catch{} 吞掉，
+// 于是"保留真错误"的审计其实一条都没落 —— 观测代码也必须有自己的失败留痕。
+function safeField(o, k) {
+  try { return o && o[k] !== undefined ? o[k] : null; } catch (e) { return null; }
+}
+
+function assertOwned(job, executorId, detail) {
   if (!ACTIVE.includes(job.status)) throw new U.ApiError('BAD_REQUEST', '任务状态不允许该操作');
   // 抢救 P0-4：租约归属必须强制比对。旧写法 `if (executorId && job.executor_id && ...)`
   // 让调用方「不带 X-Executor-Id」即可绕过，配合默认令牌可对任意 job 发 progress/complete/fail。
@@ -139,14 +146,19 @@ function assertOwned(job, executorId) {
     // fail 会以 403 静默丢弃 —— 任务反复回队直到 attempts 用尽，运维却看不到任何原因
     // （2026-11-27 真机全链实测踩到：引擎已出歌、执行器报「产物缺失」，上报被 403 吞掉）。
     // 记审计事件不改状态机，归属判定依旧严格。
+    // 归属拒收时把真错误留在审计里（列名必须用真实列 lease_expire_at；node:sqlite 行对象访问缺失列
+    // 在不同版本上可能抛异常，故统一走 safeField，且审计失败本身再记一笔，绝不静默吞）。
     try {
       store.log('job.stale_report', {
-        job_id: job.id, status: job.status, claimed_executor: job.executor_id || null,
-        reporter: executorId || null, attempts: job.attempts === undefined ? null : job.attempts,
-        lease_until: job.lease_until === undefined ? null : job.lease_until,
+        job_id: safeField(job, 'id'), status: safeField(job, 'status'),
+        claimed_executor: safeField(job, 'executor_id'), reporter: executorId || null,
+        attempts: safeField(job, 'attempts'), lease_expire_at: safeField(job, 'lease_expire_at'),
         detail: String(detail || '').slice(0, 300),
       });
-    } catch (e) { /* 观测不阻断归属判定 */ }
+    } catch (e) {
+      try { store.log('job.stale_report.error', { job_id: safeField(job, 'id'), err: String((e && e.message) || e).slice(0, 200) }); }
+      catch (e2) { /* 观测彻底不可用时不阻断归属判定 */ }
+    }
     throw new U.ApiError('FORBIDDEN', '任务租约不属于当前执行器');
   }
 }
@@ -836,17 +848,29 @@ function requeueOrFail(job, code, message) {
     notify();
     return;
   }
-  store.run("UPDATE jobs SET status='failed', error_code=?, error_message=?, attempts=?, lease_expire_at=NULL, updated_at=? WHERE id=?",
-    code, message, attempts, U.nowIso(), job.id);
-  // 失败自动全额退款（credits_cost 置 0 防重复退）
-  if ((job.credits_cost || 0) > 0 && job.user_id) {
-    const bal = store.tx(() => store.appendLedger(job.user_id, job.credits_cost, 'refund', 'job', job.id));
-    store.run('UPDATE jobs SET credits_cost=0 WHERE id=?', job.id);
-    const failedPayload = U.jparse(job.payload, {}) || {};
-    if (failedPayload.project_id) store.run('UPDATE mv_projects SET credits_cost=MAX(0,credits_cost-?), credits_refunded=credits_refunded+?, updated_at=? WHERE id=?',
-      job.credits_cost, job.credits_cost, U.nowIso(), failedPayload.project_id);
-    bus.creditDelta(job.user_id, job.credits_cost, bal);
-  }
+  // 资损总闸门（抢救计划 P1-2）：定失败 + 费用清零 + 退款入账必须**同一事务**，且每一步都是 CAS。
+  // 旧写法是「UPDATE failed → tx(退款) → UPDATE credits_cost=0」三步分开：
+  //   · 两步之间崩溃 = 任务已 failed 但钱没退（用户亏）；
+  //   · 两个并发 fail/cancel 都能读到 credits_cost>0 = 同一笔退两次（公司亏）；
+  //   · 守卫 `credits_cost>0` 读的是进函数时的快照，形同虚设。
+  // 现在：谁把 credits_cost 从 >0  CAS 成 0（changes===1），谁才负责退款；退款再过 store.refundOnce 逐事件查重。
+  const refundEvt = store.tx(() => {
+    const claimed = store.run("UPDATE jobs SET status='failed', error_code=?, error_message=?, attempts=?, lease_expire_at=NULL, updated_at=? WHERE id=? AND status IN ('queued','leased','running')",
+      code, message, attempts, U.nowIso(), job.id);
+    if (claimed.changes !== 1) return { skipped: '已被其他通道定稿或定失败', refunded: false };
+    if (!(job.credits_cost > 0) || !job.user_id) return { refunded: false };
+    const zeroed = store.run('UPDATE jobs SET credits_cost=0 WHERE id=? AND credits_cost>0', job.id);
+    if (zeroed.changes !== 1) return { skipped: '费用已由他人清零（退款责任已认领）', refunded: false };
+    const bal = store.refundOnce(job.user_id, job.credits_cost, 'job', job.id);
+    if (bal === null) return { skipped: '该 job 的退款已存在（查重命中）', refunded: false };
+    const fp = U.jparse(job.payload, {}) || {};
+    if (fp.project_id) store.run('UPDATE mv_projects SET credits_cost=MAX(0,credits_cost-?), credits_refunded=credits_refunded+?, updated_at=? WHERE id=?',
+      job.credits_cost, job.credits_cost, U.nowIso(), fp.project_id);
+    store.onCommit(() => bus.creditDelta(job.user_id, job.credits_cost, bal)); // COMMIT 之后才推余额
+    store.log('job.refund', { job_id: job.id, user_id: job.user_id, amount: job.credits_cost, balance_after: bal });
+    return { refunded: true, balance_after: bal };
+  });
+  if (refundEvt && refundEvt.skipped) store.log('job.refund_skipped', { job_id: job.id, reason: refundEvt.skipped, attempts });
   if (job.user_id) {
     bus.jobError(job.user_id, job.id, { code: code === 'MODERATION_BLOCK' ? code : 'INTERNAL', message });
   }
@@ -887,9 +911,37 @@ function heartbeat(executorId, jobId) {
 }
 
 // —— 租约过期清扫（30s 定时）——
+// 巡检最近有账动的用户：Σdelta 必须等于末条 balance_after。破损只记审计 + 计数，不自动"修账"。
+function auditLedgerInvariant(sinceHours) {
+  const since = new Date(Date.now() - (sinceHours || 24) * 3600000).toISOString();
+  const users = store.all('SELECT DISTINCT user_id FROM credit_ledger WHERE created_at>=? LIMIT 500', since);
+  let bad = 0;
+  for (const u of users) {
+    if (!u || !u.user_id) continue;
+    const sum = store.get('SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=?', u.user_id);
+    const last = store.lastLedger(u.user_id);
+    const bal = last ? last.balance_after : 0;
+    const s = sum ? sum.s : 0;
+    if (s !== bal) {
+      bad++; creditViolations++;
+      store.log('credit.invariant_violation', { user_id: u.user_id, sum_delta: s, balance_after: bal, diff: bal - s });
+    }
+  }
+  if (bad) console.warn(U.nowIso(), '[MusicBox] 账本不变量破损用户数 =', bad, '（累计', creditViolations, '）');
+  return bad;
+}
+let sweepTicks = 0;
+let creditViolations = 0;
+function getCreditViolations() { return creditViolations; }
+
 function sweep() {
   store.init();
   const nowIso = U.nowIso();
+  // 账本不变量巡检（抢救计划 P1-2「新增 sweep 校验 Σdelta==balance」）：
+  // 只观测不改数据 —— 破损时宁可吵也不能静默，审计事件 credit.invariant_violation + /healthz 计数。
+  sweepTicks++;
+  const every = Math.max(1, Number(config.engine.creditAuditTicks) || 12);
+  if (sweepTicks % every === 0) { try { auditLedgerInvariant(); } catch (e) { store.log('credit.audit.error', { err: String(e && e.message).slice(0, 160) }); } }
   const expired = store.all("SELECT * FROM jobs WHERE status IN ('leased','running') AND lease_expire_at IS NOT NULL AND lease_expire_at<=?", nowIso);
   for (const job of expired) {
     // 等待子任务（如 music 等转码）→ 续租继续看护，不判失败；子任务全终态→立即定稿（不重跑生成）
@@ -1008,6 +1060,7 @@ function stop() { if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null
 
 module.exports = {
   enqueue, getJob, poll, progress, complete, fail, heartbeat, sweep, start, stop, notify,
+  auditLedgerInvariant, getCreditViolations,
   finishDone, requeueOrFail,
   broadcastMvProgress, finalizeMvClipParent, maybeAutoCompose, reconcileMvFailure, // MV 二期（契约 v2.8）
   nightWindowOpen, queuedDispatchable, sweepMvTakes, // N1-5 非计算收尾（白盒/演练可复用）

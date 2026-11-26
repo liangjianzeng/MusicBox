@@ -22,7 +22,7 @@ function ensureDaily(userId) {
     if (bal > 0) after = store.appendLedger(userId, -bal, 'daily_expire', 'day', today);
     after = store.appendLedger(userId, COST().daily_free, 'daily_free', 'day', today);
     store.setPref(userId, 'credit_reset_day', today);
-    bus.creditDelta(userId, after - bal, after);
+    store.onCommit(() => bus.creditDelta(userId, after - bal, after)); // 提交后再推（outbox）
   });
   store.log('credit.daily_reset', { user_id: userId, day: today });
 }
@@ -37,17 +37,28 @@ function charge(userId, cost, reason, refType, refId) {
     const bal = store.getBalance(userId);
     if (bal < cost) throw new U.ApiError('CREDITS_NOT_ENOUGH', `积分不足，本次需要 ${cost} 积分，当前余额 ${bal}`);
     const after = store.appendLedger(userId, -cost, reason, refType, refId);
-    bus.creditDelta(userId, -cost, after);
+    store.onCommit(() => bus.creditDelta(userId, -cost, after)); // COMMIT 之后才推余额，崩溃不会留下"已扣款"幻影
     return { ok: true, balance_after: after };
   });
 }
 
 // 退款（失败自动全额退回；幂等由调用方保证只调一次）
-function refund(userId, cost, refType, refId) {
+function refund(userId, cost, refType, refId, opts) {
   cost = Math.max(0, Math.trunc(Number(cost) || 0));
-  if (!cost) return;
-  const after = store.tx(() => store.appendLedger(userId, cost, 'refund', refType, refId));
-  bus.creditDelta(userId, cost, after);
+  if (!cost) return { ok: true, balance_after: store.getBalance(userId) };
+  // opts.once = 唯一事件 id（如 job_id）时启用查重：同一事件的退款被两条通道（cancel / job fail）各发一次时，
+  // 后到者不再入账。注意：**不能**拿 refType+refId 当默认查重键 —— 同一项目/同一 kind 的多次合法退款
+  // 会被误吞，那是用户亏钱。查重只在事件本身唯一时启用。
+  const onceId = opts && opts.once ? String(opts.once) : null;
+  const out = store.tx(() => {
+    if (onceId && store.hasLedgerEntry(userId, 'refund', refType, onceId)) {
+      return { ok: true, deduped: true, balance_after: store.getBalance(userId) };
+    }
+    const after = store.appendLedger(userId, cost, 'refund', refType, onceId || refId);
+    store.onCommit(() => bus.creditDelta(userId, cost, after));
+    return { ok: true, balance_after: after };
+  });
+  return out;
 }
 
 function summary(userId) {

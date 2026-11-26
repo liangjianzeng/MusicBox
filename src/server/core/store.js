@@ -376,17 +376,42 @@ function all(sql, ...params) { return init().prepare(sql).all(...params.map(norm
 
 // 事务：fn 内使用同一连接；异常自动回滚
 let txDepth = 0;
+// 提交后副作用队列（outbox）：WSS 推送、通知等**必须在 COMMIT 之后**才发生。
+// 旧写法把 bus.creditDelta 直接写在事务里 —— 事务里任何一步崩了，客户端已经收到"扣了钱"的推送，
+// 账本却没写（或反之）。这正是"客户端显示扣款成功但余额没变"这类投诉的结构性成因。
+const outbox = [];
+function flushOutbox() {
+  while (outbox.length) {
+    const f = outbox.shift();
+    try { f(); } catch (e) { logAuditFailure('outbox', e); }
+  }
+}
+// 事务内注册"提交后再做"；不在事务内则立即执行。回滚时按层丢弃，绝不把已回滚的变更推出去。
+function onCommit(fn) {
+  if (typeof fn !== 'function') return;
+  if (txDepth > 0) outbox.push(fn);
+  else { try { fn(); } catch (e) { logAuditFailure('outbox', e); } }
+}
+function assertNotThenable(r) {
+  if (r && typeof r.then === 'function') {
+    throw new Error('store.tx() 回调不得返回 Promise：COMMIT 会早于异步业务写，账本将失去原子性（改用同步回调）');
+  }
+}
 function tx(fn) {
   init();
-  if (txDepth > 0) return fn(); // 可重入
+  if (txDepth > 0) { const r = fn(); assertNotThenable(r); return r; } // 可重入
   txDepth++;
+  const outboxBase = outbox.length;
   db.exec('BEGIN');
   try {
     const r = fn();
+    assertNotThenable(r);
     db.exec('COMMIT');
+    flushOutbox();
     return r;
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch (e2) { /* 已回滚 */ }
+    outbox.length = outboxBase; // 回滚层内注册的提交后副作用一并丢弃
     throw e;
   } finally {
     txDepth--;
@@ -394,10 +419,26 @@ function tx(fn) {
 }
 
 // 审计钩子：所有写接口留痕（剧场 audit 范式）
+// 旧写法 catch(e){} 静默吞异常 —— 审计可以无声全丢而无人知晓（抢救计划 P1「审计可无声丢失」）。
+// 现在：计数 + 落盘兜底 + /healthz 暴露，运维至少能看见「审计在掉」。
+let auditFailures = 0;
+let auditFallbackPath = null;
+function logAuditFailure(kind, e) {
+  auditFailures++;
+  try {
+    if (!auditFallbackPath) {
+      const dir = path.join(path.dirname(config.paths.db), 'logs'); // 与 DB 同目录，崩溃现场好找
+      fs.mkdirSync(dir, { recursive: true });
+      auditFallbackPath = path.join(dir, 'audit-fallback.log');
+    }
+    fs.appendFileSync(auditFallbackPath, U.nowIso() + ' ' + kind + ' ' + U.jstr({ err: (e && e.message) || String(e) }) + '\n');
+  } catch (e2) { /* 兜底也写不进时只能靠计数 */ }
+}
+function getAuditFailures() { return auditFailures; }
 function log(kind, obj) {
   try {
     run('INSERT INTO audit(id,kind,obj,created_at) VALUES(?,?,?,?)', U.uid('a_'), String(kind), U.jstr(obj), U.nowIso());
-  } catch (e) { /* 审计失败不阻断业务 */ }
+  } catch (e) { logAuditFailure('audit:' + kind, e); }
 }
 
 // —— 积分账本原语：复式记账，不变量 Σdelta == balance（= 末条 balance_after）——
@@ -407,6 +448,22 @@ function getBalance(userId) {
 }
 function lastLedger(userId) {
   return get('SELECT * FROM credit_ledger WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1', userId);
+}
+// 账目是否已存在（退款查重）。旧写法把幂等责任推给调用方（credits.refund 注释「幂等由调用方保证」），
+// 而 cancel 与 job fail 两条通道各自"以为自己只退一次" —— 双退就是这么来的。
+function hasLedgerEntry(userId, reason, refType, refId) {
+  if (!refId) return false;
+  return !!get('SELECT id FROM credit_ledger WHERE user_id=? AND reason=? AND ref_type=? AND ref_id=? LIMIT 1',
+    userId, String(reason || ''), String(refType || ''), String(refId));
+}
+// 幂等退款：已退过返回 null（调用方据此不再推余额），否则返回新 balance_after。应在 tx 内调用。
+function refundOnce(userId, amount, refType, refId) {
+  const amt = Math.max(0, Math.trunc(Number(amount) || 0));
+  if (!amt) return null;
+  const last = lastLedger(userId); // 快路径：最常见的是同一条退款被立刻重放
+  if (last && last.reason === 'refund' && String(last.ref_type) === String(refType || '') && String(last.ref_id) === String(refId || '')) return null;
+  if (hasLedgerEntry(userId, 'refund', refType, refId)) return null;
+  return appendLedger(userId, amt, 'refund', refType, refId);
 }
 // 追加一条账目（须在 tx 内与业务写同事务），返回新 balance_after
 function appendLedger(userId, delta, reason, refType, refId) {
@@ -490,7 +547,7 @@ function publicUrl(rel) {
 
 module.exports = {
   init, db: () => init(), run, get, all, tx, log, norm,
-  getBalance, lastLedger, appendLedger,
+  getBalance, lastLedger, appendLedger, hasLedgerEntry, refundOnce, onCommit, getAuditFailures,
   getPref, setPref, allPrefs,
   workOf, candidateOf, intentOf, publicUrl,
   CAST_METHODS, CAST_METHOD_DEFAULT,

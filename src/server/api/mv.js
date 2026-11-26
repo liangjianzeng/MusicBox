@@ -479,19 +479,24 @@ function cancelProject(ctx) {
   const unshot = store.get("SELECT COUNT(*) AS n FROM mv_shots WHERE project_id=? AND status='draft'", p.id);
   const reserved = ((unshot && unshot.n) || 0) * (MV.credits.shot || 0);
   // 从账本核算本 project 已扣未退净额（不臆造退款；无扣费历史 → 0）
-  const charged = store.get(
-    "SELECT COALESCE(SUM(-delta),0) AS s FROM credit_ledger WHERE user_id=? AND ref_type='mv_project' AND ref_id=? AND delta<0",
-    user.id, p.id);
-  const refunded = store.get(
-    "SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=? AND ref_type='mv_project' AND ref_id=? AND delta>0",
-    user.id, p.id);
-  const refundable = Math.max(0, ((charged && charged.s) || 0) - ((refunded && refunded.s) || 0));
-  const amount = Math.max(0, Math.min(reserved, refundable));
+  let amount = 0;
+  // 资损面（抢救计划 P1-2）：旧写法在**事务外**算 charged/refunded，两个并发 cancel（或 cancel 撞 job fail）
+  // 会各自看到同一份"已扣未退"，双双退款。现在算账与落账同事务，并用状态 CAS 保证只有第一个 cancel 生效。
   store.tx(() => {
-    store.run("UPDATE mv_projects SET status='canceled', credits_refunded=credits_refunded+?, updated_at=? WHERE id=?", amount, U.nowIso(), p.id);
+    const claimed = store.run("UPDATE mv_projects SET status='canceled', updated_at=? WHERE id=? AND status<>'canceled'", U.nowIso(), p.id);
+    if (claimed.changes !== 1) return; // 已被取消过：不再算账、不再退款
+    const charged = store.get(
+      "SELECT COALESCE(SUM(-delta),0) AS s FROM credit_ledger WHERE user_id=? AND ref_type='mv_project' AND ref_id=? AND delta<0",
+      user.id, p.id);
+    const refunded = store.get(
+      "SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=? AND ref_type='mv_project' AND ref_id=? AND delta>0",
+      user.id, p.id);
+    const refundable = Math.max(0, ((charged && charged.s) || 0) - ((refunded && refunded.s) || 0));
+    amount = Math.max(0, Math.min(reserved, refundable));
     if (amount > 0) {
-      const bal = credits.refund(user.id, amount, 'mv_project', p.id);
-      if (bal && bal.balance_after != null) { /* 余额已由 refund 落账 */ }
+      store.run('UPDATE mv_projects SET credits_refunded=credits_refunded+? WHERE id=?', amount, p.id);
+      credits.refund(user.id, amount, 'mv_project', p.id); // 推送已由 credits 内部 outbox 延后到 COMMIT 之后
+      store.log('mv.project.refund', { user_id: user.id, project_id: p.id, amount });
     }
   });
   store.log('mv.project.cancel', { user_id: user.id, project_id: p.id, unshot_shots: (unshot && unshot.n) || 0, refunded: amount });

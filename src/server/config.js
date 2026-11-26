@@ -56,6 +56,7 @@ const config = {
   engine: {
     pollHoldMs: 25000,      // long-poll 最长挂起
     leaseMs: 10 * 60000,    // 租约 10min
+    creditAuditTicks: envInt('MB_CREDIT_AUDIT_TICKS', 12), // 每 N 次 sweep 做一次账本不变量巡检（测试可设 1）
     sweepMs: envInt('MB_SWEEP_MS', 30000), // 租约过期清扫周期（takes TTL 并入此作业，N1-5；验收可加速）
     maxAttempts: 3,         // attempts<3 回队，否则 failed+refund
     maxUploadMb: envInt('MB_MAX_UPLOAD_MB', 220), // executor complete multipart 上限（真机 45s 立体声 WAV≈8MB/候选，4×240s≈170MB；2026-11-23 由 20 上调）
