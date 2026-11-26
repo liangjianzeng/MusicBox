@@ -221,7 +221,7 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 
 | 项 | 状态 | 证据（可原地复跑） |
 |---|---|---|
-| P1-1 测试确定性 | ✅ | **`bash scripts/verify.sh --repeat 20` → 20/20 轮全绿（pass=161 skip=45 fail=0）**。根治的 flake：V1-④ 曾 20 轮红 3 次、每次卡满 60.3s（`running progress=90`）。根因两层：① 前序用例 `generate` 后不等终态留下在飞 music job，把 `failPlan` 的 3 次计划失败蹭掉 → 改 `planFail({exclude})` 显式定域；② 服务端"父 job 等子 job"**无上限续租** → 加看护上界（见 P1-2）。教训：`failPlan` 定域**不能**依赖 `job.created_at`（poll 的 lease 载荷不保证带该列，`Date.parse(undefined)=NaN` 会让计划永不命中、10/10 全红） |
+| P1-1 测试确定性 | ✅ | **`bash scripts/verify.sh --repeat 20` → 20/20 轮全绿（pass=161→173 skip=45 fail=0；v5.3 改事务地基后又原地重跑一次 20/20，见下表）**。根治的 flake：V1-④ 曾 20 轮红 3 次、每次卡满 60.3s（`running progress=90`）。根因两层：① 前序用例 `generate` 后不等终态留下在飞 music job，把 `failPlan` 的 3 次计划失败蹭掉 → 改 `planFail({exclude})` 显式定域；② 服务端"父 job 等子 job"**无上限续租** → 加看护上界（见 P1-2）。教训：`failPlan` 定域**不能**依赖 `job.created_at`（poll 的 lease 载荷不保证带该列，`Date.parse(undefined)=NaN` 会让计划永不命中、10/10 全红） |
 | P1-2 账本与状态机加固 | ✅ | `test/acceptance/v25_ledger_consistency.test.js`（6 例）+ `test/acceptance/v29_parent_guard.test.js`（2 例，正反向）。落地：`store.onCommit` 提交后推余额（杜绝幻影余额）、`store.tx` 拒 async 闭包、审计失败不再静默（`audit_failures` 暴露到 `/healthz`）、`refundOnce` 逐事件查重、终态失败单事务双 CAS 退款、sweep 账本不变量巡检（`credit_violations` 暴露到 `/healthz`）。**顺带抓到两个静默缺陷**：`assertOwned` 的 `detail` 形参从来没加上（ReferenceError 被 `catch{}` 吞 → 审计一条没落）；读列名写错（`lease_until` 应为 `lease_expire_at`） |
 | P1-3 契约可执行化 | ✅ | `contract/routes.json`（106 条）+ `scripts/verify_contract.mjs` **双向**对账常开进闸门（实现↔声明两个方向都判红）；`docs/CONTRACTS.next.md`/`docs/archive/README.md` 入库（归档仍是 `DRAFT-FOR-REVIEW`，未移动任何文件，等批准）。补齐此前缺失的内置端点声明 `/healthz.online`、`/ws`，并把 `/healthz` 新字段写进契约 |
 | P1-4 运营面覆盖 | ✅ | `test/acceptance/v27_admin_ops.test.js`（8 例）遍历全部 `/admin/*`：鉴权（无令牌/坏令牌全 401）、契约状态码与形状、写类必须落审计、重复调用不越界、响应不含凭据字段（且必须在 200 上查，防 401 空过）、令牌轮换、路由指向不存在节点必须 400 且不留假审计。**并修掉解析层 400 绕过契约错误信封**（畸形请求此前裸回无 body 的 400） |
@@ -232,6 +232,7 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 | P0-8 双 runbook | ✅ | **两份都从零实跑过**：`runbook-dev.md` §3 → `/healthz ok:true` + 执行器数据目录同源 + `e2e_smoke` **21/21**（mp3 1,202,721B / peaks 400 点 / adjust 谱系），产物隔离在 `/tmp/mb-p08/var`(37M) 未污染仓内 `var/`；`deploy/spark/README.md` §2 三发自检 **3/3 绿**（`/v1/models`→`qwen38-fp4`、文本 JSON、1x1 白图被如实描述）；`bin/status.sh` 无 DEAD、LLM `:8090 /v1/models` 200。顺带修掉两处"照抄必红"的文档坑：① spark README 引用的 `deploy/spark/sample.png` 不存在；② `e2e_smoke` 直接 fetch 服务端绝对产物 URL，换端口时去连 `192.168.1.10:7900` 报 ECONNREFUSED |
 
 > 一期"止血"的可交付定义已达成：**闸门常绿、随时可演示**。P2 之前先补 P0-8 与下面三条真缺陷。
+| v5.3 追加：并发写冲突 | ✅ | 实机日志 `ERROR INTERNAL database is locked @ store.js:366` 落在"扣钱+派单"单事务上。`store.tx` 原为 deferred `BEGIN` → WAL 下读后升级写**立刻** SQLITE_BUSY（`busy_timeout` 在此不生效）。改 `BEGIN IMMEDIATE` + 503 `SERVICE_BUSY` 可重试 + 不污染 `audit_failures`。`test/acceptance/v32_db_busy.test.js`（3 例，真持锁逼竞争）：持锁 6.5s 必须 503 且**真的等过 4s**、余额不变、`Σdelta==balance` 成立、名下零 job；锁释放后重试必须 202 且扣款/账本/job 三者配对；短锁必须静默成功。**该套件当场抓出我引入的自伤**：`BEGIN IMMEDIATE` 放 `try` 外会打乱 BEGIN/COMMIT 配对，`txDepth` 泄漏后全站写路径静默失去原子性 |
 
 #### 一期复核中新发现、尚未修的真缺陷（不掩盖，按优先级）
 
