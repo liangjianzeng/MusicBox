@@ -42,8 +42,12 @@ function register(ctx) {
 async function poll(ctx) {
   assertToken(ctx);
   const b = ctx.body || {};
-  const executorId = exId(ctx) || 'ex_anon';
-  if (exId(ctx)) store.run('UPDATE executors SET last_seen=? WHERE id=?', U.nowIso(), executorId);
+  // 不允许匿名领单：旧写法 `exId(ctx) || 'ex_anon'` 会把任务租给一个不存在的执行器，
+  // 之后真执行器的 progress/complete 全被归属校验拒掉（任务只能空转到 attempts 用尽 → 退款）。
+  // 身份缺失说明调用方没先 register 或没带 id —— 直接拒，别留下租不出去的租约。
+  const executorId = exId(ctx);
+  if (!executorId) throw new U.ApiError('BAD_REQUEST', '领单必须携带执行器身份（先 POST /executor/register，并在后续请求带 x-executor-id 或 body.executor_id）');
+  store.run('UPDATE executors SET last_seen=? WHERE id=?', U.nowIso(), executorId);
   // 幽灵 poll 防线：领单前检查连接是否仍存活（executor 崩溃/被杀时不把 job 租给死会话）
   const isAlive = () => !!(ctx.req && ctx.req.socket && !ctx.req.socket.destroyed);
   const job = await engine.poll(b.lanes, executorId, isAlive);

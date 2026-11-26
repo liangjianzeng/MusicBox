@@ -437,3 +437,33 @@ bash bin/start_workers.sh asr1               # 127.0.0.1:8191，懒加载
   `/v1/assistant/bootstrap` 的 `capabilities.voice` 随之变 `true`（此前硬编码 false）；
   `POST /v1/intent/voice` 上传 wav → `{"intent_id":"in_…"}`。
 - 真机语音（手机录音 → 端侧 sherpa 或上传服务端）仍需在 GeekPro 连手机后验；本节的判据可直接复用。
+
+### 6.6 音乐线真机全链（DGX 执行器 + GeekPro 5060 Ti 引擎）实测（2026-11-27）
+
+拓扑（用户口径）：**server 与执行器留在 DGX**，生乐引擎在 GeekPro 的 5060 Ti 上，助手 LLM 用 DGX 已托管的 `qwen38-fp4`。
+
+| 件 | 位置 | 实测证据 |
+|---|---|---|
+| ACE-Step 1.5 引擎 | GeekPro `E:\Work\X-Theater\runtime\acestep\server.py`（**不在** MusicBox 仓库的 `services/acestep`，那里没有 venv） | `GET /health` → `{"service":"w-m-acestep","vram":{"cuda":true,"gpu":"NVIDIA GeForce RTX 5060 Ti","vram_total_mb":16310.6}}` |
+| 引擎入口 | `POST /music`、`GET /music/{id}/file`、`POST /unload`；**硬编码 `host=127.0.0.1` port 8190** | 读远端 server.py 尾部实测 |
+| 助手 LLM | DGX `http://127.0.0.1:8090/v1` | `/v1/models` → `id=qwen38-fp4` |
+| 语音识别 | DGX `127.0.0.1:8191`（见 §6.5） | `model_loaded:true` |
+
+因为引擎只绑 `127.0.0.1`，**不要为了连它去改别人的服务监听地址** —— 用 SSH 隧道把它反打到本机：
+
+```bash
+python3 tmp/gp.py     -t 10800 'E:\Work\X-Theater\runtime\acestep\venv\Scripts\python.exe E:\Work\X-Theater\runtime\acestep\server.py'   # 引擎（前台会话，日志直出）
+python3 tmp/gp_tunnel.py 8190 127.0.0.1 8190                                        # 隧道：本机 8190 → GeekPro 127.0.0.1:8190
+MB_SEC=30 MB_COUNT=1 bash tmp/real_music_run.sh                                     # server+执行器+验收一次跑完
+```
+
+四个**必然踩到**的坑（本轮全部实测复现过，别再靠猜排障）：
+
+1. **引擎返回的 `file` 是生成机自己的绝对路径**（`E:\...\out\x.wav`）。执行器在 Linux 上既不能当 URL 也不能本地复制 → 旧代码报「音乐生成产物缺失」，而引擎其实已出歌。已按协议取件口回捞（`GET /music/{id}/file`），修复见 `src/executor/lanes/music.js`。这类故障 FakeExecutor 永远验不到。
+2. **子 shell 起 node 必须 `exec`**：`( cd src && node executor/index.js ) &` 里 `$!` 是子 shell 的 pid，`kill` 后 node 变孤儿继续抢单。本轮留下 3 个僵尸执行器，导致 `complete` 被 403 —— 不是服务端双领（领单是 CAS：`UPDATE … WHERE id=? AND status='queued'` + `changes===1`），也不是租约（租约 10min、心跳 60s、零失败）。
+3. **端口必须确认空闲 + pidfile + trap**：孤儿 server 占住 7998 会让新 server `EADDRINUSE` 静默死，而脚本 `rm -rf` 过 var 目录 → 旧 server 握着已删 DB 的 inode → 验证脚本读新库读到空表，报「executors 表为空」这种彻底误导人的结论。
+4. **`pkill -f <模式>` 会杀掉自己**（模式串出现在被执行的命令行里）。用 pidfile；非要 pkill 就用字符类 `'executor/inde[x].js'`。
+
+引擎侧性能实测：单候选（30s 目标时长）在 5060 Ti 上约 **10–11 分钟**（含首次加载；服务「响应后释放显存」，所以每次都可能重载）。**这直接决定 `config.engine.leaseMs=10min` 偏紧**：count=3 的串行生成远超租约，是音乐线在真机上长期「跑不完 + 反复回队 + 退款」的结构性原因（见 `docs/musicbox-rescue-refactor-plan.md` M2 吞吐项）。
+
+`/healthz` 的 `online` 是 **App 的 WSS 连接数，不是执行器数量** —— 判执行器死活要看 `executors.last_seen`（`scripts/verify_real_music.mjs` 的 A4b 就是这么做的）。

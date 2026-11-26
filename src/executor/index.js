@@ -63,6 +63,8 @@ function loadConfig() {
     lipsyncUrl: process.env.MB_LIPSYNC_URL || 'http://127.0.0.1:8390',
     facegateUrl: process.env.MB_FACEGATE_URL || 'http://127.0.0.1:8395',
     workerToken: process.env.MB_WORKER_TOKEN || '', // 传给 worker 的内部令牌（抢救 P0-4）
+    executorId: process.env.MB_EXECUTOR_ID || null,  // 服务端 register 回来后固化并落盘（见 executorIdFile）
+    executorIdFile: path.join(process.env.MB_VAR_DIR || process.env.MB_VAR_ROOT || path.join(process.cwd(), 'var'), 'executor.id'),
     mvAsrUrl: process.env.MB_MV_ASR_URL || 'http://127.0.0.1:8391',
     mvFontFile: process.env.MB_MV_FONT || '', // compose 叠层 drawtext 字体（可选，Spark Linux 默认 fontconfig 即可）
     mvAspectRatio: args.mvAspectRatio || process.env.MB_MV_ASPECT_RATIO || '9:16',
@@ -121,6 +123,14 @@ cfg.lanes = cfg.lanes.filter((l) => KNOWN_LANES.indexOf(l) !== -1);
 // ---------- API 客户端（全部带 X-Executor-Token） ----------
 async function apiCall(method, apiPath, obj, timeoutMs, bodyOverride, contentType, extraOpts) {
   const headers = { 'x-executor-token': cfg.token };
+  // 身份必须随每个请求带上（2026-11-27 真机实测的 P0：以前只有 register 拿到过 id，
+  // 之后 poll/heartbeat/progress/complete 全都不带 → 服务端把任务租给 ex_anon，
+  // 真 id 上报 complete 必被 assertOwned 拒（403），progress 停在 0，attempts 耗尽 → failed+退款。
+  // FakeExecutor 一直带 executor_id，所以 172 例验收永远验不到这条。）
+  if (cfg.executorId) {
+    headers['x-executor-id'] = cfg.executorId;
+    if (apiPath.indexOf('/executor/') === 0 && bodyOverride === undefined) obj = Object.assign({}, obj || {}, { executor_id: cfg.executorId });
+  }
   let body;
   if (bodyOverride !== undefined) { body = bodyOverride; headers['content-type'] = contentType; }
   else { body = JSON.stringify(obj || {}); headers['content-type'] = 'application/json'; }
@@ -259,7 +269,14 @@ async function registerWithRetry() {
   let attempt = 0;
   for (;;) {
     try {
-      const r = await apiPost('/executor/register', { lanes: cfg.lanes, version: VERSION }, 15000);
+      const body = { lanes: cfg.lanes, version: VERSION };
+      if (cfg.executorId) body.executor_id = cfg.executorId;   // 复用同一身份，服务端走 UPDATE 而不是每次新建
+      const r = await apiPost('/executor/register', body, 15000);
+      if (r && r.executor_id) {
+        cfg.executorId = String(r.executor_id);
+        try { fs.mkdirSync(path.dirname(cfg.executorIdFile), { recursive: true }); fs.writeFileSync(cfg.executorIdFile, cfg.executorId); }
+        catch (e) { log('执行器身份落盘失败（不影响本次运行）：' + e.message); }
+      }
       if (r && Number(r.poll_interval_ms) > 0) cfg.pollIntervalMs = Number(r.poll_interval_ms);
       if (r && r.nodes) { serverNodes = r.nodes; applyServerNodes(r.nodes); }
       log('已接入调度：执行器 ' + ((r && r.executor_id) || '?') + ' 通道=' + cfg.lanes.join(',') + (cfg.mock ? '（mock）' : '') + (serverNodes ? ' 节点=' + Object.keys(serverNodes).join(',') : ''));
@@ -276,6 +293,8 @@ async function registerWithRetry() {
 
 async function main() {
   fs.mkdirSync(cfg.execTmp, { recursive: true });
+  try { if (!cfg.executorId && fs.existsSync(cfg.executorIdFile)) cfg.executorId = fs.readFileSync(cfg.executorIdFile, 'utf8').trim() || null; }
+  catch (e) { /* 首次运行无身份文件即可 */ }
   log('启动：API=' + cfg.api + ' 通道=' + cfg.lanes.join(',') + ' 数据目录=' + cfg.varDir + (cfg.mock ? ' [MOCK]' : ''));
   if (!cfg.token) log('警告：未提供执行器令牌，调度端可能拒绝');
   await registerWithRetry();

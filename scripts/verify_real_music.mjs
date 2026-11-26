@@ -90,9 +90,26 @@ try {
   check('A3', `助手 LLM 就绪且模型=${EXPECT_MODEL}`, l.ok && ids.includes(EXPECT_MODEL), `HTTP ${l.status} 模型列表=[${ids.join(',')}]`);
 } catch (e) { check('A3', '助手 LLM 就绪', false, String(e.message) + '（DGX 上应是 http://127.0.0.1:8090/v1）'); }
 check('A4', 'ffprobe 可用（音频判据依赖）', !!FFPROBE, FFPROBE || '缺 → 装 ffmpeg 或设 MB_FFPROBE；没有它只能验到「能下载」验不到「能解码」');
-const online = health.json && Number(health.json.online || 0);
-check('A4b', '至少一个执行器在线（否则任务只会永远排队）', online >= 1,
-  `online=${online}；起执行器：bash bin/start-executor.sh（GeekPro 上要带 MB_MUSIC_URL 指向本机 5060 Ti 服务）`);
+// /healthz 的 online 数的是 App 的 WSS 连接，**不是执行器**（别拿它当执行器判活 —— 第一版就踩过）。
+// 执行器真信号 = executors.last_seen（注册/心跳写入）。注意：心跳只在跑任务时发，空闲执行器只有注册时间，
+// 因此窗口放到 300s；无 MB_DB 时不下硬判据（任务永不派单会由 A8 暴露），也不许假装通过。
+let exNote = '未给 MB_DB → 无法预判执行器；若任务永不派单看 A8';
+let exOk = true;
+if (DB && fs.existsSync(DB)) {
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const pdb = new DatabaseSync(DB, { readOnly: true });
+    pdb.exec('PRAGMA busy_timeout=8000;');
+    const rows = pdb.prepare('SELECT id, lanes, last_seen FROM executors ORDER BY last_seen DESC LIMIT 3').all();
+    pdb.close();
+    const fresh = rows.filter((r) => Date.now() - Date.parse(r.last_seen || '') < 300000);
+    exOk = fresh.length >= 1;
+    exNote = exOk ? `${fresh.length} 个执行器 300s 内有心跳：${fresh.map((r) => `${r.id}(${r.lanes})`).join(', ')}`
+      : (rows.length ? `最近心跳 ${rows[0].last_seen}（>300s 前）→ 执行器大概已死；起法：bash bin/start_executor.sh`
+        : 'executors 表为空 → 执行器从没注册过；起法：bash bin/start_executor.sh');
+  } catch (e) { exNote = '读 executors 失败：' + e.message; exOk = false; }
+}
+check('A4b', '至少一个执行器活着（否则任务只会永远排队）', exOk, exNote);
 
 // ── 1 身份与余额 ──────────────────────────────────────────────────────────
 console.log('▶ 1 访客身份与积分');
@@ -146,13 +163,29 @@ if (!job || job.status !== 'done') finish();
 
 // ── 3 候选音频的物理判据 ─────────────────────────────────────────────────
 console.log('▶ 3 候选音频物理判据（status=done 不算通过，必须能解码/非静音/互不相同）');
-const workIds = (job.result && (job.result.work_ids || job.result.works)) || [];
-const works = [];
-for (const id of workIds) {
-  const d = await req('GET', '/v1/works/' + encodeURIComponent(id), { token });
-  if (d.status === 200) works.push(d.json.work || d.json);
+// 实现的真实形态：job.result.candidates[]（**候选**，采纳后才成为 work）——
+// 早期版本按 result.work_ids 找候选，结果真跑通了也报「候选数量 0」，把成功判成失败。
+const cands = (job.result && Array.isArray(job.result.candidates) ? job.result.candidates : []);
+check('A10', `候选数量 == ${COUNT}`, cands.length === COUNT, `result.candidates=${cands.length}${cands.length !== COUNT ? '（keys=' + Object.keys(job.result || {}).join(',') + '）' : ''}`);
+// audio_url 的 host:port 必须是真实可达的对外地址：历史坑是 MB_PUBLIC_BASE_URL 没配，
+// URL 落到默认 :7900，手机按这个地址取音频必然取不到（真机「候选能生成不能播」的一类成因）。
+for (const c of cands) {
+  const u = String(c.audio_url || '');
+  const same = u && (u.startsWith(SERVER) || u.startsWith('http://' + SERVER.replace(/^http:\/\//, '').split(':')[0] + ':') === false);
+  if (cands.length) {
+    check('A10b', '候选 audio_url 指向本次 server（不是默认 :7900）',
+      !!u && u.includes(new URL(SERVER).host),
+      u ? `${u}${u.includes(new URL(SERVER).host) ? '' : ' ≠ ' + SERVER + ' → 设 MB_PUBLIC_BASE_URL'}` : '候选没有 audio_url');
+    break;
+  }
 }
-check('A10', `候选数量 == ${COUNT}`, works.length === COUNT, `实得 ${works.length}${workIds.length !== COUNT ? '（job.result 只给了 ' + workIds.length + '）' : ''}`);
+const works = cands.map((c) => ({
+  id: c.id, title: c.title,
+  audio_master: c.audio_url, audio_playback: c.audio_url,
+  tags: (c.meta && c.meta.raw && c.meta.raw.tags) || [],
+  files: { audio_master: c.audio_url },
+  duration_sec: c.duration_sec,
+}));
 const clips = [];
 for (const w of works) {
   const src = w.audio_master || w.audio_playback || (w.files && (w.files.audio_master || w.files.audio_playback));
@@ -204,13 +237,13 @@ if (DB && fs.existsSync(DB)) {
   db.exec('PRAGMA busy_timeout=8000;');
   const sum = db.prepare('SELECT COALESCE(SUM(delta),0) s FROM credit_ledger WHERE user_id=?').get(uid);
   check('A18', '账本不变量 Σdelta == 当前余额', Number(sum.s) === balance1, `Σdelta=${sum.s} 余额=${balance1}`);
-  const rows = db.prepare('SELECT kind,delta,ref_type,ref_id FROM credit_ledger WHERE user_id=? ORDER BY rowid DESC LIMIT 12').all(uid);
+  const rows = db.prepare('SELECT reason,delta,ref_type,ref_id,balance_after FROM credit_ledger WHERE user_id=? ORDER BY rowid DESC LIMIT 12').all(uid);
   fs.writeFileSync(path.join(EVID, 'ledger.json'), JSON.stringify(rows, null, 2));
   const debits = rows.filter((r) => r.delta < 0).length; const refunds = rows.filter((r) => r.delta > 0).length;
   const failedCandidates = COUNT - works.length;
   check('A19', '失败候选有配对退款', failedCandidates === 0 || refunds >= failedCandidates,
     `失败候选≈${failedCandidates}，退款行=${refunds}（明细 ${path.relative(ROOT, EVID)}/ledger.json）`);
-  note(`最近账本行：${rows.slice(0, 4).map((r) => `${r.kind}:${r.delta}`).join(' ')}`);
+  note(`最近账本行：${rows.slice(0, 4).map((r) => `${r.reason}:${r.delta}`).join(' ')}`);
 } else {
   note('未给 MB_DB → 跳过白盒账本对账（强烈建议给，账本问题只有白盒能抓到）');
 }
