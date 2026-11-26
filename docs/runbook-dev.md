@@ -1,0 +1,415 @@
+# MusicBox 开发 Runbook · 当前真实环境（DGX Spark 单机）
+
+```
+Status: CURRENT（可照做）
+Applies-to: gx10-85f3 · Linux 7.0.0-1025-nvidia · aarch64 (Ubuntu 24.04.5) · NVIDIA GB10 · 192.168.1.10
+Repo-root:  /home/jianzengliang/MusicBox   （= bin/*.sh 里的 BASE="$HOME/MusicBox"）
+Date: 2026-11-26   采样时刻: 22:3x–22:5x CST（本文所有「实测」均为本次采样）
+Supersedes: README「快速开始」的 Windows 段、deploy/spark/baseline.md 的端口/端点结论
+历史口径见: docs/runbook-windows-legacy.md（LEGACY，只读归档，勿照做）
+```
+
+> **本页只写「现在照着敲就能跑」的东西。** 产品口径看 `docs/musicbox-assessment-and-plan.md`，接口真源看
+> [CONTRACTS.md](../CONTRACTS.md)，部署物料看 [deploy/spark/README.md](../deploy/spark/README.md) 与
+> [deploy/vps/SETUP.md](../deploy/vps/SETUP.md)（那是 VPS 上线路径，不是本机开发路径）。
+> 本文**不新增任何环境变量**；全部键名都是代码里已经读取的既有键。
+
+---
+
+## 1. 当前实态快照（2026-11-26 实测）
+
+### 1.1 主机与工具链
+
+| 项 | 实测值 | 判读 |
+|---|---|---|
+| 主机 | `gx10-85f3` · Ubuntu 24.04.5 · aarch64 · 20 核 · 121Gi RAM | 就是 DGX Spark 本机，**不再 SSH 到别的机器** |
+| 网址 | LAN `192.168.1.10` / Tailscale `100.81.83.59` / docker `172.17.0.1` | 手机可达地址用 `192.168.1.10`（同 /24）或 Tailscale IP |
+| 仓库 | `/home/jianzengliang/MusicBox`（工作树，含 `src/` `bin/` `test/`） | 所有 `bin/*.sh` 以此为 `$BASE` |
+| Node（仓内） | `$BASE/node` → `/opt/musicbox/node` → `v22.23.5` | `bin/start_*.sh` 用的就是它 |
+| Node（PATH） | `/home/jianzengliang/.node_versions/node-v25.2.0-linux-arm64/bin/node` → `v25.2.0` | 手敲 `node` 走这个；两者都 ≥22，混用无碍 |
+| ffmpeg | `/usr/bin/ffmpeg` = `6.1.1-3ubuntu5+esm15` | 含 `libmp3lame`/`drawtext`/`xfade`/`zoompan`，验收能力探测通过 ✓ |
+| Python / uv | `/usr/bin/python3`；`/usr/local/bin/uv` ✓ | 三个 worker venv 已就位（见 1.4） |
+| adb | `/usr/bin/adb`，`adb devices` = `8b1e8747 device`（红米 M2012K11AC · Android 13 · USB） | 真机用（§6） |
+| flutter | **未安装**（`flutter: 未找到命令`） | App 构建/`flutter run` 不在本机，见 §6 blocked |
+| 磁盘 | `/` 916G 总 / **325G 可用**；`/mnt/models-ssd` 931G / **508G 可用** | S3 通过线（≥150G）仍绿 ✓ |
+| 内存 | `free -g`：121 总 / 117 已用 / **可用 ≈4G** | ⚠ vLLM 常驻占大头 → **直接卡住 MV 全载**（§5） |
+| GPU | `NVIDIA GB10`，util 93–96%，`nvidia-smi --query-gpu=memory.used` 返回 `N/A` | GB10 统一内存：显存即内存，**判可用只能看 `free`，`nvidia-smi` 的 memory 列是 N/A** |
+
+### 1.2 端口 / 服务实态（这是最容易骗自己的一节，以 `ss` 为准）
+
+| 端口 | 服务 | 实态 | 备注 |
+|---|---|---|---|
+| **7900** | Music API（server） | **DOWN** | `run/api.pid` 是死进程；端口空闲，可直接起 |
+| **8090** | 多模态 LLM/VLM —— docker 容器 `qwen38-fp4-8090`（image `eugr/spark-vllm-b12x`，`vllm serve --served-model-name qwen38-fp4`） | **UP（当前唯一在听的）** | `GET /v1/models` → 200 `{"object":"list","data":[{"id":"qwen38-fp4",...,"max_model_len":262144}]}`；`GET /models` → **404**。宿主侧自查：`docker ps --format '{{.Names}}\t{{.Status}}'` |
+| **8188** | ComfyUI 生图/生视频队列（共宿主） | **DOWN** | 权重齐：`~/ComfyUI/models` 128G（H3 图/视频族 + TE + VAE + LoRA）；`~/ComfyUI/venv/bin/python` 在位 |
+| **8190** | ACE-Step 1.5 生乐 | **DOWN** | `services/acestep/{server.py,venv,models}` 符号链接均在位（venv→`~/musicgen-server/.venv`，models→`/mnt/models-ssd/.../checkpoints`） |
+| **8191** | SenseVoice ASR（一期转写） | **DOWN** | `var/venv-asr`（→`/opt/musicbox/var/venv-asr`，py3.12.3）在位 |
+| **8288** | ComfyUI 逃生口（自建实例） | DOWN / 未启用 | 仅 `:8188` 互扰超标才启（ADR-MV-4） |
+| **8390** | MV lipsync（EchoMimicV3-Flash） | **DOWN + BLOCKED** | venv 在位，但**权重未拉**且 `MB_LIPSYNC_COMMAND`/`MB_LIPSYNC_ROOTS` 未落（§5 blocked） |
+| **8391** | MV mv_asr（SenseVoice 时间戳对齐） | **DOWN + 半残** | venv 在位可起，但 `MB_MV_ASR_ROOTS` 未落本仓 `var/` → 起了也会 403（§5） |
+| **8395** | MV facegate（ArcFace/insightface） | **DOWN** | 权重齐：`var/models/facegate/models/buffalo_l/` 5 个 onnx ✓；`MB_FACEGATE_ROOTS` 已在 `etc/spark.env` 落本仓 `var/` ✓ |
+
+`run/*.pid` **8 个全部 DEAD**：`acestep api comfyui executor mv_asr mv_facegate mv_lipsync sensevoice`。
+—— 上一轮留下的死 PID 档，`bin/*.sh` 的幂等判断靠 pid 存活而不是文件存在，所以**直接重跑起服脚本即可**，无需手工清档。
+
+### 1.3 ⚠ LLM 模型名三处口径不一致（照做前必读）
+
+| 位置 | 值 | 谁在用 |
+|---|---|---|
+| `etc/spark.env:31` | `MB_LLM_VLM_MODEL=Inkling2-Mini:vision` | **运行时真生效的那个**：`bin/start_*.sh` 与 `bin/start_workers.sh` 都会 `source` 它 |
+| `deploy/spark/spark.env.example:36` | `MB_LLM_VLM_MODEL=qwen38-fp4` | 模板 / 文档口径（还带着 11-25「LLM 未起」的注释，已过期） |
+| `:8090/v1/models` 实测 | `qwen38-fp4` | **唯一客观真值** |
+
+**判定规则（本页采用，写死）：以 `etc/spark.env` 为准（它是运行时），并以 `/v1/models` 的实际返回值为准。**
+`spark.env.example` 只是模板，与 `etc/spark.env` 冲突时**以 `etc/spark.env` 为准**；而 `etc/spark.env` 与
+`/v1/models` 冲突时，**以 `/v1/models` 为准**并去改 `etc/spark.env`（不要改代码，也不要新增键）。
+
+为什么必须手查：模型名不对时**不会报错**——intent lane 只是静默降级为本地词典启发式（链路不断、confidence 变低），
+于是「LLM 档到底有没有生效」这件事会长期没人知道。自查：
+
+```bash
+curl -s http://127.0.0.1:8090/v1/models | head -c 200     # 看 data[0].id
+grep -n '^MB_LLM_VLM_MODEL=' ~/MusicBox/etc/spark.env     # 看运行时用的名字
+```
+
+两个不一致 = intent/剧本/助手全部走规则档，别把它当成「模型效果差」。
+
+### 1.4 权重 / venv 落位
+
+| 资产 | 路径 | 状态 |
+|---|---|---|
+| ComfyUI 图/视频族 | `~/ComfyUI/models`（128G） | ✓ 就位（`h3-image-cast`/`h3-image-broll`/`h3-fl2va` 三模板的 weights 全部在列） |
+| facegate（buffalo_l） | `var/models/facegate/models/buffalo_l/{det_10g,2d106det,1k3d68,w600k_r50,genderage}.onnx` | ✓ 就位 |
+| lipsync（EchoMimicV3-Flash） | `var/models` 下**只有 facegate** | ✗ **权重未拉**（E2 遗留） |
+| ACE-Step  checkpoints | `services/acestep/models` → `/mnt/models-ssd/musicgen-server/vendor/ACE-Step-1.5/checkpoints` | ✓ 就位 |
+| venv × 3 | `var/venv-asr` `var/venv-facegate` `var/venv-lipsync`（软链到 `/opt/musicbox/var/*`） | ✓ 三个 `bin/python` 都可执行（py3.12.3） |
+| ComfyUI 模板 | `src/executor/templates/manifest.json`：`h3-image-cast`/`h3-image-broll`/`h3-fl2va` `placeholder:false`；**`h3-image-edit` 仍 `placeholder:true`**（`weights:[]`、`comfy_commit:null`） | 见 §5 blocked |
+
+### 1.5 两条自查命令（开工前先贴这两条）
+
+```bash
+# ① 全服务状态 + 端点自检 + 内存 + 最近日志（只读，不干预）
+bash ~/MusicBox/bin/status.sh
+
+# ② 端口真值速查（比 status.sh 的进程档更可信：它只看 ss）
+ss -ltn | grep -oE ':(7900|8090|8188|8390|8391|8395)' | sort -u
+```
+
+预期（2026-11-26 实态）：② 只回 `:8090`；① 的 `== 端口` 段只有一行 `:8090`，`== 端点自检` 段除
+`LLM :8090 /v1/models  200` 外全是 `000ERR`，`== 进程（pid 档）` 八行全 `DEAD`。
+和这个不一致，说明有人在你之前动过机器——先查清楚再往下做。
+
+---
+
+## 2. 动手前先跑、提交前必跑：零依赖质量闸门
+
+```bash
+cd ~/MusicBox
+bash scripts/verify.sh              # 快检（秒级）：语法 + 工作区卫生 + 路由/契约对账 + 起服冒烟
+bash scripts/verify.sh --full       # 加上全量验收套件（约 1 分钟）
+bash scripts/verify.sh --repeat 20  # 全量验收 × 20，查 flake（P1-1 门票：全绿）
+```
+
+退出码 `0` 才可发布/入仓；非 0 禁止。**纪律：开工前先跑一次快检，把当时的红项记下来当基线；提交前
+`--full` 必须全绿，且红项数量不得比基线多。**
+
+当前（2026-11-26 22:4x）快检基线：
+
+| 步 | 结果 | 说明 |
+|---|---|---|
+| 1/5 语法（78 文件） | ✓ | |
+| 2/5 工作区卫生 | ⚠ 警告 | 已改 30 / 未跟踪 43 → 攒提交，拆小 |
+| 3/5 路由与契约对账 | ✗ **2 项红** | ① `CONTRACTS.md` 契约版本块 `v3.2` 重复定义（ID 冲突）；② 3 处代码/测试引用了不存在的「契约 v2.12」。属 CONTRACTS.md 侧待收口项，**由 lead 处理，别为了让闸门变绿去改 `CONTRACTS.md` 或 `src/`** |
+| 4/5 起服冒烟 | ✓（附 1 条告警） | `/healthz 200`、载荷 `{"ok":true,...}`；告警「启动日志泄露明文凭据」= 已知 P0-3（§7），`TODO_P03=1` 可转为硬失败 |
+| 5/5 全量验收 | 跳过（需 `--full`） | 实测见 §3.4 |
+
+---
+
+## 3. 从零起一条最小可跑链路（server + mock 执行器 + 验收）
+
+**本节命令本次实测通过**：端到端 `scripts/e2e_smoke.mjs` **21/21 全绿**（3 候选 mp3 1.2MB + peaks 400 点 + adopt + adjust 谱系）。
+
+### 3.1 三个坑先避开
+
+1. **`MB_VAR_ROOT` 与 `MB_VAR_DIR` 必须同源。** server 读 `MB_VAR_ROOT`、executor 读 `MB_VAR_DIR`；
+   只改前者会复现 `SRC_MISSING 转码源文件不存在`（本次实测踩过一次：mock 出的 wav 落在临时 var，转码却在仓内 `var/` 找）。
+   `etc/spark.env` 把两个键都写成了同一个绝对路径，照抄即可。
+2. **令牌不要写死在命令行。** `pgrep -af` 会把 `--token <明文>` 整个打印出来。`source etc/spark.env` 后用
+   `"$MB_EXECUTOR_TOKEN"`，或干脆不传 `--token`（执行器会回落读 `MB_EXECUTOR_TOKEN` 环境变量）。
+3. **验收必须用 glob 形式**：`node --test --test-concurrency=1 "test/acceptance/*.test.js"`。
+   目录形式 `node --test test/acceptance/` 在 Node 25 会被当模块路径解析而失败（README 已记）。
+
+### 3.2 终端 A — 服务端（:7900）
+
+```bash
+cd ~/MusicBox && set -a; . etc/spark.env; set +a         # 25 行 MB_* 赋值一次性全量导出（与 bin/start_*.sh 同源）
+MB_VAR_ROOT=~/MusicBox/var MB_VAR_DIR=~/MusicBox/var \
+MB_PORT=7900 MB_ENV=dev MB_DEV_OTP=1 \
+node src/server/index.js 2>&1 | tee /tmp/mb-api.log
+```
+
+预期（本次实测原样）：
+
+```
+(ExperimentalWarning: SQLite is an experimental feature ...)
+2026-11-26T14:44:14.478Z [MusicBox] 服务端已启动 http://127.0.0.1:7900 ；产物 /f/* ；WSS /ws ；健康 /healthz
+```
+
+另开一个 shell 验：
+
+```bash
+curl -s http://127.0.0.1:7900/healthz
+# {"ok":true,"ts":"2026-11-26T14:48:02.542Z","online":0,"mv_metrics":{...,"lanes":{"music":{"queued":0,"leased":0}, ...}}}
+```
+
+`"ok":true` 即通过。`online` 是 **WSS 在线 App 客户端数**（不是执行器个数），无客户端时就是 `0`，别当成执行器没连上。
+`mv_metrics` 段只有在 `MB_MV_ENABLED=1` 时才出现（`etc/spark.env` 目前就是 1）。
+
+### 3.3 终端 B — mock 执行器（无 GPU 也出真产物）
+
+```bash
+cd ~/MusicBox && set -a; . etc/spark.env; set +a
+MB_VAR_ROOT=~/MusicBox/var MB_VAR_DIR=~/MusicBox/var \
+EXECUTOR_MOCK=1 node src/executor/index.js \
+  --api http://127.0.0.1:7900 --token "$MB_EXECUTOR_TOKEN" \
+  --lanes music,intent,ffmpeg 2>&1 | tee /tmp/mb-exec.log
+```
+
+预期：
+
+```
+[执行器] 启动：API=http://127.0.0.1:7900 通道=music,intent,ffmpeg 数据目录=/home/jianzengliang/MusicBox/var [MOCK]
+[执行器] 已接入调度：执行器 ex_xxxxxxxxxxxxxxxx 通道=music,intent,ffmpeg（mock） 节点=music,asr,llm,comfy,lipsync,facegate,mv_asr
+```
+
+「数据目录」那行**必须**和你给 server 的 var 同一个路径（§3.1 第 1 条）。
+
+### 3.4 终端 C — 验收
+
+```bash
+cd ~/MusicBox
+node scripts/e2e_smoke.mjs http://127.0.0.1:7900        # 端到端 21 项，秒级~十几秒
+```
+
+预期 `总计 21/21 通过`（guest→扣 45 分→幂等→job done→3 候选 mp3+peaks→mp3 1.2MB→peaks 400 点→adopt→adjust 谱系）。
+
+```bash
+cd ~/MusicBox
+node --test --test-concurrency=1 "test/acceptance/*.test.js"    # 172 例，实测 ~60s
+```
+
+本次实测：`tests 172 / pass 126 / fail 1 / cancelled 0 / skipped 45 / duration 59.8s`。
+唯一那条红是 **V1-⑥ `database is locked`**（已知 flaky，见 §8 第 3 行），不是新问题。
+**记住这组数当基线**：改完代码再跑，pass 掉了就是回归。
+
+### 3.5 停服
+
+```bash
+# 手敲起的：Ctrl-C 即可。用 bin/ 脚本起的：
+cd ~/MusicBox
+for n in api executor; do
+  p=$(cat run/$n.pid 2>/dev/null); [ -n "$p" ] && kill "$p" 2>/dev/null && echo "stopped $n pid=$p"
+done
+ss -ltn | grep -E ':(7900) ' || echo "7900 free"
+```
+
+别用 `pkill -f "src/server/index.js"`：它会把你自己那条命令行（含这个字符串）也匹配上，连 shell 一起 SIGTERM。
+
+---
+
+## 4. 常驻起服：`bin/` 脚本（Linux 版，本机就这一套）
+
+| 脚本 | 端口 | pid 档 | 日志 | 前置 | 行为 |
+|---|---|---|---|---|---|
+| `bin/start_api.sh` | 7900 | `run/api.pid` | `var/logs/api.log` | `etc/spark.env` | pid 活则退出 0；**7900 被别的进程占则 abort 不杀** |
+| `bin/start_executor.sh` | — | `run/executor.pid` | `var/logs/executor.log` | `etc/spark.env` | lanes 取 `MB_LANES`（默认七道全开） |
+| `bin/start_acestep.sh` | 8190 | `run/acestep.pid` | `var/logs/acestep.log` | `services/acestep/venv` + `server.py` | 同上幂等/abort |
+| `bin/start_comfyui.sh` | 8188 | `run/comfyui.pid` | `var/logs/comfyui.log` | `~/ComfyUI/venv` | `--listen 0.0.0.0`；只发任务+只读观测，**代码层无 `/free`**（ADR-MV-4） |
+| `bin/start_workers.sh [asr\|facegate\|lipsync\|asr1\|all]` | 8391/8395/8390/8191 | `run/*.pid` | `var/logs/<name>.log` | `var/venv-*` | 缺 venv 打印 `missing venv` 并返回 1；端口占用 abort 不杀 |
+| `bin/status.sh` | — | 只读 | — | — | §1.5 |
+
+共同点：都 `BASE="$HOME/MusicBox"`、都 `source etc/spark.env`（`set -a` 全量导出）、都用 `$BASE/node/bin/node`（v22.23.5）、都是 `setsid nohup` 后台 + pid 档。
+所以：**改了 `etc/spark.env` 必须重启对应服务才生效**；起不来先 `tail -50 var/logs/<name>.log`。
+
+推荐顺序（音乐线，本机已实测的组件）：
+
+```bash
+cd ~/MusicBox
+bash bin/start_acestep.sh      # :8190（惰性加载，首发生乐才进模型）
+bash bin/start_api.sh          # :7900
+bash bin/start_executor.sh     # 拉单 daemon
+bash bin/status.sh
+```
+
+---
+
+## 5. MV 全载链路（ComfyUI + 83xx workers + MV 灰度）
+
+### 5.1 顺序（照 `deploy/spark/fullload-test-plan.md` §2 的 A2→A5）
+
+```bash
+cd ~/MusicBox
+
+# ① 生图/生视频共宿主队列（:8188）。共宿主纪律：只发任务 + 只读观测，永不 /free /kill。
+bash bin/start_comfyui.sh
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8188/system_stats   # 期望 200
+
+# ② MV 自有 worker（83xx，仅回环，executor 独占调用）
+bash bin/start_workers.sh facegate   # :8395 — 权重齐，可起
+bash bin/start_workers.sh asr        # :8391 — 起得来，但见下方 BLOCKED-3
+bash bin/status.sh                   # 期望 8395/8391 变 200
+
+# ③ API + 七道 lanes 的执行器（MV 线要 imgspark/vidspark/lipsync/align 四道）
+bash bin/start_api.sh
+bash bin/start_executor.sh           # lanes 来自 MB_LANES=music,intent,ffmpeg,imgspark,vidspark,lipsync,align
+
+# ④ MV 灰度（已在 etc/spark.env:34 MB_MV_ENABLED=1；显式确认，不要靠记忆）
+grep -n '^MB_MV_ENABLED=' etc/spark.env
+curl -s http://127.0.0.1:7900/healthz | head -c 120     # 有 mv_metrics 段 = 开关真的生效了
+```
+
+判定线：`:8188/system_stats` 200 · `:8395/health` 200 · `:8391/health` 200 · `:7900/healthz` `{"ok":true` ·
+执行器日志出现「已接入调度 … 通道=music,intent,ffmpeg,imgspark,vidspark,lipsync,align」。
+
+### 5.2 BLOCKED（当前明确跑不通的，别硬试）
+
+| # | 缺项 | 证据 | 影响 | 出路（**均需改 `etc/spark.env` 或拉权重，不由本文动**） |
+|---|---|---|---|---|
+| **B-1** | **lipsync 权重未拉（E2 遗留）** | `var/models/` 下只有 `facegate/`，无 EchoMimicV3-Flash 任何文件 | `:8390/health` 即便起来也只是 `configured:false`；`POST /lipsync` → **503 `ENGINE_NOT_READY`** → V15 / C4 口型链全红 | 拉权重到 `MB_LIPSYNC_MODELS` 指向的目录；**注意 `MB_LIPSYNC_MODELS` 这个键在 `src/` 里零引用**（死键，见 §9），真正决定行为的是下面两条 |
+| **B-2** | **`MB_LIPSYNC_COMMAND` / `MB_LIPSYNC_SYNC_COMMAND` 未配** | `grep -c MB_LIPSYNC_COMMAND etc/spark.env` → **0**；`mv_lipsync/app.py` 无它即 503 | 同上：lipsync 起来也是空壳 | 显式写推理命令与打分命令（JSON 数组，含 `{video} {audio} {output} {text} {score_file}` 占位符） |
+| **B-3** | **83xx 白名单没落到本仓 `var/`**：`MB_LIPSYNC_ROOTS`、`MB_MV_ASR_ROOTS` 未设 | 两者的代码默认值是 `"/opt/musicbox/var,E:/Work/MusicBox/var"`（`mv_lipsync/app.py:12-14`、`mv_asr/app.py:13-15`）；`grep` 两个键在 `etc/spark.env` 里 **0 命中** | `:8391`/`:8390` 进程能起、`/health` 能 200，但任何落在 `/home/jianzengliang/MusicBox/var/...` 的输入文件一律 **403「路径不在允许目录」**——即 `align`/`lipsync` 两道 lane 实跑必挂 | 照 `MB_FACEGATE_ROOTS`（已正确落 `.../MusicBox/var`）的样子补这两个键；`mv_facegate` 是唯一配对的，别拿它的表现推断另外两个 |
+| **B-4** | **`:8391` 进程死** | `run/mv_asr.pid` DEAD，`ss` 无 `:8391` | `align` lane 领单即失败 | `bash bin/start_workers.sh asr`（venv 在位，能起；起完仍有 B-3） |
+| **B-5** | **`h3-image-edit.json` 仍是 placeholder** | `src/executor/templates/manifest.json` 里该条 `placeholder:true`、`weights:[]`、`comfy_commit:null`（另三条 `false` 且带权重表+commit） | `mv_storyboard` 角色镜「只换背景壳」这条分支未真机标定（SP-MV-4），发单会被 `COMFY_TMPL_DRIFT` 拒 | 真跑一发回填 manifest（`comfy_commit`/`weights`/`vram_profile`/`evidence`，`placeholder:false`）；未回填前该分支按非致命降级走 `mv-facegate /swap ×2` |
+| **B-6** | **内存留裕不足** | `free -g` 可用 ≈4G（vLLM `:8090` 常驻 117G 已用）；执行器领单前的 `ram_free < 20G` 就挂起等待 | 全载（音乐族+生图族+生视频族同驻，预算 ~80G）**现在必然起不来**，会一直挂在队列 | 先决定 vLLM 与全载谁让路（GB10 统一内存，二者互斥）；**阈值不许为了"通过"而下调**（历史上 8.5G/12.3G 判通过的软化不重演） |
+
+`h3-image-cast` / `h3-image-broll` / `h3-fl2va` 三条**不在 blocked 里**：模板已登记、权重在位。
+其中 `h3-image-broll` 的 manifest note 明写「纯文生图分支尚未在 Spark 真机单独验收」——照做时把它的 evidence 补上。
+
+---
+
+## 6. 真机（Android adb / Tailscale）
+
+### 6.1 头号坑：`MB_PUBLIC_BASE_URL` 必须是手机可达地址
+
+`audio_url` / `audio_master_url` / `waveform_url` / 视频产物 URL **全部由 `MB_PUBLIC_BASE_URL` 拼接**。
+留默认 `http://127.0.0.1:7900` 的话，App 拿到的是手机自己身上的 127.0.0.1 —— **列表能出、卡片能渲染，但播放/下载全挂**，
+而且服务端日志一片干净（一期 K90 实测踩过，11-26 全载清单里又列为 C0 前置）。
+
+```bash
+cd ~/MusicBox
+grep -n '^MB_PUBLIC_BASE_URL=' etc/spark.env      # 实值：http://192.168.1.10:7900（LAN，手机同 /24 可达）✓
+# 手机走 Tailscale 时改成 Tailscale IP：http://100.81.83.59:7900（改完重启 api，见 §3.1）
+```
+
+改完**在手机上验**（不是在本机 curl）：
+
+```bash
+adb -s 8b1e8747 shell getprop ro.product.model                     # M2012K11AC
+adb -s 8b1e8747 shell curl -s http://192.168.1.10:7900/healthz      # 决定性判据：设备上直连基址（/system/bin/curl 在位）
+adb -s 8b1e8747 shell "toybox nc -w2 192.168.1.10 7900 </dev/null && echo TCP_OK"   # 只判 TCP 可达
+```
+
+本次实测（API 未起时）后一条回 `nc: connect: Connection refused` —— **refused = 手机到主机路由通、只是服务没起**，
+比"超时"信息量大得多；服务起来后这两条应分别返回 `{"ok":true...}` 与 `TCP_OK`。
+
+本机侧对拍（同一条命令换两个地址各跑一次，两边都该 200）：
+
+```bash
+curl -s http://192.168.1.10:7900/healthz | head -c 60     # LAN（手机走这条）
+curl -s http://127.0.0.1:7900/healthz     | head -c 60    # 回环
+```
+
+**只要 LAN 那条非 200，就先别查 App，先查防火墙/监听地址/是不是忘了重启。**
+
+### 6.2 当前设备与命令
+
+| 设备 | 通道 | 用法 |
+|---|---|---|
+| 红米 `M2012K11AC`（Android 13）serial `8b1e8747` | USB 直连 `device` | 主力，`adb -s 8b1e8747 ...` |
+| `M332BF`（Android 17） | Tailscale `100.75.247.55:5555` | **当前 offline**；要用的话 `adb connect 100.75.247.55:5555` 先打通 |
+| `192.168.1.151:5555` | WiFi 局域网 | **当前 absent** |
+
+```bash
+adb devices -l                                    # 看清 serial / 型号
+adb -s 8b1e8747 install -r <apk 路径>              # 见下方 blocked
+adb -s 8b1e8747 logcat -s musicbox:*              # App 侧日志
+adb -s 8b1e8747 exec-out screencap -p > /tmp/c1.png   # 证据留档（→ tmp/evidence/<ts>/C*_*.png）
+adb -s 8b1e8747 shell dumpsys media_session        # 播控/锁屏验收
+```
+
+### 6.3 BLOCKED（真机侧）
+
+- **本机无 `flutter`** → `flutter run` / `flutter build apk` 在本机做不了；`builds/` 目录也不存在（无现成 APK）。
+  出路：本机装 Flutter SDK（Dart `^3.6.0`），或在别的机器出包后 `adb install`。
+  打包期基址用 `--dart-define=MUSICBOX_BASE_URL=http://192.168.1.10:7900`（`src/app/lib/core/config.dart`），
+  或走 App 内「服务器设置」页填同值——**两条都填成 127.0.0.1 就是 §6.1 的坑**。
+- 签名件 `src/app/android/key.properties` 在位但**不入仓**；APK/keystore 一律不进 git。
+
+---
+
+## 7. 上线前必做（安全）— 三条凭据必须显式设置
+
+> 状态：这三条的默认值正在被 lead 改为 **fail-closed**（不给就起不来）。在此之前，
+> **不要把「没配也能起」当成「配好了」**。本节只写操作要求，代码改动不在本文范围。
+
+| 键 | 当前默认（`src/server`） | 风险 | 必做 |
+|---|---|---|---|
+| `MB_DEV_OTP` | `1` → 验证码恒 `888888`（`config.js:104`） | 任意手机号 = 正式用户 token | 开发档**显式** `MB_DEV_OTP=1`；**生产必须显式 `MB_DEV_OTP=0`**（不要依赖"默认是 0"，默认是 1） |
+| `MB_ADMIN_USERNAME` / `MB_ADMIN_PASSWORD` | `admin` / `admin1234`，且**明文写进启动日志**（`api/admin.js:13-21`） | 后台 `/admin/users`、`/admin/config/features` 可读写 | 上线前显式设两个键为强随机值；核对 `var/logs/api.log` 里**不再出现明文凭据**。闸门里 `TODO_P03=1` 可把这条告警转成硬失败，改完请把它打开 |
+| `MB_EXECUTOR_TOKEN` | `dev-executor-token`（`config.js:32`） | 任何人可伪装执行器领单/回单（校验逻辑本身是对的，是默认值公开） | 显式设一个强随机值（`etc/spark.env` 里已是非默认值）；**别把它打印到命令行或日志**（§3.1 第 2 条） |
+
+其它上线前项：`etc/*.env` `chmod 600` 且不入库；83xx 只回环（`app.py` 里 `host="127.0.0.1"`，别改成 0.0.0.0）；
+执行器只出网拉单、GPU 机零入站（VPS 侧 `/executor/` 段用源 IP 白名单，见 `deploy/vps/SETUP.md` §2）；
+`var/`（DB/令牌/产物/词库/权重）不入仓；用户面任何文案不得出现引擎型号名（契约 §0 纪律）。
+
+---
+
+## 8. 常见坑
+
+| 现象 | 根因 | 处置 |
+|---|---|---|
+| 验收里 done 方向用例假超时 / 或明明有 ffmpeg 却判 `FFMPEG_MISSING` | 验收是**能力探测**：真编一段正弦 wav → `mp3(libmp3lame)` 编得动才算"存在"（`helpers.js:167-196`）。只做视频的精简构建会被判缺失（**这是正确行为**，不是 bug） | 本机 `/usr/bin/ffmpeg` 6.1.1 能力齐全，正常路径不会命中。要指定别的二进制用 `MB_TEST_FFMPEG=<绝对路径>`；要演练缺失方向用 `MB_TEST_FORCE_NO_FFMPEG=1`（此时 done 方向显式 skip，fail 方向恒执行） |
+| `var-test/` 越堆越大（实测 **3.1G / 595 个目录**，跑一轮全量 +23 个目录 / +0.1G，`after()` 不回收） | 每套件独立 `MB_VAR_ROOT=var-test/<套件-pid-rand>`，用完不清 | 随便删：`rm -rf ~/MusicBox/var-test/*`（正式运行时数据在 `var/`，两者不同名，删错就麻烦了——**别删 `var/`**）。想留证据就先 `du -sh var-test` 记个数 |
+| `database is locked` | 白盒只读库连接 `new DatabaseSync(dbPath)`（`helpers.js:544,839`）**没设 `busy_timeout`**（server 侧 `store.js:346` 设了 5s）→ V1-⑥ / V17-⑦ 间发。本次实测唯一那条红就是 V1-⑥ | 是已知 flaky（`--repeat 20` 就是为它设的门票）。**不要靠重跑变绿来交差**；服务端 `var/logs/api.log` 里也出现过同款（`store.js:366`），一并记给 lead。修它在测试侧加 busy_timeout，不在本文范围 |
+| `SRC_MISSING 转码源文件不存在` | server 用 `MB_VAR_ROOT`、executor 用 `MB_VAR_DIR`，两者不同源 | 两个键设成同一路径（§3.1）；`etc/spark.env` 已同值，手敲命令时别只设一半 |
+| 起服脚本报 `port N occupied by unknown process; abort` | `bin/*.sh` 刻意**不杀**别的进程（共宿主纪律） | `ss -ltnp \| grep :N` 看是谁。是上一轮自己起的孤儿 → 按 pid 档 kill；是宿主的服务（`:8188`/`:8090`）→ **不许 kill**，改端口策略或找宿主 |
+| `:8391`/`:8390` `/health` 200 但一发就 403「路径不在允许目录」 | `MB_MV_ASR_ROOTS` / `MB_LIPSYNC_ROOTS` 没设，默认白名单是 `/opt/musicbox/var` + **`E:/Work/MusicBox/var`（Windows 残留）** | §5.2 B-3。**`/health` 200 ≠ 能用**，判可用要看实跑一发 |
+| `POST /lipsync` → 503 `ENGINE_NOT_READY` | `MB_LIPSYNC_COMMAND` 未配（§5.2 B-2） | 同上 |
+| `GET /v1/models` 200 但 intent 效果像没接 LLM | 模型名不对（§1.3），静默走词典启发式 | 对 `/v1/models` 的 `data[0].id` 校 `etc/spark.env`；判定「LLM 档有没有生效」看 intent 的 confidence 与审计来源字段，不是看有没有报错 |
+| 状态脚本里 LLM 那行是 `000`/`404` 但服务明明在线 | vLLM 只有 `/v1/models`，裸 `/models` 是 **404** | `bin/status.sh` 已改为探测 `/v1/models`（本次修）；自己写探测时用 `/v1/models` |
+| 全载跑不动 / 队列一直挂着 | `ram_free < 20G` 执行器主动挂起等待（GB10 统一内存，vLLM 常驻） | §5.2 B-6。**不降阈值**，先做取舍 |
+| `nvidia-smi` 看不出显存 | GB10 统一内存，`memory.used/total` 返回 `N/A` | 判资源用 `free -g` + `:8188/system_stats` 的 `ram_free` |
+| 手敲 `node` 和起服脚本用的 node 版本不同 | PATH 是 v25.2.0，`bin/*.sh` 用 `$BASE/node/bin/node` = v22.23.5 | 都 ≥22 可混用；要复现"脚本行为"就用 `$BASE/node/bin/node` 那条 |
+| `node --test test/acceptance/` 直接失败 | Node 25 把目录参数当模块路径解析 | 用 glob：`node --test --test-concurrency=1 "test/acceptance/*.test.js"` |
+| 验收多套件互抢同一空口 | 并发跑时端口探测撞车 | 恒带 `--test-concurrency=1`；基座端口用 `MB_TEST_BASE_PORT` 改 |
+
+---
+
+## 9. 环境变量族（`MB_*`）—— 只读说明，**本文不新增任何键**
+
+- 全族都是 `MB_` 前缀（少数测试专用例外：`MB_TEST_FFMPEG`、`MB_TEST_FORCE_NO_FFMPEG`、`MB_TEST_BASE_PORT`；
+  以及执行器 mock 开关 `EXECUTOR_MOCK`、兼容别名 `PORT`/`DEV_OTP`）。
+- 计数口径（本次实测）：`grep -rhoE 'MB_[A-Z0-9_]+' src/server | sort -u` = **41** 个；
+  `src/server` + `src/executor` 合并去重 = **58** 个。lead 口径的「57 个 server 侧」对应后者附近，
+  差别在"是否把 executor 侧的键算进 server 族"，**不是有键被漏掉**。
+- 单一真源是 **`etc/spark.env`（chmod 600，不入仓）**；`deploy/spark/spark.env.example` 只是模板。
+  `bin/start_*.sh` 用 `set -a; . etc/spark.env` 全量导出，`deploy/spark/*.service` 与它同源。
+- 最常碰的：`MB_VAR_ROOT` / `MB_VAR_DIR`（同源！§3.1）、`MB_PUBLIC_BASE_URL`（§6.1）、
+  `MB_LLM_VLM_URL` / `MB_LLM_VLM_MODEL`（§1.3）、`MB_MV_ENABLED`（§5.1）、`MB_LANES`（§4）、
+  `MB_FFMPEG` / `MB_FFPROBE`、`MB_COMFY_URL`、`MB_MUSIC_URL`、`MB_{LIPSYNC,FACEGATE,MV_ASR}_URL`、
+  `MB_DEV_OTP` / `MB_ADMIN_*` / `MB_EXECUTOR_TOKEN`（§7）。
+- **两个已核对的落位缺陷**（改法都是改 `etc/spark.env`，**不由本文动，也不靠新增键绕**）：
+  1. `MB_LIPSYNC_MODELS`（`spark.env:19`）在 `src/` 里**零引用**，是死键——它挡不住 lipsync 找不到权重，别被它骗。
+  2. `MB_LIPSYNC_ROOTS` / `MB_LIPSYNC_COMMAND` / `MB_LIPSYNC_SYNC_COMMAND` / `MB_MV_ASR_ROOTS` 是代码**已经在读**、
+     但 `spark.env` 没落的键（§5.2 B-2/B-3）。补它们属于「把既有键配上」，不是新增环境变量。
+
+---
+
+## 10. 变更记录
+
+| 日期 | 变更 |
+|---|---|
+| 2026-11-26 | 首版。实态快照 / 最小链路（实测 21/21 + 172 例基线）/ MV 全载 blocked 清单 / 真机 / 安全三条 / 常见坑表。同步修 `bin/status.sh` 的 LLM 探测端点（`/models` → `/v1/models`）并把探测项按 MV 全家桶（7900/8090/8188/8390/8391/8395）补全。Windows 口径移到 [runbook-windows-legacy.md](runbook-windows-legacy.md) |
+
+**本文只覆盖「本机现在怎么跑」。** 契约改动一律先改 [CONTRACTS.md](../CONTRACTS.md) 再改代码再回归
+`test/acceptance/`；本页与 `CONTRACTS.md` 冲突时，以 `CONTRACTS.md` 为准并回来修本页。

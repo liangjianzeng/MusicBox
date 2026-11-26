@@ -10,6 +10,7 @@
 | SP3 | 生乐两档批量计时 | `bash spikes/SP3_acestep_batch.sh` | 5060 Ti 生乐机 | 脚本就绪 |
 | SP4 | App 生成流手工清单 | 人工（App 侧施工方执行） | App + API | 清单见下 |
 | SP5 | App 意图卡流手工清单 | 人工（App 侧施工方执行） | App + API | 清单见下 |
+| SP6 | MV 保脸切场景（I2V 首帧） | 见 `SP6_mv_face_preservation.md` | DGX Spark | ✅ 全场景实证 |
 
 ## SP3 记录口径
 
