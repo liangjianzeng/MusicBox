@@ -413,3 +413,27 @@ adb -s 8b1e8747 shell dumpsys media_session        # 播控/锁屏验收
 
 **本文只覆盖「本机现在怎么跑」。** 契约改动一律先改 [CONTRACTS.md](../CONTRACTS.md) 再改代码再回归
 `test/acceptance/`；本页与 `CONTRACTS.md` 冲突时，以 `CONTRACTS.md` 为准并回来修本页。
+
+### 6.5 服务端语音识别（sensevoice :8191）实测落位（2026-11-27）
+
+本机（DGX）此前 **完全没有 ASR 环境**：系统 Python 无 `funasr`，且 Debian 系 PEP 668 禁止 `pip install --user`。
+正解是建 venv（别用 `--break-system-packages` 污染系统 Python）：
+
+```bash
+python3 -m venv var/venvs/sensevoice
+var/venvs/sensevoice/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU 版即可
+var/venvs/sensevoice/bin/pip install funasr fastapi uvicorn kaldi-native-fbank
+ln -sfn venvs/sensevoice var/venv-asr        # bin/start_workers.sh 找的是 $MB_VENV_BASE/venv-asr
+bash bin/start_workers.sh asr1               # 127.0.0.1:8191，懒加载
+```
+
+- **`kaldi-native-fbank`（或 `torchaudio`）是必需的**：缺它时 `/healthz` 照样 200、模型也“加载成功”，
+  但第一次 `/asr` 才炸 `ImportError: torchaudio is not installed and neither is the kaldi-native-fbank fallback backend`。
+  这是典型的“健康检查骗人”——起服后必须真打一次 `/asr` 才算就位。
+- 实测（CPU，torch 2.15.0+cpu / funasr 1.4.29）：1 秒 220Hz 正弦 → `{"text":"Yeah.","duration":1.0}`
+  （正弦无人声，模型给出幻觉文本属正常，`duration` 与音频一致才是关键判据）；`/healthz` → `model_loaded:true`。
+- 越权读文件已被拒：`POST /asr {"path":"/etc/passwd"}` → `403 {"detail":"路径不在允许目录"}`（`MB_ASR_ROOTS` 白名单，抢救 P0-4 加的）。
+- 端到端（server :7997 → worker :8191）实测：`/v1/health/speech` 报 `asr.ok=true`；
+  `/v1/assistant/bootstrap` 的 `capabilities.voice` 随之变 `true`（此前硬编码 false）；
+  `POST /v1/intent/voice` 上传 wav → `{"intent_id":"in_…"}`。
+- 真机语音（手机录音 → 端侧 sherpa 或上传服务端）仍需在 GeekPro 连手机后验；本节的判据可直接复用。
