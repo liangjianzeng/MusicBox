@@ -906,3 +906,17 @@ POST /v1/assistant/feedback  {message_id,result}
 | v5.2.6 | 执行器侧声纹参考必须**真实可读**才允许声称已克隆：`payload.persona` 必须带 `id`；执行机读不到 `ref_abs_path`（跨机必然）时经 `GET {apiUrl}/v1/personas/:id/voice`（执行器令牌）回捞；取不到则 `meta.clone.applied=false` + `ref_unavailable=true` 诚实降级，**不得**报 `persona_applied=true`。同一 job 的 guide 与 cover 必须打到同一引擎（`payload.music_endpoint`） | 用户以为克隆生效其实从未发生；变声打到另一台机器 | V31-②③④ |
 | v5.2.4 | 同一字段的长度上限必须**单点供给**：`mood` 由 `l2/governance_core.FIELD_LIMITS.mood` 提供，且必须等于落库截断长度（`api/works.js` 的 `slice(0,20)`） | 助手放行 60 字、写库截成 20 字 → 用户静默丢字，且两处会各自漂移 | V30-⑤ |
 
+## v5.3 数据库并发写冲突口径（2026-11-27 追加，append-only）
+
+> 由来：实机日志出现 `ERROR INTERNAL database is locked @ store.js:366`，正落在"扣钱+派单"的单事务上。
+> 根因是 `store.tx` 用 deferred `BEGIN`：WAL 下"先读后写"的升级死锁会**立刻**回 SQLITE_BUSY，
+> `PRAGMA busy_timeout` 在这条路径上**不生效**，于是用户看到 500，而且没人说得清那 15⚡ 扣了没有。
+> 验收：`test/acceptance/v32_db_busy.test.js`（3 例，用第二条白盒连接真实持锁逼出竞争，不用 mock 锁）。
+
+| # | 判据 | 违反后果 | 验收 |
+|---|---|---|---|
+| v5.3.1 | 写事务必须以 `BEGIN IMMEDIATE` 起（进事务即取写锁），使并发写排队等 `busy_timeout`（当前 5000ms），而不是等第一条 UPDATE 才炸 | 锁竞争变成即时 500，重试也救不回来 | V32-①（等待时长 ≥4s 是"真的排过队"的证据） |
+| v5.3.2 | `BEGIN IMMEDIATE` 自身必须在 `try` 之内。放外面会绕过错误映射，更会打乱 BEGIN/COMMIT 配对 —— `txDepth` 泄漏后，后续每次 `tx()` 都误判"已在事务内"而跳过 BEGIN/COMMIT，写路径整体失去原子性 | 全站事务语义静默失效（比 500 更糟） | V32-②（BUSY 失败后同进程事务仍能正常配对并提交） |
+| v5.3.3 | 超时的锁冲突必须回 `503 SERVICE_BUSY` + "请稍后重试"，**不得**混进 `500 INTERNAL`；客户端可原样重试（幂等键保证不重复扣分） | 客户端无法区分"该重试"与"真失败"，投诉与资损都难归因 | V32-①② |
+| v5.3.4 | 锁冲突**不得**计入 `/healthz.audit_failures`（那个计数专指"审计写不进去"），也不得留下半截账：失败后 `Σdelta==balance` 必须仍成立、余额不变、该用户名下不得有 job | 观测噪声淹没真故障；半截扣款 | V32-① |
+

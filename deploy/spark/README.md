@@ -37,13 +37,21 @@ curl -fsS "$LLM/chat/completions" -H 'content-type: application/json' -d '{
 }' | head -c 600; echo
 
 # ③ 图片一发（多模态：本地 png → base64 data URL；用 printf 拼 JSON 避免引号地狱）
-IMG=deploy/spark/sample.png   # 任意 ≤8MB 的 png/jpg
+IMG=${1:-/tmp/mb_sample.png}   # 任意 ≤8MB 的 png/jpg；没有就现场造一张合法 1x1 PNG（不往仓里塞二进制）
+[ -f "$IMG" ] || node -e 'const H=require("./test/acceptance/helpers.js");require("fs").writeFileSync(process.argv[1],H.makePng())' "$IMG"
 DATA=$(base64 -w0 "$IMG")
 printf '{"model":"qwen38-fp4","messages":[{"role":"user","content":[{"type":"text","text":"一句话描述这张图。"},{"type":"image_url","image_url":{"url":"data:image/png;base64,%s"}}]}]}' "$DATA" >/tmp/mb_img.json
 curl -fsS "$LLM/chat/completions" -H 'content-type: application/json' -d @/tmp/mb_img.json | head -c 600; echo
 ```
 
 判定：①返回 `data` 数组；②③返回 `choices[0].message.content` 非空。
+
+> **2026-11-27 本机实测 3/3 绿**（`MB_LLM_VLM_URL=http://127.0.0.1:8090/v1`）：
+> ① `data[].id = qwen38-fp4`，`max_model_len=262144`；② 返回 `{"mood":["温馨","感恩","幸福"],"genre":["生日歌","流行","民谣"]}`；
+> ③ 喂 1x1 白图，模型如实答"这是一张纯白色的空白图片…"（说明多模态面真的在看图，不是复读文本）。
+> 两条踩坑记录：**(a)** 旧版示例写 `deploy/spark/sample.png`，该文件**并不存在**，照抄必在 `base64` 处红，
+> 会被误判成"LLM 不通"——现改为缺图就现场生成；**(b)** ② 的响应体里除 `content` 外还有 `reasoning` 字段
+> （vLLM 思考模式回传），**判定只看 `choices[0].message.content`**，别拿整个响应去断言。
 三发全绿 = 执行器 intent lane 的 LLM 面可用；任一失败 = intent lane 将自动走本地词典启发式（链路不断，confidence 降低），**不会报错中断**。
 
 ## 3. 可选自部署兜底（默认关）

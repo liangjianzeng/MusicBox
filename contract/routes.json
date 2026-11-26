@@ -135,7 +135,7 @@
     { "id": "C-API-WORK-GENERATE-CREATE-007", "method": "POST", "path": "/v1/works/generate", "module": "works.js", "auth": "user", "authCalls": ["requireUser"], "contract": "v1 §2 文本创作线",
       "request": { "mode": "simple|custom（其它值 400；不是 standard/pro）", "prompt": "string ≤500（simple 下 prompt/lyrics 至少一个非空）", "lyrics": "string ≤4000", "tags": "string[] ≤6", "mood": "string ≤20", "bpm?": "int 40-200", "sec?": "int 15-240（默认 45，越界 400）", "count?": "int 1-4（默认 3，非整数或越界 400）", "persona_id?": "string", "model?": "string（node_id 或 engine；后台 locked 时被强制默认）", "seed?|seed_base?": "int 0-2147483647", "instrumental?": "bool|'true'|'false'|0|1" },
       "response": { "status": 202, "body": { "job_id": "string", "credits_charged": "int", "idempotent": "bool" } },
-      "errors": ["UNAUTHORIZED", "BAD_REQUEST", "MODERATION_BLOCK", "CREDITS_NOT_ENOUGH", "RATE_LIMITED(gen:user 12 次/60s)"],
+      "errors": ["UNAUTHORIZED", "BAD_REQUEST", "MODERATION_BLOCK", "CREDITS_NOT_ENOUGH", "RATE_LIMITED(gen:user 12 次/60s)", "SERVICE_BUSY(并发写超 busy_timeout，可原样重试且不会重复扣分)"],
       "credits": { "charged": "credits.per_candidate * count（默认 15×3=45）；幂等命中 0", "reason": "gen", "refund": "enqueue 抛错/并发同键即时全额退" },
       "notes": "先审→幂等→扣分→enqueue 顺序不可换；idem 键含 seed/instrumental（normalizeForIdem）。job type=music → lane music（timeout 8min，ladder 恒等）。" },
 

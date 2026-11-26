@@ -152,8 +152,11 @@ node src/server/index.js 2>&1 | tee /tmp/mb-api.log
 
 ```
 (ExperimentalWarning: SQLite is an experimental feature ...)
-2026-11-26T14:44:14.478Z [MusicBox] 服务端已启动 http://127.0.0.1:7900 ；产物 /f/* ；WSS /ws ；健康 /healthz
+2026-11-26T21:57:24.586Z [MusicBox] 服务端已启动 http://0.0.0.0:7911 ；产物 /f/* ；WSS /ws ；健康 /healthz
 ```
+
+> 注意监听地址打印的是 **`0.0.0.0`**（`MB_BIND` 默认全网卡），不是 `127.0.0.1`；端口取 `MB_PORT`。
+> 比对这行时别因为 host 不同就判"起错了"——真正要看的是 `/healthz` 是否 `"ok":true`。
 
 另开一个 shell 验：
 
@@ -193,9 +196,20 @@ node scripts/e2e_smoke.mjs http://127.0.0.1:7900        # 端到端 21 项，秒
 
 预期 `总计 21/21 通过`（guest→扣 45 分→幂等→job done→3 候选 mp3+peaks→mp3 1.2MB→peaks 400 点→adopt→adjust 谱系）。
 
+> **产物 URL 的取件口径（2026-11-27 起）**：`audio_url` / `waveform_url` 是服务端按 `MB_PUBLIC_BASE_URL`
+> 拼出来的**绝对地址**。换端口/换机跑冒烟时，脚本会自动按命令行 base 回捞并在结尾如实提示改写次数
+> （实测 `已按 base 回捞 2 次`）。**公网可达性是另一件事**，要按 §6 的公网口径单独验，不要混进冒烟结论。
+> 踩过的坑：旧版脚本直接 fetch 绝对地址，在 7911 上跑却去连 `192.168.1.10:7900`，`ECONNREFUSED` 把排查方向整个带偏。
+
+**2026-11-27 P0-8 从零复跑记录**（`MB_VAR_ROOT/MB_VAR_DIR=/tmp/mb-p08/var`、`MB_PORT=7911`、`MB_ENV=dev MB_DEV_OTP=1`）：
+`/healthz` → `{"ok":true,...,"audit_failures":0,"credit_violations":0,"mv_metrics":{...}}`；
+执行器首行 `数据目录=/tmp/mb-p08/var [MOCK]` 与 server 同源（§3.1 第 1 条）；
+`node scripts/e2e_smoke.mjs http://127.0.0.1:7911` → **总计 21/21 通过**（mp3 1,202,721B / peaks 400 点 / adjust 谱系 depth=1）；
+整套跑完 `/tmp/mb-p08/var` 37M，**仓内 `var/` 未被写入**。
+
 ```bash
 cd ~/MusicBox
-node --test --test-concurrency=1 "test/acceptance/*.test.js"    # 172 例，实测 ~60s
+node --test --test-concurrency=1 "test/acceptance/*.test.js"    # 215 例（170 pass + 45 skip），闸门同口径实测 ~2 分钟
 ```
 
 本次实测：`tests 172 / pass 126 / fail 1 / cancelled 0 / skipped 45 / duration 59.8s`。

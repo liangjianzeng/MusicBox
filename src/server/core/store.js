@@ -399,7 +399,27 @@ function norm(v) {
   if (typeof v === 'boolean') return v ? 1 : 0;
   return v;
 }
-function run(sql, ...params) { return init().prepare(sql).run(...params.map(norm)); }
+// 并发写冲突必须**可辨识、可重试**：
+// 旧行为是 deferred `BEGIN`（先读后写）—— WAL 下这种"读后升级到写"遇到别的连接已持写锁时，
+// SQLite 会**立刻**回 SQLITE_BUSY，busy_timeout 在升级死锁里不生效，
+// 于是 500 INTERNAL "database is locked" 直接砸在扣钱+派单的单事务上（2026-11-27 实机日志复现）。
+function isBusyErr(e) {
+  const m = String((e && (e.message || e.code)) || '') + ' ' + String((e && e.code) || '');
+  return /SQLITE_BUSY|SQLITE_LOCKED|database is locked|database table is locked/i.test(m);
+}
+// 注意：**不要**把并发写冲突塞进 logAuditFailure —— 那个计数会进 /healthz.audit_failures 并被闸门判红，
+// 语义是"审计写不进去"，与"数据库忙、可重试"是两回事，混用会让真正的审计故障被噪声淹没。
+// where 仅用于日志定位，由上层错误日志带出。
+function busyErr(e, where) {
+  const err = new U.ApiError('SERVICE_BUSY', '数据库繁忙（并发写入），请稍后重试', 503);
+  err.cause = e;
+  err.dbWhere = where || 'unknown';
+  return err;
+}
+function run(sql, ...params) {
+  try { return init().prepare(sql).run(...params.map(norm)); }
+  catch (e) { if (isBusyErr(e)) throw busyErr(e, 'run'); throw e; }
+}
 function get(sql, ...params) { return init().prepare(sql).get(...params.map(norm)) || null; }
 function all(sql, ...params) { return init().prepare(sql).all(...params.map(norm)); }
 
@@ -431,16 +451,24 @@ function tx(fn) {
   if (txDepth > 0) { const r = fn(); assertNotThenable(r); return r; } // 可重入
   txDepth++;
   const outboxBase = outbox.length;
-  db.exec('BEGIN');
+  // IMMEDIATE：进事务就取写锁，让并发写**排队等 busy_timeout(5s)**，而不是等到第一条 UPDATE
+  // 才因"读→写升级死锁"立刻 SQLITE_BUSY（那条路径 busy_timeout 不生效，用户看到 500）。
+  // 关键：BEGIN 自己也可能抛 BUSY，所以**必须在 try 之内** —— 放在 try 外会绕过映射回 500，
+  // 更要命的是 finally 里的 txDepth-- 仍然执行而 BEGIN/COMMIT 配对已被打乱，
+  // 后续每次 tx() 都会误判"已在事务内"从而跳过 BEGIN/COMMIT（V32-① 就是这么抓出来的）。
+  let began = false;
   try {
+    db.exec('BEGIN IMMEDIATE');
+    began = true;
     const r = fn();
     assertNotThenable(r);
     db.exec('COMMIT');
     flushOutbox();
     return r;
   } catch (e) {
-    try { db.exec('ROLLBACK'); } catch (e2) { /* 已回滚 */ }
+    if (began) { try { db.exec('ROLLBACK'); } catch (e2) { /* 已回滚 */ } }
     outbox.length = outboxBase; // 回滚层内注册的提交后副作用一并丢弃
+    if (isBusyErr(e)) throw busyErr(e, 'tx');
     throw e;
   } finally {
     txDepth--;

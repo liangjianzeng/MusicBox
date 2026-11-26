@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const CODE_STATUS = {
   UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429,
   INTERNAL: 500, BAD_REQUEST: 400, CREDITS_NOT_ENOUGH: 400, MODERATION_BLOCK: 400,
+  SERVICE_BUSY: 503,   // 数据库并发写冲突（可重试）：不能混进 INTERNAL 500，客户端据此决定重试与否
 };
 
 // 业务错误：code 对应契约错误码，message 面向用户（全中文）

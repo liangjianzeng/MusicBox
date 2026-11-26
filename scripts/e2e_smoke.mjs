@@ -1,6 +1,20 @@
 // scripts/e2e_smoke.mjs — 主会话总验收冒烟（2026-11-23）：guest→生成→3候选(mp3+peaks)→采纳→导出可达
 // 用法：node scripts/e2e_smoke.mjs [base]，默认 http://127.0.0.1:7900
-const BASE = process.argv[2] || 'http://127.0.0.1:7900';
+const BASE = String(process.argv[2] || 'http://127.0.0.1:7900').replace(/\/+$/, '');
+// 产物 URL 是服务端按 MB_PUBLIC_BASE_URL 拼出来的**绝对地址**（那才是用户真正点开的地址）。
+// 冒烟脚本换端口/换机跑时（runbook §3 就是这么教的），直接 fetch 这个绝对地址会连到另一台机器/另一个端口，
+// 报出与"被测对象"无关的 ECONNREFUSED（实测：连 192.168.1.10:7900 被拒，排查方向整个被带偏）。
+// 故：host 与被测 base 不同就按 base 回捞，并在结尾如实提示改写过几次 —— 公网可达性要另测，别混进冒烟。
+let urlRewrites = 0;
+function toBase(u) {
+  const str = String(u || '');
+  if (!/^https?:\/\//i.test(str)) return BASE + (str.startsWith('/') ? str : '/' + str);
+  try {
+    const a = new URL(str); const b = new URL(BASE);
+    if (a.host !== b.host) { urlRewrites++; a.protocol = b.protocol; a.host = b.host; }
+    return a.toString();
+  } catch (e) { return BASE + str; }
+}
 const results = [];
 let token = '';
 
@@ -57,10 +71,10 @@ check('候选波形 peaks', cands.length === 3 && cands.every(c => c.waveform_ur
 
 // 6) 下载回验 mp3 + peaks
 if (cands[0]?.audio_url) {
-  const a = await fetch(cands[0].audio_url);
+  const a = await fetch(toBase(cands[0].audio_url));
   const buf = Buffer.from(await a.arrayBuffer());
   check('mp3 可下载且 >100KB', a.status === 200 && buf.length > 100_000, buf.length + 'B');
-  const p = await fetch(cands[0].waveform_url);
+  const p = await fetch(toBase(cands[0].waveform_url));
   const pj = await p.json().catch(() => null);
   const arr = Array.isArray(pj) ? pj : pj?.peaks;
   check('peaks 数组 400 点', p.status === 200 && Array.isArray(arr) && arr.length >= 100, arr?.length);
@@ -113,3 +127,7 @@ token = savedToken;
 
 for (const x of results) console.log(`${x.ok ? 'PASS' : 'FAIL'}  ${x.name}${x.detail ? '  [' + x.detail + ']' : ''}`);
 console.log(`\n总计 ${results.filter(x => x.ok).length}/${results.length} 通过`);
+if (urlRewrites > 0) {
+  console.log(`提示：产物 URL 的 host 与被测 base 不同，已按 base 回捞 ${urlRewrites} 次。`
+    + '（产物绝对地址由服务端 MB_PUBLIC_BASE_URL 决定；跨机/公网可达性请单独验，不要混进冒烟结论）');
+}

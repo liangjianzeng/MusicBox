@@ -229,7 +229,7 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 | P1-6 计费/合规去短路 | ✅（C2 记 blocked） | 两份真机计划已加**红线**并作废"灌余额至 1000050 / budget 1000000"的积分 ✅。C2 真人像 + facegate + consent：**blocked** —— 本机 `:8395` facegate、`:8390` lipsync、`:8188` 生图队列均未运行且 `MB_MV_ENABLED=0`，MV 面无法真跑；按判据记 blocked 而非 ✅，需 GeekPro GPU + 权重到位后复跑 |
 | P0-3 上线面安全 | ✅ | `test/acceptance/v28_boot_security.test.js`（5 例）：prod 缺 `MB_EXECUTOR_TOKEN`/`MB_ADMIN_PASSWORD`/`MB_PUBLIC_BASE_URL`/`MB_DEV_OTP=1` 四情形必须非零退出**且点名缺哪个键**；配齐后 prod 必须真能起服并处理请求；日志不得出现显式配置的口令本身；登录限流 429 + 失败审计不含口令；令牌 ≤12h 且过期立即 401。闸门里明文凭据检查已由软警告改为**硬失败** |
 | P0-7 仓库卫生 | ✅ | `git ls-files --others` = 0；`var-test` 由"只按个数回收"改为**个数 + 总量双上界**（20 轮全量跑完曾到 224M 顶破判据，现一轮全量后 151M / 32 目录）；`services/acestep/{venv,models,acestep-repo}` 是指向仓外的**符号链接**（`venv/` 目录型规则匹配不到）已显式忽略；`bin/status.sh` 无 DEAD |
-| P0-8 双 runbook | ⬜ | 待办：`docs/runbook-dev.md` §3 与 `deploy/spark/README.md` 的从零到 `/healthz` 实跑复验（含 `bin/status.sh` 的 `/v1/models` 路径，后者已实测 200） |
+| P0-8 双 runbook | ✅ | **两份都从零实跑过**：`runbook-dev.md` §3 → `/healthz ok:true` + 执行器数据目录同源 + `e2e_smoke` **21/21**（mp3 1,202,721B / peaks 400 点 / adjust 谱系），产物隔离在 `/tmp/mb-p08/var`(37M) 未污染仓内 `var/`；`deploy/spark/README.md` §2 三发自检 **3/3 绿**（`/v1/models`→`qwen38-fp4`、文本 JSON、1x1 白图被如实描述）；`bin/status.sh` 无 DEAD、LLM `:8090 /v1/models` 200。顺带修掉两处"照抄必红"的文档坑：① spark README 引用的 `deploy/spark/sample.png` 不存在；② `e2e_smoke` 直接 fetch 服务端绝对产物 URL，换端口时去连 `192.168.1.10:7900` 报 ECONNREFUSED |
 
 > 一期"止血"的可交付定义已达成：**闸门常绿、随时可演示**。P2 之前先补 P0-8 与下面三条真缺陷。
 
