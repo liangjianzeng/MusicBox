@@ -135,6 +135,18 @@ function assertOwned(job, executorId) {
   // 抢救 P0-4：租约归属必须强制比对。旧写法 `if (executorId && job.executor_id && ...)`
   // 让调用方「不带 X-Executor-Id」即可绕过，配合默认令牌可对任意 job 发 progress/complete/fail。
   if (!executorId || !job.executor_id || job.executor_id !== executorId) {
+    // 拒收本身是对的（抢救 P0-4 的 fail-closed），但**真错误不能丢**：租约到期被回队后，慢执行器的
+    // fail 会以 403 静默丢弃 —— 任务反复回队直到 attempts 用尽，运维却看不到任何原因
+    // （2026-11-27 真机全链实测踩到：引擎已出歌、执行器报「产物缺失」，上报被 403 吞掉）。
+    // 记审计事件不改状态机，归属判定依旧严格。
+    try {
+      store.log('job.stale_report', {
+        job_id: job.id, status: job.status, claimed_executor: job.executor_id || null,
+        reporter: executorId || null, attempts: job.attempts === undefined ? null : job.attempts,
+        lease_until: job.lease_until === undefined ? null : job.lease_until,
+        detail: String(detail || '').slice(0, 300),
+      });
+    } catch (e) { /* 观测不阻断归属判定 */ }
     throw new U.ApiError('FORBIDDEN', '任务租约不属于当前执行器');
   }
 }
@@ -154,7 +166,7 @@ function setProgress(job, progress, note) {
 function progress(jobId, executorId, { progress: p, note }) {
   const job = getJob(jobId);
   if (!job) throw new U.ApiError('NOT_FOUND', '任务不存在');
-  assertOwned(job, executorId);
+  assertOwned(job, executorId, 'progress ' + String(note || '').slice(0, 160));
   setProgress(job, p, note);
   return true;
 }
@@ -199,7 +211,7 @@ function backfillFileUrls(result, savedMap) {
 async function complete(jobId, executorId, result, files) {
   const job = getJob(jobId);
   if (!job) throw new U.ApiError('NOT_FOUND', '任务不存在');
-  assertOwned(job, executorId);
+  assertOwned(job, executorId, 'complete ' + Object.keys(result || {}).slice(0, 8).join(','));
   result = result && typeof result === 'object' ? result : {};
   const savedMap = saveFiles(files);
 
@@ -807,7 +819,7 @@ function completeDsp(job, result, savedMap) {
 function fail(jobId, executorId, { code, message } = {}) {
   const job = getJob(jobId);
   if (!job) throw new U.ApiError('NOT_FOUND', '任务不存在');
-  assertOwned(job, executorId);
+  assertOwned(job, executorId, 'fail ' + String(code || '') + ' ' + String(message || '').slice(0, 200));
   requeueOrFail(job, String(code || 'INTERNAL'), U.sanitizeEngineNames(message || '后台处理失败，请稍后重试'));
   return { ok: true };
 }

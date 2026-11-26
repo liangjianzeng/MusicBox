@@ -37,9 +37,15 @@ async function callMusic(musicUrl, body, log) {
   return j; // {file, seconds, seed, gen_seconds, vram_peak_mb, task_type}
 }
 
-// 生成产物落盘到工作目录：file 为 URL 则下载，为本机路径则复制
-async function ingestArtifact(fileField, destAbs, log) {
-  const s = String(fileField || '');
+// 生成产物落盘到工作目录。三种形态都要认（2026-11-27 真机实测：跨机部署必然走到第三种）：
+//   ① URL → 下载；
+//   ② 本机绝对路径 → 直接复制（生成服务与执行器同机，剧场 :8190 协议的原意）；
+//   ③ **异机绝对路径**（引擎在 5060 Ti 那台机器上返回 E:\...\out\x.wav，Linux 执行器既读不到
+//      也不该当成「产物缺失」）→ 按协议规范取件口 GET {musicUrl}/music/{id}/file 回捞。
+// 之前只认 ①②，导致「引擎真的出歌了、执行器却报产物缺失」这种最难查的假故障。
+async function ingestArtifact(genRes, destAbs, log, musicUrl) {
+  const r = genRes && typeof genRes === 'object' ? genRes : { file: genRes };
+  const s = String(r.file || '');
   if (/^https?:\/\//i.test(s)) {
     let res;
     try { res = await net.request('GET', s, { timeoutMs: 60000 }); }
@@ -48,9 +54,22 @@ async function ingestArtifact(fileField, destAbs, log) {
     fs.writeFileSync(destAbs, res.body);
     return;
   }
-  // 本机绝对路径（生成服务与执行器同机部署，剧场 :8190 协议约定）
-  if (fs.existsSync(s)) { fs.copyFileSync(s, destAbs); return; }
-  throw laneErr('MUSIC_HTTP', '音乐生成产物缺失，无法取回');
+  if (s && fs.existsSync(s)) { fs.copyFileSync(s, destAbs); return; }
+  const id = String(r.id || '').trim();
+  const base = String(musicUrl || '').replace(/\/+$/, '');
+  if (id && base) {
+    const url = base + '/music/' + encodeURIComponent(id) + '/file';
+    let res;
+    try { res = await net.request('GET', url, { timeoutMs: 120000 }); }
+    catch (e) { throw classifyNetErr(e); }
+    if (res.status === 200 && res.body.length >= 100) {
+      fs.writeFileSync(destAbs, res.body);
+      if (log) log('产物按协议取件口回捞成功（file 是异机路径 ' + s + '）：' + url);
+      return;
+    }
+    throw laneErr('MUSIC_HTTP', '音乐生成产物取件失败（' + res.status + '）：' + url + '；file 字段=' + s);
+  }
+  throw laneErr('MUSIC_HTTP', '音乐生成产物缺失，无法取回；file 字段=' + s + '（且响应无 id，无法走 /music/{id}/file）');
 }
 
 // runMusic(job, ctx) → {result, files}；files=[{field, filename, abs}]，由 daemon 统一 multipart 上传
@@ -94,7 +113,7 @@ async function runMusic(job, ctx) {
     // ① guide：完整歌（无 ref_audio）
     const r1 = await callMusic(musicUrl, baseBody, ctx.log);
     let finalAbs = path.join(ctx.workDir, 'cand_' + seq + '.wav');
-    await ingestArtifact(r1.file, finalAbs, ctx.log);
+    await ingestArtifact(r1, finalAbs, ctx.log, musicUrl);
     let meta = { clone: { applied: false, stage2_failed: false }, gen_seconds: r1.gen_seconds, task_type: r1.task_type };
     let finalSeconds = Number(r1.seconds) || sec;
     let finalSeed = Number.isFinite(Number(r1.seed)) ? Number(r1.seed) : seed;
@@ -111,7 +130,7 @@ async function runMusic(job, ctx) {
         });
         const r2 = await callMusic(cfg.musicUrl, body2, ctx.log);
         const coverAbs = path.join(ctx.workDir, 'cand_' + seq + '.cover.wav');
-        await ingestArtifact(r2.file, coverAbs, ctx.log);
+        await ingestArtifact(r2, coverAbs, ctx.log, cfg.musicUrl);
         fs.renameSync(coverAbs, finalAbs);
         finalSeconds = Number(r2.seconds) || finalSeconds;
         meta.clone.gen_seconds = r2.gen_seconds;
