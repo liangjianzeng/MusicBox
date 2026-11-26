@@ -202,7 +202,7 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 | P0-3 | **安全默认值 fail-closed**：非 `MB_ENV=dev` 时缺 `MB_DEV_OTP=0`/`MB_ADMIN_PASSWORD`/`MB_EXECUTOR_TOKEN` **拒绝启动**；口令用 `scryptSync` 加盐、不再打日志；`/admin/login` 加限流；管理员令牌带 `expire_at` | 新增用例：缺配置 server 退出码≠0 且日志不含口令；`MB_ENV=dev` 下 126 例仍绿 | ⬜ |
 | P0-4 | **修四条越权/穿越**：DSP `srcs` 改按 DB 归属 id；`resolveSrc` 加 out 目录前缀断言；`assertOwned` 强制比对；`sensevoice` 绑 `127.0.0.1`+`ROOTS` 白名单+锁，`/swap` 加内部令牌与 consent | 新增 V23 安全套件（越权/穿越/归属/worker 未授权 4 组断言）进闸门 | ⬜ |
 | P0-5 | **凭据事故处置**：轮换真机 SSH 口令与运营管理员口令（**待你在机器上执行，我无法代做**）；真机文档明文已脱敏 ✅；`admin1234` 仍在 git 历史 3 个提交里，`git filter-repo` 清历史需单独批准 | 闸门凭据扫描 0 命中（已内置 `scripts/verify.sh` 第 2 步） | 🟡 文档已脱敏，口令轮换与清历史待你确认 |
-| P0-6 | 在途工作拆小提交（v5.0 统一助手 / SP6 定脸 / 验收用例各一刀），每刀前跑闸门 | `git status` 干净；不再出现"入仓未入库工作"式快照 | ⬜ |
+| P0-6 | 在途工作拆小提交（v5.0 统一助手 / SP6 定脸 / 验收用例各一刀），每刀前跑闸门 | `git status` 干净；不再出现"入仓未入库工作"式快照 | ✅（`git status` 干净；本轮 20+ 刀小提交，每刀前跑闸门） |
 | P0-7 | 仓库卫生：`var-test` 自增回收（保留最近 N）、死 PID 复位、`.gitignore` 补齐、`services/acestep` 与 `.pub-cache` 移出仓目录 | `du -sh var-test` < 200M；`bin/status.sh` 无 DEAD；`git ls-files --others` < 40 | ⬜（`.gitignore` 已补） |
 | P0-8 | README 一分为二：`docs/runbook-dev.md`（Linux/Spark 实机 + 已就绪服务清单，含"LLM 已可达"）与 `docs/runbook-windows-legacy.md`；修 `bin/status.sh` 的 `/models` 路径 | 两条 runbook 各自能从零跑到 `/healthz` | ⬜ |
 
@@ -216,6 +216,29 @@ GET  /v1/app/config  (无鉴权)                               → routing.music
 4. **补运营面覆盖**：`/admin/*` 19 条路由各 1 条契约级用例（鉴权 + 幂等 + 审计落库）；给 `v20_mv_hardening` 补定义。
 5. **迁移收口**：幂等 `ALTER`（先查 `pragma table_info`）+ "任意历史库升级到最新并起服"演练用例。
 6. **计费/合规测试去短路**：真机计划禁止灌余额；C2 必须用真人像走 facegate 预检与 consent（否则该项记 blocked，不记 ✅）。
+
+#### 一期完成状态（2026-11-27 复核，逐条带可复验证据）
+
+| 项 | 状态 | 证据（可原地复跑） |
+|---|---|---|
+| P1-1 测试确定性 | ✅ | **`bash scripts/verify.sh --repeat 20` → 20/20 轮全绿（pass=161 skip=45 fail=0）**。根治的 flake：V1-④ 曾 20 轮红 3 次、每次卡满 60.3s（`running progress=90`）。根因两层：① 前序用例 `generate` 后不等终态留下在飞 music job，把 `failPlan` 的 3 次计划失败蹭掉 → 改 `planFail({exclude})` 显式定域；② 服务端"父 job 等子 job"**无上限续租** → 加看护上界（见 P1-2）。教训：`failPlan` 定域**不能**依赖 `job.created_at`（poll 的 lease 载荷不保证带该列，`Date.parse(undefined)=NaN` 会让计划永不命中、10/10 全红） |
+| P1-2 账本与状态机加固 | ✅ | `test/acceptance/v25_ledger_consistency.test.js`（6 例）+ `test/acceptance/v29_parent_guard.test.js`（2 例，正反向）。落地：`store.onCommit` 提交后推余额（杜绝幻影余额）、`store.tx` 拒 async 闭包、审计失败不再静默（`audit_failures` 暴露到 `/healthz`）、`refundOnce` 逐事件查重、终态失败单事务双 CAS 退款、sweep 账本不变量巡检（`credit_violations` 暴露到 `/healthz`）。**顺带抓到两个静默缺陷**：`assertOwned` 的 `detail` 形参从来没加上（ReferenceError 被 `catch{}` 吞 → 审计一条没落）；读列名写错（`lease_until` 应为 `lease_expire_at`） |
+| P1-3 契约可执行化 | ✅ | `contract/routes.json`（106 条）+ `scripts/verify_contract.mjs` **双向**对账常开进闸门（实现↔声明两个方向都判红）；`docs/CONTRACTS.next.md`/`docs/archive/README.md` 入库（归档仍是 `DRAFT-FOR-REVIEW`，未移动任何文件，等批准）。补齐此前缺失的内置端点声明 `/healthz.online`、`/ws`，并把 `/healthz` 新字段写进契约 |
+| P1-4 运营面覆盖 | ✅ | `test/acceptance/v27_admin_ops.test.js`（8 例）遍历全部 `/admin/*`：鉴权（无令牌/坏令牌全 401）、契约状态码与形状、写类必须落审计、重复调用不越界、响应不含凭据字段（且必须在 200 上查，防 401 空过）、令牌轮换、路由指向不存在节点必须 400 且不留假审计。**并修掉解析层 400 绕过契约错误信封**（畸形请求此前裸回无 body 的 400） |
+| P1-5 迁移收口 | ✅ | `test/acceptance/v26_migration_upgrade.test.js`（3 例）：v3 历史库→最新代码起服可用（并交叉验证访客落在本用例 var 目录，防端口撞车假通过）；半成品库重放迁移不抛错且 `skips>0`；**静态对账 `UPDATE <表> SET col=` 列名必须真实存在**（就是 `lease_until` 那类拼写错的自动防线）。迁移改容忍执行（duplicate column / already exists 记数跳过），新增 `initTo()`/`getMigrationSkips()` |
+| P1-6 计费/合规去短路 | ✅（C2 记 blocked） | 两份真机计划已加**红线**并作废"灌余额至 1000050 / budget 1000000"的积分 ✅。C2 真人像 + facegate + consent：**blocked** —— 本机 `:8395` facegate、`:8390` lipsync、`:8188` 生图队列均未运行且 `MB_MV_ENABLED=0`，MV 面无法真跑；按判据记 blocked 而非 ✅，需 GeekPro GPU + 权重到位后复跑 |
+| P0-3 上线面安全 | ✅ | `test/acceptance/v28_boot_security.test.js`（5 例）：prod 缺 `MB_EXECUTOR_TOKEN`/`MB_ADMIN_PASSWORD`/`MB_PUBLIC_BASE_URL`/`MB_DEV_OTP=1` 四情形必须非零退出**且点名缺哪个键**；配齐后 prod 必须真能起服并处理请求；日志不得出现显式配置的口令本身；登录限流 429 + 失败审计不含口令；令牌 ≤12h 且过期立即 401。闸门里明文凭据检查已由软警告改为**硬失败** |
+| P0-7 仓库卫生 | ✅ | `git ls-files --others` = 0；`var-test` 由"只按个数回收"改为**个数 + 总量双上界**（20 轮全量跑完曾到 224M 顶破判据，现一轮全量后 151M / 32 目录）；`services/acestep/{venv,models,acestep-repo}` 是指向仓外的**符号链接**（`venv/` 目录型规则匹配不到）已显式忽略；`bin/status.sh` 无 DEAD |
+| P0-8 双 runbook | ⬜ | 待办：`docs/runbook-dev.md` §3 与 `deploy/spark/README.md` 的从零到 `/healthz` 实跑复验（含 `bin/status.sh` 的 `/v1/models` 路径，后者已实测 200） |
+
+> 一期"止血"的可交付定义已达成：**闸门常绿、随时可演示**。P2 之前先补 P0-8 与下面三条真缺陷。
+
+#### 一期复核中新发现、尚未修的真缺陷（不掩盖，按优先级）
+
+1. **声纹样本公共可读（PIPL 敏感个人信息）**：`api/personas.js:50` 把用户上传的声纹样本 `U.saveToOut(config.paths.out, …)` 落进 **`/f/*` 公共静态目录**，任何拿到 URL 的人都能下载别人的声纹（`fromWork` 复用作品母带，性质较轻）。修法：私有目录 + 属主鉴权取件路由 + 契约与合规用例。
+2. **人格参考音频跨机必失效**：`api/works.js:36` 把 `ref_abs_path` 以**服务端绝对路径**塞进 payload，执行器 `lanes/music.js:89` 直接用。当前拓扑（server 在 DGX、ACE-Step 在 GeekPro）下该路径在异机不存在 → 声线克隆静默不生效。与产物取件口同类问题，产物侧已用"按协议取件口回捞"修好，persona 侧还没有。
+3. `music.set_card` 的 `mood` 长度上限在 `l2assistant/core.js` 是 60、`l2music/governance.js` 是 20，而 `api/works.js:23` canonical 是 `slice(0,20)` → 助手路径放行、写入被截断（静默丢字）。应统一到单一共享常量。
+
 
 ### P2 收敛重复（2–4 周，边跑业务边绞杀）
 

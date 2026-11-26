@@ -672,14 +672,48 @@ async function boot(suiteName, opts) {
   // 只保留最近 KEEP 个（正在使用的当前 runId 永不删），失败排查窗口内仍可复查。
   try {
     const KEEP = Number(process.env.MB_TEST_KEEP_RUNS || 40);
+    // 只按"个数"回收不够：V8/V2/V4 这类带音频产物的套件单个目录就有 12–36M，
+    // 20 轮全量跑完 40 个目录能堆到 224M，直接顶破 P0-7 的 `du -sh var-test < 200M` 判据。
+    // 故再加**总量上界**：先按个数削，再从最旧的开始删到总占用 ≤ KEEP_MB（当前 runId 永不删）。
+    const KEEP_MB = Math.max(16, Number(process.env.MB_TEST_KEEP_MB || 120));
     const base = path.join(ROOT, 'var-test');
+    const dirBytes = (p) => {
+      let sum = 0;
+      const stack = [p];
+      while (stack.length) {
+        const cur = stack.pop();
+        let ents;
+        try { ents = fs.readdirSync(cur, { withFileTypes: true }); } catch (e) { continue; }
+        for (const e of ents) {
+          const fp = path.join(cur, e.name);
+          if (e.isDirectory()) stack.push(fp);
+          else { try { sum += fs.statSync(fp).size; } catch (e2) { /* 竞态删除 */ } }
+        }
+      }
+      return sum;
+    };
     if (fs.existsSync(base)) {
       const dirs = fs.readdirSync(base, { withFileTypes: true }).filter(d => d.isDirectory())
         .map(d => ({ n: d.name, t: fs.statSync(path.join(base, d.name)).mtimeMs }))
         .sort((a, b) => b.t - a.t);
-      for (const d of dirs.slice(KEEP)) {
-        if (path.join(base, d.n) === varDir) continue;
-        try { fs.rmSync(path.join(base, d.n), { recursive: true, force: true }); } catch (e) { /* 尽力而为 */ }
+      const doomed = new Set(dirs.slice(KEEP).map(d => d.n));
+      let total = 0;
+      const kept = [];
+      for (const d of dirs) {
+        if (doomed.has(d.n)) continue;
+        const abs = path.join(base, d.n);
+        const b = abs === varDir ? 0 : dirBytes(abs); // 当前 run 的目录不计入待删额度
+        total += b; kept.push({ n: d.n, b });
+      }
+      if (total > KEEP_MB * 1024 * 1024) {
+        for (const d of kept.slice().reverse()) { // 从最旧的开始削
+          if (total <= KEEP_MB * 1024 * 1024) break;
+          doomed.add(d.n); total -= d.b;
+        }
+      }
+      for (const n of doomed) {
+        if (path.join(base, n) === varDir) continue;
+        try { fs.rmSync(path.join(base, n), { recursive: true, force: true }); } catch (e) { /* 尽力而为 */ }
       }
     }
   } catch (e) { /* 回收失败不影响验收 */ }
