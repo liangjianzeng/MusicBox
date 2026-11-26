@@ -14,7 +14,7 @@ let S2;  // 助手灰度开 + LLM 不可达（降级不装忙 + 主流程零阻�
 let gov; // 治理表白盒（白名单外/参数注入两案由 HTTP 不可达，须白盒断言；MB_VAR_ROOT 已对齐子进程 DB）
 
 function dbWrite(ctx, sql, ...params) {
-  const w = new DatabaseSync(ctx.dbPath);
+  const w = H.openWhiteDb(ctx.dbPath);
   try { w.prepare(sql).run(...params); } finally { try { w.close(); } catch (e) { /* noop */ } }
 }
 // 建项目（work 白盒种子；character 走契约默认 ai/f）

@@ -19,7 +19,7 @@ let S; // boot 上下文
 
 function sumDelta(ledger) { return ledger.rows.reduce((s, r) => s + r.delta, 0); }
 function dbWrite(sql, ...params) {
-  const db = new DatabaseSync(S.dbPath);
+  const db = H.openWhiteDb(S.dbPath);
   try { db.prepare(sql).run(...params); } finally { db.close(); }
 }
 

@@ -506,9 +506,20 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function uniq(prefix) { return prefix + '-' + crypto.randomBytes(4).toString('hex'); }
 
 // ---------- SQLite 白盒助手（契约未提供账本/审计/TTL 查询端点 → 只读兜底；见契约偏差清单） ----------
+// 白盒连库统一入口（2026-11-26 抢救 P1-1）：必须带 busy_timeout。
+// 此前 11 处裸 new DatabaseSync 与 server 写事务竞合 → V1-⑥ / V17-⑦ 反复 database is locked（实测每 2-3 轮挂一次）。
+function openWhiteDb(dbPath, opts) {
+  const o = opts || {};
+  let db;
+  try { db = o.readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath); }
+  catch (e) { db = new DatabaseSync(dbPath); }
+  try { db.exec('PRAGMA busy_timeout=8000;'); } catch (e) { /* 只读连接可能拒绝，忽略 */ }
+  return db;
+}
+
 function makeDb(dbPath) {
   function open() {
-    try { return new DatabaseSync(dbPath, { readOnly: true }); } catch (e) { return new DatabaseSync(dbPath); }
+    try { return openWhiteDb(dbPath, { readOnly: true }); } catch (e) { return openWhiteDb(dbPath); }
   }
   function all(sql, ...params) {
     const db = open();
@@ -541,7 +552,7 @@ function makeDb(dbPath) {
   // server 实现把重置日记在 prefs(user_id,key='credit_reset_day')；兼容其他实现再扫 users 表日期列。
   function setLastCreditDate(userId, isoDate) {
     try {
-      const w = new DatabaseSync(dbPath);
+      const w = openWhiteDb(dbPath);
       try {
         if (tables().includes('prefs')) {
           const pc = columns('prefs');
@@ -634,6 +645,21 @@ async function boot(suiteName, opts) {
   //   opts.noFakeExecutor —— 不启动内置 FakeExecutor（真机语境：真实 executor 是唯一拉单者，假执行器注册会抢单）
   const runId = opts.runId || (String(suiteName || 'SUITE') + '-' + process.pid + '-' + crypto.randomBytes(3).toString('hex'));
   const varDir = path.join(ROOT, 'var-test', runId); // 独立 var 前缀，互不污染（正式运行时数据在 var/）
+  // 抢救 P0-7：套件垃圾自增回收 —— 一次全量跑约留 20 个目录 / 0.1G，历史累积到 3.4G / 645 个目录。
+  // 只保留最近 KEEP 个（正在使用的当前 runId 永不删），失败排查窗口内仍可复查。
+  try {
+    const KEEP = Number(process.env.MB_TEST_KEEP_RUNS || 40);
+    const base = path.join(ROOT, 'var-test');
+    if (fs.existsSync(base)) {
+      const dirs = fs.readdirSync(base, { withFileTypes: true }).filter(d => d.isDirectory())
+        .map(d => ({ n: d.name, t: fs.statSync(path.join(base, d.name)).mtimeMs }))
+        .sort((a, b) => b.t - a.t);
+      for (const d of dirs.slice(KEEP)) {
+        if (path.join(base, d.n) === varDir) continue;
+        try { fs.rmSync(path.join(base, d.n), { recursive: true, force: true }); } catch (e) { /* 尽力而为 */ }
+      }
+    }
+  } catch (e) { /* 回收失败不影响验收 */ }
   const dbPath = path.join(varDir, 'db', 'musicbox.sqlite'); // server 按 MB_VAR_ROOT 派生同一路径
   const outDir = path.join(varDir, 'out');
   const uploadsDir = path.join(varDir, 'uploads');
@@ -707,7 +733,7 @@ async function boot(suiteName, opts) {
     for (;;) {
       let hasWorks = false;
       try {
-        const d0 = new DatabaseSync(dbPath, { readOnly: true });
+        const d0 = openWhiteDb(dbPath, { readOnly: true });
         try { hasWorks = !!d0.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='works'").get(); }
         finally { try { d0.close(); } catch (e) { /* noop */ } }
       } catch (e) { /* server 尚未建文件，继续等 */ }
@@ -836,7 +862,7 @@ async function boot(suiteName, opts) {
   function seedWrite(fn) {
     const t0 = Date.now();
     for (;;) {
-      const w = new DatabaseSync(dbPath);
+      const w = openWhiteDb(dbPath);
       try { return fn(w); }
       catch (e) {
         const m = String((e && e.message) || e);
@@ -1007,5 +1033,5 @@ function wsConnect(baseUrl, token) {
 module.exports = {
   ROOT, BASE_PORT, EXECUTOR_TOKEN, DEV_OTP, WORD_A, WORD_B, HIGHCONF_MARKER,
   boot, api: makeApi, httpReq, buildMultipart, makeSineWav, makePng, makeMp4Stub, makeMockMp4, findFfmpeg, computePeaks,
-  FakeExecutor, makeDb, resolveVarPath, sleep, uniq, wsConnect,
+  FakeExecutor, makeDb, resolveVarPath, sleep, uniq, wsConnect, openWhiteDb,
 };

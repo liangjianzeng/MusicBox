@@ -16,7 +16,7 @@ let mgov; // l2music 治理白盒（白名单外/参数域/实体归属两案由
 let exec; // l2music 执行层白盒（非白名单动作硬拒）
 
 function dbWrite(ctx, sql, ...params) {
-  const w = new DatabaseSync(ctx.dbPath);
+  const w = H.openWhiteDb(ctx.dbPath);
   try { w.prepare(sql).run(...params); } finally { try { w.close(); } catch (e) { /* noop */ } }
 }
 // 一张属主作品的种子（微调/翻自/续写/改名/查状态主体）

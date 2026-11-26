@@ -15,7 +15,7 @@ function deep(actual, expected, message) { assert.deepStrictEqual(actual, expect
 function ok(value, message) { assert.ok(value, message); }
 function count(ctx, sql, ...params) { return Number(ctx.db.all(sql, ...params)[0].n); }
 function dbWrite(ctx, sql, ...params) {
-  const db = new DatabaseSync(ctx.dbPath);
+  const db = H.openWhiteDb(ctx.dbPath);
   try { db.prepare(sql).run(...params); } finally { try { db.close(); } catch (e) { /* noop */ } }
 }
 async function loginAdmin(ctx) {
