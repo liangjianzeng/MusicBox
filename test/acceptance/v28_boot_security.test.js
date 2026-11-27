@@ -97,7 +97,7 @@ describe('V28 上线面安全（P0-3 门票）', () => {
     try {
       assert.strictEqual(r.code, null, '配齐后应能起服。日志尾部：\n' + String(r.log()).slice(-500));
       assert.strictEqual(r.health.status, 200);
-      const g = await httpJson('POST', 'http://127.0.0.1:' + r.port + '/v1/auth/guest', {});
+      const g = await httpJson('POST', 'http://127.0.0.1:' + r.port + '/v1/auth/guest', { device_key: 'v28-probe-' + Date.now() });
       assert.strictEqual(g.status, 200, 'prod 下访客仍可注册：' + g.status + ' ' + g.text);
       // prod 不得保留开发后门：固定验证码路径必须不可用
       const req0 = await httpJson('POST', 'http://127.0.0.1:' + r.port + '/v1/auth/phone/request-code', { phone: '13800000001' });

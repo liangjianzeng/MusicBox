@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 应用版本（与 pubspec.yaml version 保持一致；后台版本策略据此判断升级）
@@ -47,6 +49,7 @@ class Prefs {
   static const _kPersona = 'default_persona_id';
   static const _kTier = 'create_tier';
   static const _kMusicModel = 'create_music_model';
+  static const _kDeviceKey = 'identity_device_key';
 
   AppConfig loadConfig() =>
       AppConfig(baseUrl: _sp.getString(_kBaseUrl) ?? AppConfig.defaultBaseUrl);
@@ -57,6 +60,26 @@ class Prefs {
   /// 没有这条路的话，install -r 保留了旧数据 → 残留地址静默压过新包的默认基址，
   /// 现场表现就是「服务器未连接」但没人知道它在连哪个地址（2026-11-27 真机踩过 40 分钟）。
   Future<void> clearBaseUrl() => _sp.remove(_kBaseUrl);
+
+  /// 设备身份种子：**这是游客身份唯一可恢复的锚点**（契约 POST /v1/auth/guest 的 device_key）。
+  ///
+  /// 2026-11-27 真机 P0：客户端以前**根本不送** device_key，服务端 `if (!user) INSERT` 于是
+  /// 每次 mint 都建一条全新账号并返回 200 —— 重装/清数据/刷新失败后用户看到的就是
+  /// "我的歌全没了"，而且界面没有任何一处说明发生了什么（用户原话：重装覆盖不能保存本地内容？？？）。
+  /// 规矩：只生成一次、只增不改；清 token 也不许清它（清 token 是登出，不是丢身份）。
+  String? get deviceKey => _sp.getString(_kDeviceKey);
+
+  /// 幂等：已有就原样返回，绝不重新生成（重新生成 = 换人 = 作品找不回）
+  Future<String> ensureDeviceKey() async {
+    final cur = _sp.getString(_kDeviceKey);
+    if (cur != null && cur.length >= 32) return cur;
+    final rnd = Random.secure();
+    final k = List.generate(32, (_) => rnd.nextInt(256))
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    await _sp.setString(_kDeviceKey, k);
+    return k;
+  }
 
   String? get accessToken => _sp.getString(_kAccess);
   String? get refreshToken => _sp.getString(_kRefresh);

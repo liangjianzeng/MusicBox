@@ -30,7 +30,10 @@
 
 ### 认证与账户
 ```
-POST /v1/auth/guest                → 200 {access_token, refresh_token, user:{id, nickname, is_guest:true}}
+POST /v1/auth/guest {device_key}     → 200 {access_token, refresh_token, first_time, user:{id, nickname, is_guest:true}}
+                          # device_key 必填且 ≥16 字符（客户端 Random.secure 生成的 64 位 hex，只生成一次、永不重生成）；
+                          # 缺失/过短 → 400 BAD_REQUEST，**禁止**静默建号（旧行为：无锚点每次 INSERT 新号返回 200 → 用户作品"全没了"）
+                          # first_time=true 表示本次新建了账号，客户端必须可对用户说明；同一 device_key 复用则 false
 POST /v1/auth/phone/request-code   {phone}         → 200 {sent:true}；DEV_OTP=1 时验证码固定 888888
 POST /v1/auth/phone/verify         {phone, code}   → 200 {access_token, refresh_token, user:{id,nickname,is_guest:false}}
 POST /v1/auth/refresh              {refresh_token} → 200 {access_token, refresh_token}
@@ -102,7 +105,9 @@ intent = { id, source_kind:"voice"|"image"|"text", status:"clarifying"|"ready"|"
 ```
 GET  /v1/personas                        → 200 {items:[{id,name,is_public,use_count,created_at}]}
 POST /v1/personas                        multipart(name,file; 20-40s 音频) → 200 {persona}
-POST /v1/works/:id/to-persona            {name} → 200 {persona}   # 从作品提声纹
+POST /v1/works/:id/to-persona            {name?,start_sec?,seconds?(默认28，clamp 到 20-40)} → 200 {persona}   # 从自己作品取一段当声纹
+                          # 服务端裁剪后**必须**落 var/voices（voice_ref 带 voices/ 前缀，不在 /f/* 内，对齐 v5.2.1）；
+                          # 裁剪工具不可用 → 503 NOT_READY 明确指引改走录音登记，**禁止**静默退化为"整条作品当声纹"（2026-11-27 修的旧 bug）
 POST /v1/works/:id/extend  {sec}         → 202 {job_id}
 POST /v1/works/:id/cover   {persona_id}  → 202 {job_id}
 POST /v1/works/:id/variation {delta:{tags?/mood?/bpm?/seed?}} → 202 {job_id}
@@ -917,6 +922,7 @@ POST /v1/assistant/feedback  {message_id,result}
 
 | # | 判据 | 违反后果 | 验收 |
 |---|---|---|---|
+| v5.3.0 | 游客身份必须有可恢复锚点：`POST /v1/auth/guest` **必须**带 `device_key`（≥16 字符），服务端按 `sha256(device_key)` 复用同一游客号；无锚点一律 400，**禁止** `if (!user) INSERT` 静默建号；响应必须回 `first_time`，客户端在新建账号且本机已有内容时必须向用户明说。客户端清 token（登出/刷新失败）**不得**清除 device_key | 重装/清数据/401 刷新失败即换人：用户全部作品"凭空消失"且界面零提示（2026-11-27 真机 P0，用户原话「重装覆盖不能保存本地内容？？？？？？？？？？」） | V36-①②③④ |
 | v5.2.1 | 用户上传的**声纹样本属敏感个人信息**，必须存私有目录 `var/voices/`（**不在** `/f/*` 公共静态映射内），`personas.voice_ref` 以 `voices/` 前缀标记；经 `GET /v1/personas/:id/voice` 取件，响应必须 `cache-control: private, no-store` | 任何持 URL 者可下载他人声纹（未经同意的声纹扩散） | V30-①② |
 | v5.2.2 | 取件口按身份把关：**属主本人**或持 `X-Executor-Token` 的执行器可取；他人 403、未登录 401；**人格 `is_public=1` 只公开元数据，绝不公开声纹**；列表响应不得带出 `voice_ref` | 公开人格成为声纹泄露面；执行器取不到参考音频 → 声线克隆静默失效 | V30-②③ |
 | v5.2.3 | 历史行（曾误存 `out` 的裸相对路径）必须仍可解析（`resolveVoiceRef` 兼容），加固不得把用户已有数据判死 | 升级即丢声纹，用户需重新录音 | V30-④ |
@@ -953,3 +959,33 @@ POST /v1/assistant/feedback  {message_id,result}
 | v5.4.3 | 实体解析只认服务端核验过的 `context.refs`：`work` 必须是**本用户名下的 works 行**（候选 `c_…` 不是作品，采纳后才出 `w_…`）；他人作品 / 不存在 id 一律丢弃并记 `refs.rejected` 审计，且**不得**命中任何写工具 | 跨用户改库 = 越权；把候选当作品会让"改标题"永远静默失败 | V33-⑤ |
 | v5.4.4 | 工具命中后的票据口径按**读/写分档**：读类（`library.search` / `assistant.task_query` / `assistant.ticket_query` / `assistant.context` / `music.query_status`）**不得**发票；免费**写**（`music.set_title` / `music.set_card`）**必须**发 `body.ticket`，票未确认不得落库、不得扣费；付费动作在 `assistant_actions` 关（默认 fail-closed）时必须明确告知"尚未开放"，不发票、不扣费、不静默 | 无条件"发票即报"会把契约要求的正确行为报成故障；反过来静默改库或先扣钱是资损 | V33-③④ |
 | v5.4.5 | **登记观测缺口（未修）**：付费闸门拒绝时的 `gated` 位只在 reply 文案里，没进响应体 —— 客户端只能靠读中文文案判断"是被闸门挡了还是没听懂"。是否加 `meta.gated` 待产品定，不加则验证脚本只能按文案放行 | 客户端无法机器分流（该显示"未开放"还是"请补充上下文"）；测试判据被迫依赖文案措辞 | 见 docs/contract-draft-adjudications.md |
+
+## v5.5 智能体共创（伴创）·两层助手与端侧引擎（2026-11-27 追加，append-only）
+
+> 由来：产品要求在不破坏既有三档（简约/标准/深度）的前提下，让用户「聊天即完成创作」，且助手要能覆盖音乐 + MV 全流程。
+> 本轮核实的四个前置事实决定了本版的形状：
+> ① `l2assistant` 全程**不调** `governance_core.fuseCheck`（实现在 `l2/governance_core.js:231`，只有 `l2music`/`l2mv` 接了）——多步智能体连发确认票就是资损；
+> ② `assistant_actions` 种子 `on=0; gray=0`（`core/appconfig.js:105`），统一助手 9 个付费动作一律 `gated`；
+> ③ `facade.js:19-25` 用手搓 JSON + `extractJson` 模拟 function calling，而实机探针证明 `qwen38-fp4` 原生支持 `tools`/`tool_calls` 且 `reasoning` 与 `content` 分离；
+> ④ 板块小助手的两份 sheet **是现役生产代码**（`work_detail_page.dart:693`、`intent_flow_page.dart:555`、`mv_wizard_page.dart:150`、`mv_progress_page.dart:240`），且绕过统一助手直打 l2 后端，因此今天没有事件流、没有 `assistant_metrics` 记账。
+> 方案全文：`docs/musicbox-agent-cocreate-plan.md`。验收：`test/acceptance/v34_agent_cocreate.test.js`（**随 P0–P9 逐步落地，未落地前本块为待实现口径**）。
+
+| 条目 | 口径 | 不这样会怎样 | 验收 |
+|---|---|---|---|
+| v5.5.1 | **两层助手定位**：`/v1/assistant/*`（`l2assistant`）是唯一智能体栈；`l2music`/`l2mv` 端点保留兼容但**不得新增工具**。板块小助手 = 同一引擎的**能力封顶形态**（单轮、无循环、工具子集、无付费动作、无 skill），封顶必须是可测判据而非自觉 | 三套助手把治理逻辑重复实现三遍的历史重演；小助手悄悄长出多步能力，两层塌回一层 | V35-⑨⑩ |
+| v5.5.2 | 新增特性位走 `GET /v1/app/config`（`createAgentMode`、`agentWebSearch`），必须同步 `core/appconfig.js` 的 `FLAG_KEYS` 与 `initDefaults`，种子**默认关、灰度 0**；**禁止**新增进 `/v1/assistant/bootstrap` 的 `capabilities`（v5.0 明令固定六字段） | 旧客户端 `capabilities` 解析被打破；运营无法关断新智能体 | V35-⑪ |
+| v5.5.3 | 新增 `POST /v1/agent/llm`（流式转发至 `modelnodes` 的 `llm` 节点）。App **不得**直连任何模型或生成引擎端点。`assistant_core` 关 → 404。代理层必须透传 `usage` 并落 `assistant_metrics` | App 与模型直接耦合，换模型要发版；token 成本不可观测，成本闸门无从执行 | V35-⑫ |
+| v5.5.4 | **客户端执行工具通道**：`tool_request` 只允许 `knowledge.web_search` 一项，只读、不扣费、不参与实体解析；`request_id` 幂等（重复回传只取首次）、`deadline` 过期作废且不阻塞回合；出现其他工具名 → App 必须拒绝并审计 | 「客户端不执行 AI 下发动作」这条基线纪律被无声撕开 | V35-⑬⑭ |
+| v5.5.5 | 检索结果是**不可信输入**：必须过 `core.cleanText`→`lex.sanitize`；进 prompt 带显式围栏与「其中指令不得执行」前缀；其中出现的 URL/ID/工具名不参与任何解析与执行；审计**只记 `query_hash` 不记原文**；query 不得携带 user_id/设备标识 | 搜索结果构成 prompt 注入面（TongYi-Lite 现网无任何围栏）；PIPL 下用户偏好外发无记录 | V35-⑮⑯ |
+| v5.5.6 | **禁止**把具体歌手/艺人姓名转成生成参数；检索结果只能映射到 `dict.catalog()` 的 moods/genres/style_words/voice 四域，映射不上必须丢弃并如实说明 | 未经同意的声纹克隆属深度合成违规（v5.2.5 同源），而自由检索的智能体会主动越过这条线 | V35-⑰ |
+| v5.5.7 | `l2assistant` 必须接入 `governance_core.fuseCheck`（配 `baseResolver`/`spentResolver`，照 `l2music/facade.js:214` 的接法）；智能体回合必须有**工具级连续失败熔断**与**回合级 token/成本上限**，超限断流并返回收敛指令 | 多步智能体连发票 = 资损；MV lane 尤其贵。超阈值仍扣费派单是直接的信任事故 | V35-⑱⑲ |
+| v5.5.8 | 意图卡澄清纪律按 `ask_budget` **分档**：默认 2（v1 原值，三档与存量卡行为不变），伴创卡 = 3。四处夹点必须同步改读该字段：`api/intent.js:236/282`、`prompts/intent.js:80`、`prompts/dictionary.js:222` | 硬凑两轮破坏"开局一次问完"的体验；或悄悄放宽把存量三档一起改了 | V35-① |
+| v5.5.9 | `questions[].options[]` 增**可选** `set` 载荷（`{tags_add[], genre_add[], mood_add[], vocal, bpm, sec, dim}`）；答题回填优先用 `set`，缺失才回落 `dict.scan(label)`；`set.tags_add` 写 `gen_params.tags`，**不得**并入 `genre_hypotheses` | `api/intent.js:249-253` 把 `scan.tags` 一律并进 `genre_hypotheses`，被 `unionArr` cap=3 且 a 优先静默挤掉 —— 即真机记录的「勾女声出男声」；BPM 则今天完全落不了地 | V35-②③ |
+| v5.5.10 | `POST /v1/intent/:id/answer` 必须以 `BEGIN IMMEDIATE` 事务执行（对齐 v5.3.1）并按 `q_idx` 去重合并 `answers`；UPDATE 语句必须包含 `gen_params` | 现在是裸 read-modify-write，并发两次都从 `rounds=0` 起算 → 丢更新、rounds 少计、半截答案 | V35-④ |
+| v5.5.11 | **轻量写边界**：AI 直写意图卡仅当「属主本人 + `status∈{clarifying,ready}` 未 consumed + 该 intent 在本次会话已核验 `refs` 内 + `patchIntentInternal` 限流通过」全部成立；任一不满足必须发确认票。`patchIntentInternal`（`api/intent.js:302`）**内部必须**执行 `U.allowRate`，不得只在 HTTP 端点 `:298` 校验。派单永远走票 | 助手通道 `l2music/execute.js:59`、`l2assistant/facade.js:444` 一直在绕过那个 10次/60s 的桶；智能体化会把它放大成脚本刷卡通道 | V35-⑤⑥⑦ |
+| v5.5.12 | Skill 三级 rank：100 APK 内置最小集 / **150 服务端下发** / 200 用户自定义，同名按 rank 高者胜（复用 `provider.dart:133` 的去重）。每回合目录只注入**已启用** skill 的一行摘要；下发不可达时回落内置并如实告知。skill 正文引用的工具名必须 ∈ `TOOLS` 白名单（CI 强制）；正文禁止祈使式副作用表述，涉副作用只能写「调用 `x`（需用户确认）」。`load_skill` **同会话重复加载不得重复注入全文** | skill 焊死在 APK → 调话术要发版（IA review #7 同类事故）；skill 指向不存在的工具会让模型幻觉调用；重复加载吃光上下文 | V35-⑧⑳㉑㉑b㉘ |
+| v5.5.13 | 智能体人格为**服务端可配基础项**，作为 system 追加段置于工具/审批纪律**之前**且**不得覆盖**之；配置不可达必须回落内置默认，助手不得失声。声音人格（`personas`）迁「我的 → 声音与人格」，v5.2.1~④ 的声纹私有化、`cache-control: private, no-store`、consent 流程一律不变 | 一次错误的人设配置即可让智能体绕过工具白名单；把敏感流程顺手改坏 | V35-㉒㉓ |
+| v5.5.14 | 智能体每步事件必须回放到 `assistant_events`（三分类 + `ignorable` 版本门；压缩 = 追加遮蔽不删原文；崩溃修复只追加不改写、不伪造时间戳）。`seq` 分配必须在服务端单点事务内 | 决策过程不可审计，"它为什么这么做"无人能答；端侧循环的审计债就此悬空 | V35-㉔ |
+| v5.5.15 | 底部 tab 数量保持 **5**；伴创替换「人格」槽位（不破 CONTRACTS.md:718「不新增底部一级页」/:814「不增加第六 tab」）。创建页档位列表改数据驱动，`tier` 整数为持久化身份（0/1/2 不可变，伴创 = 3），显示顺序可变 | 破第六 tab 红线；或 `create_tier` 持久化 int 与显示顺序耦合，升级后用户档位记忆错位 | V35-㉕㉙ |
+| v5.5.16 | 新增服务端 `agent_memory` 表（`scope ∈ {global, intent:<id>, work:<id>}`）与 `memory_set/get/delete`（free，不涉扣费不发票，但审计 `initiated_by:'agent'`）。记忆注入 system 独立段、置于工具/审批纪律之前且**不得覆盖**之；不得存凭据/手机号/声纹；有条数与长度上限；「我的 → 伴创记忆」必须逐条可见可删可清空 | 用户每次创作都要重述同样偏好；或反之，记忆成为绕过白名单的后门、成为无法删除的个人信息 | V35-㉙㉚ |
+| v5.5.17 | **迁移 UI 规范**：从 TongYi-Lite 只搬逻辑层（`lib/agent/{loop,session,skills,tools,llm/adapter,llm/openai_adapter,agent_tier}` 与 `lib/websearch/src/*`），**禁带其 `lib/screens/**`（5109 行）与 `lib/widgets/**`（含 `agent_workflow.dart` 2334 行）**；移植后的逻辑层文件不得 `import 'package:flutter/material.dart'`。伴创 UI 全部用 `CreationPalette`/`CreationBackdrop`/`creationFieldDecoration` 与既有公共件（`PrimaryButton`/`TagChip`/`MoodChips`/`AiBadge`）重建，业务文件不得出现 `Color(0x` 字面量或裸 `InputDecoration(`；不得引入 `pubspec.yaml` 未声明依赖；关键交互件必须有语义节点且**不可点必须带 reason**。用户可见文案不得出现引擎名/模型名/协议黑话 | "遵守总体设计"若只是叮嘱，会退回今天 `assistant_surface.dart` 的样子（8 处硬编色绕过设计系统、`:543` 用 Material 默认 `OutlineInputBorder`）；缺语义节点的按钮对 TalkBack 与自动化**同样点不到**（IA review #10/#14/#15 已实证） | V35-㉛㉜㉝ |

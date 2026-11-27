@@ -564,28 +564,77 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
 
   Future<void> _toPersona() async {
     final c = TextEditingController(text: '${_work?.title ?? '作品'}声线');
-    final name = await showDialog<String>(
+    final total = (_work?.durationSec ?? 0).round();
+    // 服务端只接受 20-40 秒样本（契约 §8）。可选窗口：不超过总长，也不超过 40。
+    final options = <int>[20, 28, 40].where((x) => total == 0 || x <= total).toList();
+    var seconds = options.isEmpty ? 20 : (options.contains(28) ? 28 : options.first);
+    var start = 0;
+    final picked = await showDialog<({String name, int start, int seconds})>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('从本作生成人格'),
-        content: TextField(
-            controller: c,
-            decoration: const InputDecoration(labelText: '人格名称')),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, c.text.trim()),
-              child: const Text('生成')),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final maxStart = total > seconds ? total - seconds : 0;
+          if (start > maxStart) start = 0;
+          return AlertDialog(
+            title: const Text('从本作生成人格'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                    controller: c,
+                    decoration: const InputDecoration(labelText: '人格名称')),
+                const SizedBox(height: 12),
+                Text('取样时长 $seconds 秒',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final o in options)
+                      ChoiceChip(
+                        label: Text('$o 秒'),
+                        selected: o == seconds,
+                        onSelected: (_) => setDialogState(() => seconds = o),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text('起点 ${start}s${total > 0 ? '（可取 0–$maxStart s）' : ''}',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Slider(
+                  value: start.toDouble().clamp(0, maxStart == 0 ? 1.0 : maxStart.toDouble()),
+                  max: maxStart == 0 ? 1 : maxStart.toDouble(),
+                  divisions: maxStart == 0 ? 1 : maxStart,
+                  label: '$start s',
+                  onChanged: (v) => setDialogState(() => start = v.round()),
+                ),
+                const SizedBox(height: 4),
+                // 界面不许让用户拿一段没有人声的素材去当声纹：那样 cover 变声会"看起来成功"
+                // 却锁不住音色，用户只会以为功能坏了（2026-11-27 真机的整条 240s 事故）。
+                const Text('提示：前奏和尾奏多半只有乐器。先试听，把起点放在人声最实的段落（通常是副歌）。',
+                    style: TextStyle(fontSize: 11)),
+              ],
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(
+                      ctx, (name: c.text.trim(), start: start, seconds: seconds)),
+                  child: const Text('生成')),
+            ],
+          );
+        },
       ),
     );
-    if (name == null || name.isEmpty) return;
+    if (picked == null || picked.name.isEmpty) return;
     try {
-      await _api.workToPersona(widget.workId, name);
+      await _api.workToPersona(widget.workId, picked.name,
+          startSec: picked.start, seconds: picked.seconds);
       await ref.read(personasProvider.notifier).load(force: true);
-      _toast('人格已生成，去人格页查看');
+      _toast('人格已生成（取样 ${picked.start}s 起 ${picked.seconds}s），去人格页查看');
     } on ApiException catch (e) {
+      // 服务端拒绝时必须把真实原因说出来（含"这台服务器没有裁剪工具，请改走录音登记"）
       _toast(e.zh);
     }
   }

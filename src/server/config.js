@@ -68,6 +68,11 @@ const config = {
     voiceMaxMb: 10, voiceMaxSec: 60, voiceExts: ['m4a', 'wav'],
     imageMaxMb: 8, imageExts: ['jpg', 'jpeg', 'png'],
     personaMinSec: 20, personaMaxSec: 40,
+    // 「从作品提声纹」要在服务端裁剪音频。这台机器有 ffmpeg 就能用；
+    // 没有就必须**明确失败**（503 + 让用户改走录音登记），绝不许静默把整条作品当声纹 ——
+    // 真 bug：旧实现直接写 audio_master（240s 整条），既不满足 20-40s 契约，
+    // 又把声纹落在公共 out 目录（违反 v5.2.1：声纹必须进私有 var/voices/）。
+    ffmpegBin: process.env.MB_FFMPEG || 'ffmpeg',
     ttlHours: 72,           // uploads 表 72h TTL
   },
   // —— MV 二期（架构 §1.3/§5/§8；默认关闭，按灰度开放）——

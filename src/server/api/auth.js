@@ -43,22 +43,37 @@ function userShape(u) {
   return { id: u.id, nickname: u.nickname || '音乐旅人', phone_masked: u.phone ? U.maskPhone(u.phone) : null, is_guest: !u.phone };
 }
 
-// POST /v1/auth/guest —— 首启静默游客；带 device_key 则同设备复用游客号
+// POST /v1/auth/guest {device_key} —— 首启静默游客；同一 device_key **必须**复用同一游客号。
+//
+// 2026-11-27 真机 P0（用户原话：「重装覆盖不能保存本地内容？？？？？？？？？？」）。旧写法有两处静默：
+//   1) `device_key` 可空。App 当时**根本没送**这个字段，于是每次都走 `if (!user) INSERT`，
+//      凭空建一条新账号并返回 **200**；用户全部作品瞬间"消失"，界面没有任何提示，日志里也只有
+//      一条 auth.guest —— 这条路径在真机上是被 401→刷新失败→静默重新 mint 触发的，不是重装才会踩。
+//   2) 无锚点时 guest_key 落成随机 `gk_xxx`（永远匹配不上），身份**结构上不可能恢复**。
+// 现在：不带合格锚点就拒绝建号（400），把"静默换人"变成"明确报错"；
+// 并且回 `first_time`，让客户端有信息对用户说实话（"这是新账号"vs"已恢复原账号"）。
 function guest(ctx) {
   const body = ctx.body || {};
   const deviceKey = String(body.device_key || '').trim();
-  let user = null;
-  if (deviceKey) user = store.get('SELECT * FROM users WHERE guest_key=?', U.sha256hex(deviceKey));
+  // 长度下限挡住"随便塞个 x 就当锚点"；真机锚点是客户端 Random.secure 生成的 64 位 hex
+  if (deviceKey.length < 16) {
+    throw new U.ApiError('BAD_REQUEST',
+      '缺少设备标识（device_key），无法安全创建游客身份；请更新到最新版本后重试');
+  }
+  const keyHash = U.sha256hex(deviceKey);
+  let user = store.get('SELECT * FROM users WHERE guest_key=?', keyHash);
+  const firstTime = !user;
   if (!user) {
     const id = U.uid('u_');
     const nickname = '音乐旅人' + String(U.randInt(9000) + 1000);
     store.run('INSERT INTO users(id,guest_key,nickname,status,created_at) VALUES(?,?,?,?,?)',
-      id, deviceKey ? U.sha256hex(deviceKey) : U.uid('gk_'), nickname, 'active', U.nowIso());
+      id, keyHash, nickname, 'active', U.nowIso());
     user = store.get('SELECT * FROM users WHERE id=?', id);
-    store.log('auth.guest', { user_id: id });
   }
+  // 审计必须能区分"新建身份"和"复用身份"：出事时这是唯一的现场证据
+  store.log('auth.guest', { user_id: user.id, first_time: firstTime });
   const tokens = issueSession(user.id);
-  return { status: 200, body: { ...tokens, user: { id: user.id, nickname: user.nickname, is_guest: true } } };
+  return { status: 200, body: { ...tokens, first_time: firstTime, user: { id: user.id, nickname: user.nickname, is_guest: true } } };
 }
 
 // POST /v1/auth/phone/request-code

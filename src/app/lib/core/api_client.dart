@@ -198,8 +198,11 @@ class ApiClient {
 
   // ---------- 认证与账户 ----------
 
-  Future<Map> guestLogin() async =>
-      await _do(() => _dio.post('/v1/auth/guest')) as Map;
+  /// 游客登录。**必须带 device_key**（契约：服务端据此复用同一游客号；不带就是每次新建身份）。
+  Future<Map> guestLogin() async {
+    final key = await prefs.ensureDeviceKey(); // 先取锚点，再进 _do（_do 里不许藏 await）
+    return await _do(() => _dio.post('/v1/auth/guest', data: {'device_key': key})) as Map;
+  }
 
   Future<void> requestCode(String phone) async {
     await _do(() => _dio.post('/v1/auth/phone/request-code',
@@ -391,9 +394,15 @@ class ApiClient {
         await _do(() => _dio.post('/v1/personas', data: fd)) as Map);
   }
 
-  Future<Persona> workToPersona(String workId, String name) async =>
+  Future<Persona> workToPersona(String workId, String name, {int? startSec, int? seconds}) async =>
       Persona.fromMap(await _do(() => _dio
-              .post('/v1/works/$workId/to-persona', data: {'name': name}))
+              .post('/v1/works/$workId/to-persona', data: {
+                    'name': name,
+                    // 取样窗口：4 分钟的歌只能从 0 秒裁的话，切到的必然是前奏器乐段，
+                    // 声纹参考里没有人声 = cover 变声永远锁不住音色（2026-11-27）
+                    if (startSec != null) 'start_sec': startSec,
+                    if (seconds != null) 'seconds': seconds,
+                  }))
           as Map);
 
   Future<String> extend(String workId, int sec) async {

@@ -30,6 +30,56 @@ class MePage extends ConsumerWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // 身份被换掉的告知横幅（2026-11-27 真机 P0）。
+          // 规矩：登录态失效后若服务器把本机当"新账号"，必须**说人话告诉用户**：
+          // 内容不是被删了，是不在当前账号下 —— 沉默地展示一个空曲库，
+          // 用户只会以为产品把他的东西弄丢了（真实原话「重装覆盖不能保存本地内容？？？？？？？？？？」）。
+          // 不在界面上显示 device_key：它是恢复凭证，截图外传等于把账号交出去。
+          if (session.identityReset)
+            Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(children: [
+                      Icon(Icons.error_outline, size: 18),
+                      SizedBox(width: 6),
+                      Text('本机内容属于另一个身份，未能恢复',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                    ]),
+                    const SizedBox(height: 6),
+                    Text(
+                      '登录状态失效后，服务器没有认回这台设备原来的账号，而是当成了新账号。'
+                      '之前的作品没有被删除，只是不在当前账号下。'
+                      '先别在这个号上生成重要内容；可重试登录，或绑定手机号让身份不再依赖本机。',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onErrorContainer),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => ref
+                              .read(sessionProvider.notifier)
+                              .guestLogin(),
+                          child: const Text('重试登录'),
+                        ),
+                        TextButton(
+                          onPressed: () => ref
+                              .read(sessionProvider.notifier)
+                              .acknowledgeIdentityReset(),
+                          child: const Text('我知道了'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           // 用户卡片
           Card(
             margin: EdgeInsets.zero,

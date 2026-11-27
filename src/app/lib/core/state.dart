@@ -55,8 +55,10 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   client.onCallSuccess = conn.markOnline;
   client.onNetworkError = () => conn.markOffline();
   client.onAuthExpired = () async {
-    await ref.read(prefsProvider).clearTokens();
-    await ref.read(sessionProvider.notifier).guestLogin();
+    // 顺序很重要：**先拿同一条 device_key 去换回原来的号**，成功了才覆盖 token。
+    // 旧写法先 clearTokens() 再 mint —— 等于先把自己的身份凭证销毁，再指望服务端认得你；
+    // 而当年 mint 又不带锚点，于是每次都是一条全新账号，作品就"没了"。
+    await ref.read(sessionProvider.notifier).guestLogin(fromAuthExpired: true);
   };
   return client;
 });
@@ -178,6 +180,7 @@ class SessionState {
     this.error,
     this.ledger = const [],
     this.netOnline = true,
+    this.identityReset = false,
   });
 
   final SessionStatus status;
@@ -189,10 +192,16 @@ class SessionState {
   /// 离线兜底进首页时为 false；登录/积分恢复后置回 true
   final bool netOnline;
 
+  /// true = 服务端说"这是新账号"，但本机此前是有身份的（曾拿到过 refresh_token）。
+  /// 这就是**内容找不回**的时刻：界面上必须说出来，不许让它看起来像一次正常登录
+  /// （2026-11-27 真机 P0，用户原话「重装覆盖不能保存本地内容？？？？？？？？？？」）。
+  final bool identityReset;
+
   SessionState copyWith({
     SessionStatus? status,
     AppUser? user,
     Credits? credits,
+    bool? identityReset,
     String? error,
     List<LedgerEntry>? ledger,
     bool? netOnline,
@@ -204,6 +213,9 @@ class SessionState {
         error: error,
         ledger: ledger ?? this.ledger,
         netOnline: netOnline ?? this.netOnline,
+        // 这一行以前**没插进去**（analyze 不会发现：参数声明了但没人用），结果 identityReset
+        // 永远是默认 false，横幅永远出不来 —— 判词必须盯着这种"看着像改了"的错
+        identityReset: identityReset ?? this.identityReset,
       );
 }
 
@@ -356,7 +368,8 @@ class SessionNotifier extends StateNotifier<SessionState> {
   }
 
   /// 登录成功后的公共收尾：取积分（尽力而为）、置 ready、连 WSS
-  Future<void> _finishOnline(AppUser u, {bool netOnline = true}) async {
+  Future<void> _finishOnline(AppUser u,
+      {bool netOnline = true, bool? identityReset}) async {
     Credits? credits;
     try {
       credits = (await _withTimeout(_api.me)).credits;
@@ -365,22 +378,45 @@ class SessionNotifier extends StateNotifier<SessionState> {
         status: SessionStatus.ready,
         user: u,
         credits: credits,
-        netOnline: netOnline);
+        netOnline: netOnline,
+        identityReset: identityReset);
     _connectWs();
   }
 
   /// 游客登录（静默）。失败进入 failed 态，由门禁给重试页
-  Future<void> guestLogin() async {
+  Future<void> guestLogin({bool fromAuthExpired = false}) async {
     state = state.copyWith(status: SessionStatus.loading);
+    // 必须在 mint **之前**取证：本机此前是否有过身份。之后服务端回 first_time=true 才说明
+    // "我们把自己弄丢了"，而不是"第一次来"。
+    final hadIdentityBefore =
+        (_prefs.refreshToken ?? '').isNotEmpty || (_prefs.accessToken ?? '').isNotEmpty;
     try {
       final r = await _api.guestLogin();
+      final firstTime = r['first_time'] == true;
       await _prefs.saveTokens('${r['access_token']}', '${r['refresh_token']}');
-      await _finishOnline(AppUser.fromMap((r['user'] as Map?) ?? const {}));
+      await _finishOnline(
+        AppUser.fromMap((r['user'] as Map?) ?? const {}),
+        // 曾有过身份 + 服务端说这是新号 = 内容不可能再出现，必须显式告知
+        identityReset: firstTime && hadIdentityBefore,
+      );
+      if (fromAuthExpired && firstTime && hadIdentityBefore) {
+        _lastIdentityResetNotice = true; // 门禁/UI 据此挂横幅
+      }
     } catch (e) {
+      // 只有真失败才清 token：token 是"我曾经是谁"的最后一份证据，不能在尝试之前就销毁
+      await _prefs.clearTokens();
       state = state.copyWith(
           status: SessionStatus.failed,
           error: e is ApiException ? e.zh : '登录失败，请重试');
     }
+  }
+
+  /// 本次会话是否发生过"身份被换掉"（供横幅使用；用户确认后清掉）
+  bool _lastIdentityResetNotice = false;
+  bool get identityResetNotice => _lastIdentityResetNotice;
+  void acknowledgeIdentityReset() {
+    _lastIdentityResetNotice = false;
+    state = state.copyWith(identityReset: false);
   }
 
   /// 手机号绑定：verify 成功后替换 token

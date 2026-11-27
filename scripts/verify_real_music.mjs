@@ -113,7 +113,7 @@ check('A4b', '至少一个执行器活着（否则任务只会永远排队）', 
 
 // ── 1 身份与余额 ──────────────────────────────────────────────────────────
 console.log('▶ 1 访客身份与积分');
-const g = await req('POST', '/v1/auth/guest', { body: { device_id: 'verify-music-' + Date.now() } });
+const g = await req('POST', '/v1/auth/guest', { body: { device_key: process.env.MB_VERIFY_DEVICE_KEY || 'verify-music-' + Date.now() } });
 const token = g.json && (g.json.access_token || (g.json.user && g.json.user.access_token));
 if (!check('A5', '访客登录成功', g.status === 200 && !!token, `HTTP ${g.status} ${g.text || ''}`)) process.exit(1);
 const uid = g.json.user && g.json.user.id;

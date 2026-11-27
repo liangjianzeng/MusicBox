@@ -2,6 +2,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const config = require('../config');
 const store = require('../core/store');
 const rules = require('../core/rules');
@@ -100,7 +101,17 @@ function create(ctx) {
   return { status: 200, body: { persona: personaShape(store.get('SELECT * FROM personas WHERE id=?', id)) } };
 }
 
-// POST /v1/works/:id/to-persona {name}
+// POST /v1/works/:id/to-persona {name?, start_sec?, seconds?} —— 从自己的作品里取一段当声纹参考。
+//
+// 2026-11-27 重写。旧实现是错的，而且是"看起来能用"的那种错：
+//   1) 它把 `audio_master` **整条 240s** 写进 voice_ref —— 契约要求声纹样本 20-40s
+//      （上传路径有校验，这条路径没有），引擎拿到 4 分钟的参考并不符合 cover 的用法；
+//   2) 它把声纹指向 **公共 out 目录**（w.audio_master 没有 voices/ 前缀），
+//      违反 v5.2.1「声纹样本属敏感个人信息，必须存私有 var/voices/，不在 /f/* 映射内」。
+//   后果就是人格表一直是空的：这条路没人跑通过。
+// 现在：服务端裁 [start_sec, start_sec+seconds]（默认落在中段人声最实处），
+// **落进 var/voices 私有目录**；裁剪工具不可用 → NOT_READY 明确失败并指引用户走录音登记，
+// 绝不静默退化成"整条作品当声纹"。
 function fromWork(ctx) {
   const user = requireUser(ctx);
   const w = store.get('SELECT * FROM works WHERE id=?', ctx.params.id);
@@ -108,10 +119,63 @@ function fromWork(ctx) {
   if (!w.audio_master) throw new U.ApiError('BAD_REQUEST', '该作品暂无音频源文件');
   const name = String((ctx.body || {}).name || '').trim() || (w.title || '声音人格');
   rules.moderateFields([name]);
+
+  const srcAbs = path.isAbsolute(w.audio_master) ? w.audio_master : path.join(config.paths.out, w.audio_master);
+  if (!fs.existsSync(srcAbs)) throw new U.ApiError('BAD_REQUEST', '该作品的音频文件已不在本机，无法取样');
+
+  const MIN = config.upload.personaMinSec, MAX = config.upload.personaMaxSec;
+  const bin = config.upload.ffmpegBin;
+  const probe = spawnSync(bin, ['-version'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    // 诚实降级：不假装成功。旧实现"没有裁剪工具就把整条歌当声纹"是最坏的一种降级。
+    throw new U.ApiError('NOT_READY',
+      '这台服务器没有可用的音频裁剪工具，暂时不能从作品取样声纹；请改用「录音登记」上传 20-40 秒人声');
+  }
+
+  const srcBuf = fs.readFileSync(srcAbs);
+  const srcDur = intentApi.audioDurationSec(srcBuf, path.extname(srcAbs).slice(1).toLowerCase());
+  if (!(srcDur > 0)) throw new U.ApiError('BAD_REQUEST', '无法读取作品音频时长，可能已损坏');
+  if (srcDur < MIN) {
+    throw new U.ApiError('BAD_REQUEST', `这首作品只有 ${Math.round(srcDur)} 秒，不足 ${MIN} 秒，取不出可用的声纹样本`);
+  }
+
+  let seconds = Math.round(Number((ctx.body || {}).seconds) || 28);
+  seconds = Math.max(MIN, Math.min(MAX, Math.min(seconds, Math.floor(srcDur))));
+  let start = Number((ctx.body || {}).start_sec);
+  if (!Number.isFinite(start) || start < 0) start = Math.max(0, (srcDur - seconds) / 2); // 默认取中段（前奏/尾奏多半是器乐）
+  start = Math.max(0, Math.min(start, srcDur - seconds));
+
   const id = U.uid('p_');
+  const tmpAbs = path.join(config.paths.voices, `.tmp_${id}.wav`);
+  fs.mkdirSync(config.paths.voices, { recursive: true });
+  const cut = spawnSync(bin, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', String(start), '-t', String(seconds), '-i', srcAbs,
+    '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', tmpAbs,
+  ], { encoding: 'utf8' });
+  if (cut.status !== 0 || !fs.existsSync(tmpAbs)) {
+    try { if (fs.existsSync(tmpAbs)) fs.unlinkSync(tmpAbs); } catch (e) { /* 清理尽力而为 */ }
+    // 不把工具名/stderr 甩给用户（util 的脱敏纪律），细节进审计日志
+    store.log('persona.from_work.failed', { user_id: user.id, work_id: w.id, stderr: String(cut.stderr || '').slice(0, 300) });
+    throw new U.ApiError('NOT_READY', '声纹取样失败，请换个时间段重试，或改用「录音登记」');
+  }
+
+  const outBuf = fs.readFileSync(tmpAbs);
+  fs.unlinkSync(tmpAbs);
+  const gotDur = intentApi.audioDurationSec(outBuf, 'wav');
+  // 临时文件已删，样本只在内存里：校验不过就直接抛，绝不落库（不落库就没有"半条声纹"）
+  if (!(gotDur >= MIN && gotDur <= MAX)) {
+    throw new U.ApiError('INTERNAL', '裁出的样本时长不符合契约，已放弃落库');
+  }
+  // **必须**经 saveToOut 落进 var/voices 并带 voices/ 前缀：公共 /f/* 目录里放声纹 =
+  // 任何持 URL 者都能下载他人声纹（v5.2.1 明令禁止的扩散路径）
+  const saved = U.saveToOut(config.paths.voices, outBuf, `persona_${id}.wav`);
   store.run('INSERT INTO personas(id,user_id,name,is_public,voice_ref,clone_params,derived_from_work,use_count,created_at) VALUES(?,?,?,0,?,?,?,0,?)',
-    id, user.id, name.slice(0, 30), w.audio_master, U.jstr({ clone_mode: 'fast', cover_strength: 0.2 }), w.id, U.nowIso());
-  store.log('persona.from_work', { user_id: user.id, persona_id: id, work_id: w.id });
+    id, user.id, name.slice(0, 30), VOICE_PREFIX + saved.rel, U.jstr({ clone_mode: 'fast', cover_strength: 0.2 }), w.id, U.nowIso());
+  store.log('persona.from_work', {
+    user_id: user.id, persona_id: id, work_id: w.id,
+    start_sec: Math.round(start * 10) / 10, seconds: Math.round(gotDur * 10) / 10, bytes: saved.bytes,
+  });
   return { status: 200, body: { persona: personaShape(store.get('SELECT * FROM personas WHERE id=?', id)) } };
 }
 

@@ -778,7 +778,8 @@ async function boot(suiteName, opts) {
     try {
       const h = await api('GET', '/healthz', { timeoutMs: 3000 });
       if (h.ok) {
-        const r = await api('POST', '/v1/auth/guest', { timeoutMs: 3000 });
+        // 就绪探针也必须带合格锚点：服务端已拒绝无锚点建号（身份可恢复性 P0）
+        const r = await api('POST', '/v1/auth/guest', { json: { device_key: 'boot-probe-' + runId }, timeoutMs: 3000 });
         if (r.ok && r.json && r.json.access_token) { ready = true; break; }
         lastErr = 'guest HTTP ' + r.status + ' ' + r.text.slice(0, 120);
       } else lastErr = 'healthz HTTP ' + h.status;
@@ -822,10 +823,14 @@ async function boot(suiteName, opts) {
   };
 
   // 常用业务助手（内部也走契约端点）
-  ctx.newGuest = async () => {
-    const r = await api('POST', '/v1/auth/guest');
+  ctx.newGuest = async (guestOpts) => {
+    // 每个测试用户**各自一个**锚点：同一 device_key 必须复用同一游客号（服务端已硬性要求），
+    // 但绝不能整套件共用一个 —— 那会让"两个不同用户"静默变成同一个人，隔离类判词当场失真。
+    const go = guestOpts || {};
+    const dk = go.deviceKey || ('test-device-' + crypto.randomBytes(16).toString('hex'));
+    const r = await api('POST', '/v1/auth/guest', { json: { device_key: dk } });
     if (!r.ok || !r.json || !r.json.access_token) throw new Error('契约 §2 POST /v1/auth/guest 应 200 {access_token,refresh_token,user:{is_guest:true}}，实际 ' + r.status + ' ' + r.text.slice(0, 200));
-    return { token: r.json.access_token, refreshToken: r.json.refresh_token, user: r.json.user, resp: r };
+    return { token: r.json.access_token, refreshToken: r.json.refresh_token, user: r.json.user, deviceKey: dk, firstTime: r.json.first_time, resp: r };
   };
   ctx.newPhoneUser = async (phone) => {
     phone = phone || '13' + String(Date.now()).slice(-8);

@@ -84,7 +84,8 @@ describe('V26 迁移收口与 SQL 列名对账', () => {
 
       // 第 3 步：升级后的库必须真能用（不只是能连）
       const g = await new Promise((resolve) => {
-        const body = '{}';
+        // 契约要求 device_key（无锚点即拒绝建号），升级验证也必须走真实契约
+        const body = JSON.stringify({ device_key: 'v26-upgrade-' + Date.now() });
         const req = http.request('http://127.0.0.1:' + port + '/v1/auth/guest', {
           method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: 5000,
         }, (res) => { const cs = []; res.on('data', (c) => cs.push(c)); res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(cs).toString('utf8') })); });

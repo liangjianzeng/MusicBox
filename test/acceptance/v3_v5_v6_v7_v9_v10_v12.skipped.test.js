@@ -4,8 +4,12 @@
 // 真实语料与音频样本 / M2 社区后端），当前环境不具备 → 全部 {skip:true} 并注明前置。
 // 前置补齐后把对应用例的 skip 去掉即可进入回归（断言逻辑届时按 CONTRACTS.md 落地，不允许放宽）。
 'use strict';
-const { describe, it } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const H = require('./helpers.js');
+const intentApi = require('../../src/server/api/intent.js');
 
 describe('V3 播放器（M0 · 需 Android 真机）', () => {
   it('V3-1 锁屏控制：锁屏界面出现 播放/暂停/上一首/下一首 并真实生效', { skip: '前置：Android 真机 + M0-8 播放器（audio_service）就位；SP5 结论' }, () => {});
@@ -37,7 +41,66 @@ describe('V7 图像意图（M1 · 需 DGX Spark qwen38-fp4 真 VLM + 场景图�
 
 describe('V9 人格与谱系（M1 · 需真实人声样本 + ACE-Step 真引擎的 seed 复现性）', () => {
   it('V9-1 persona 全链：登记（20-40s 音频）→ 列表 → cover 选用 → 出片', { skip: '前置：真人声样本 20-40s + 执行器两段式克隆协议对 :8190 生效' }, () => {});
-  it('V9-2 从作品提声纹：POST /v1/works/:id/to-persona 产出可用 persona', { skip: '前置：同 V9-1（需 done 作品 + 克隆链）' }, () => {});
+  // ── V9-2 补位（2026-11-27）───────────────────────────────────────────────
+  // 这条以前是"常年 skip"（理由：需 done 作品 + 克隆链），于是 to-persona 的 bug 一路活到今天：
+  // 它把 **整条 240s 作品** 当声纹写库，还落在**公共 /f/* 目录**（v5.2.1 明令声纹必须私有）。
+  // **被跳过的判词就是坏功能能出货的方式** —— 现在假执行器能出 done 作品，前置早就不成立了，
+  // 所以这里写的是真判词，只在"本机没有 ffmpeg"时才跳（那是环境缺失，不是能力缺失）。
+  const HAS_FF = (() => { try { return !!H.findFfmpeg(); } catch (e) { return false; } })();
+  describe('V9-2 从作品提声纹（补位后为真判词）', () => {
+    let S;
+    before(async () => {
+      S = await H.boot('V9-2', { runId: 'acceptance-V9-2' });
+      // 假执行器默认不做真实转码，job 会停在 progress=90（产物没落地就没有 audio_master，
+      // 也就没有"作品的音频源文件"可裁）—— 与 v4_library 同一做法
+      S.executor.transcodeMode = 'real';
+    });
+    after(async () => { if (S) await S.close(); });
+
+    it('V9-2 to-persona 必须裁成 20-40s、落私有 var/voices/、且公共 /f/* 取不到', { skip: HAS_FF ? false : '前置：本机无 ffmpeg（裁剪能力不可用，环境缺失）' }, async () => {
+      const g = await S.newGuest();
+      // sec 刚过 20s 下限即可：假执行器的生成耗时随 sec 线性增长，30s 素材会顶爆等待窗口
+      const { work } = await S.genAndAdopt(g.token, {
+        mode: 'custom', prompt: '声纹取样测试', lyrics: '[Verse]\n取样歌词甲\n取样歌词乙', sec: Number(process.env.MB_T_SEC || 24), count: 1,
+      }, { timeoutMs: 300000 });
+      assert.ok(work && work.id, 'V9-2 前置：需要一条 done 的作品');
+
+      const r = await S.api('POST', `/v1/works/${work.id}/to-persona`, { token: g.token, json: { name: '我的声线', start_sec: 1, seconds: 20 } });
+      assert.strictEqual(r.status, 200, 'V9-2 to-persona 应 200，实际 ' + r.status + ' ' + (r.text || '').slice(0, 220));
+      const p = r.json && r.json.persona;
+      assert.ok(p && p.id, 'V9-2 应返回 {persona}，实际 ' + (r.text || '').slice(0, 160));
+
+      const ref = S.db.all('SELECT voice_ref FROM personas WHERE id=?', p.id)[0].voice_ref;
+      assert.ok(String(ref).startsWith('voices/'),
+        'V9-2 声纹必须带 voices/ 前缀存进私有目录（契约 v5.2.1：任何持 URL 者可下载他人声纹 = 未经同意的声纹扩散），实际 ' + ref);
+      assert.ok(String(ref) !== work.audio_master,
+        'V9-2 不许把整条作品的 audio_master 当声纹（旧实现就是这么写的，4 分钟参考根本不符合 cover 用法）：' + ref);
+
+      const abs = path.join(path.resolve(__dirname, '../..'), 'var-test', 'acceptance-V9-2', 'voices', String(ref).slice('voices/'.length));
+      assert.ok(fs.existsSync(abs), 'V9-2 voice_ref 指向的文件必须真实存在（不存在=执行器永远读不到，克隆会静默失效）：' + abs);
+      const dur = intentApi.audioDurationSec(fs.readFileSync(abs), 'wav');
+      assert.ok(dur >= 20 && dur <= 40,
+        `V9-2 声纹样本必须落在 20-40 秒（契约 §8 上传防线），实际 ${dur} 秒`);
+
+      const pub = await S.api('GET', '/f/' + String(ref).replace(/^voices\//, ''), {});
+      assert.ok(pub.status === 404 || pub.status === 403,
+        'V9-2 声纹不得经公共 /f/* 取到（应 404/403），实际 ' + pub.status);
+    });
+
+    it('V9-2b 源码级防回归：裁剪失败必须诚实 NOT_READY，禁止静默退回"整条作品当声纹"', () => {
+      const src = fs.readFileSync(path.resolve(__dirname, '../../src/server/api/personas.js'), 'utf8');
+      const fn = src.slice(src.indexOf('function fromWork'), src.indexOf('module.exports'));
+      assert.ok(fn.length > 200, 'V9-2b 读不到 fromWork 实现，personas.js 结构变了要同步本测试');
+      assert.ok(/NOT_READY/.test(fn),
+        'V9-2b 裁剪工具不可用时必须明确 NOT_READY 并指引改走录音登记（静默降级=用户以为克隆生效其实从未发生）');
+      assert.ok(/spawnSync\(\s*bin/.test(fn), 'V9-2b 必须真的做裁剪（调用 ffmpeg 二进制），不是直接引用整条作品');
+      assert.ok(/VOICE_PREFIX\s*\+\s*saved\.rel/.test(fn),
+        'V9-2b 声纹必须带 voices/ 前缀落私有目录；把 audio_master 直接写进 voice_ref 的老写法不许回来');
+      // 老实现的指纹：INSERT 参数里出现 `w.audio_master, U.jstr(...)`（把整条作品当声纹）
+      assert.ok(!/w\.audio_master,\s*U\.jstr/.test(fn),
+        'V9-2b 检测到 voice_ref 仍被赋成 w.audio_master（整条作品当声纹），老写法不许回来');
+    });
+  });
   it('V9-3 variation 同 seed 改单参数：{bpm:±10} 后 A/B 仅预期维不同（seed 一致性由真实引擎保证）', { skip: '前置：ACE-Step :8190 真引擎 + seed 复现性（SP3 结论）' }, () => {});
   it('V9-4 seed-pack 复刻：GET seed-pack → 以同参重生成 → 产物指纹一致（同 seed 同参数）', { skip: '前置：同 V9-3' }, () => {});
   it('V9-5 extend/cover 谱系：lineage.kind=extend/cover 且 parent 链正确、扣分工时 20 分', { skip: '前置：done 作品 + 真引擎（extend/cover 需真实生成）' }, () => {});

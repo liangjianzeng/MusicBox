@@ -34,7 +34,7 @@ async function api(method, path, body, extraHeaders = {}) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // 1) 游客登录
-let r = await api('POST', '/v1/auth/guest');
+let r = await api('POST', '/v1/auth/guest', { body: { device_key: process.env.MB_SMOKE_DEVICE_KEY || 'e2e-smoke-' + Date.now() } });
 check('guest 登录 200', r.status === 200 && r.j?.access_token, `status=${r.status}`);
 token = r.j?.access_token || '';
 
@@ -93,7 +93,7 @@ r = await api('GET', '/v1/works/' + work?.id);
 check('work 详情父链', r.status === 200 && Array.isArray(r.j?.lineage_parents), `status=${r.status}`);
 
 // 9) 谱系实测（DEV-ADOPT-LINEAGE）：独立用户（积分充足）generate(1)→adopt→adjust→adopt 子代→验父链
-const g2 = await api('POST', '/v1/auth/guest');
+const g2 = await api('POST', '/v1/auth/guest', { body: { device_key: process.env.MB_SMOKE_DEVICE_KEY || 'e2e-smoke-' + Date.now() } });
 const savedToken = token; token = g2.j?.access_token || savedToken;
 let w2 = null;
 {
