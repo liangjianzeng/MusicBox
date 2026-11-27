@@ -29,6 +29,50 @@ const kAdjustHints = [
   '留白多一点',
 ];
 
+/// 收下按钮的判定（纯函数，被 test/reveal_degraded_test.dart 钉住）。
+/// 存在的理由是一条真机教训：降级态里按钮曾拿着本地快照的「已收下 ✓」把 onPressed 置 null ——
+/// 用户看到一颗像正常按钮的东西，点了什么也不发生，也没地方删这条失效暂存
+/// （2026-11-27 反馈「暂存的歌曲没法收下」）。规矩：**能点必须有反应，不能点必须说清为什么**。
+AdoptButton adoptButton({
+  required bool degraded,
+  required bool adopted,
+  required bool busy,
+}) {
+  if (degraded) {
+    return const AdoptButton(
+      text: '收不下 · 任务已失效',
+      icon: Icons.error_outline,
+      enabled: true, // 必须可点：点开是给原因和「删除这条暂存」的出路，不是静默吞掉
+      loading: false,
+      reason: '这条任务的产物在服务端已经取不到（可能已清理），收不进曲库。',
+    );
+  }
+  return AdoptButton(
+    text: adopted ? '已收下 ✓' : '收下这首',
+    icon: adopted ? Icons.check_circle : Icons.favorite,
+    enabled: !adopted && !busy,
+    loading: busy && !adopted,
+    reason: adopted
+        ? '这首已经收进曲库了，去「曲库 · 我的」听它。'
+        : (busy ? '正在等上一个请求完成，稍一下就好。' : null),
+  );
+}
+
+/// [adoptButton] 的返回值
+class AdoptButton {
+  const AdoptButton(
+      {required this.text,
+      required this.icon,
+      required this.enabled,
+      required this.loading,
+      this.reason});
+  final String text;
+  final IconData icon;
+  final bool enabled;
+  final bool loading;
+  final String? reason;
+}
+
 /// 揭晓页：候选卡带翻转、A/B/C/D 快切（整队连续试听）、真波形+真播放进度+点按 seek、
 /// 收下、说一句改一点（隐式收下母本会明说）、追问快捷
 class RevealPage extends ConsumerStatefulWidget {
@@ -41,6 +85,7 @@ class RevealPage extends ConsumerStatefulWidget {
     this.onRegenerate,
     this.brief,
     this.adopted = const {},
+    this.degraded = false,
   });
 
   final String jobId;
@@ -61,6 +106,11 @@ class RevealPage extends ConsumerStatefulWidget {
 
   /// 已收下状态（从「曲库 · 暂存」回来时恢复角标，不用重新收下）
   final Map<String, String> adopted;
+
+  /// 离线快照态：服务端这条任务已经取不到（被清理/换库/离线），页面吃的是本地留存的候选。
+  /// 必须让页面自己知道 —— 否则收下按钮会拿着本地记的「已收下 ✓」变成一颗没解释的死按钮
+  /// （2026-11-27 真机反馈：「暂存的歌曲没法收下」，点了没反应、也没地方删这条暂存）。
+  final bool degraded;
 
   @override
   ConsumerState<RevealPage> createState() => _RevealPageState();
@@ -237,7 +287,24 @@ class _RevealPageState extends ConsumerState<RevealPage> {
     return work.id;
   }
 
-  Future<void> _adopt() async {
+  /// 降级态里点收不下：不能只把按钮置灰了事 —— 必须说清为什么，并给一条出路
+  /// （删掉这条已失效的暂存），否则用户只能对着死按钮反复点。
+  void _adoptBlocked() {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('这条任务的产物在服务端已经取不到（可能已清理），收不进曲库。'),
+      action: SnackBarAction(
+        label: '删除这条暂存',
+        onPressed: () async {
+          await _shelf.remove(widget.jobId);
+          if (!mounted) return;
+          _quietExit = true;
+          Navigator.of(context).pop();
+        },
+      ),
+    ));
+  }
+
+    Future<void> _adopt() async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
@@ -456,6 +523,43 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                 ],
               ),
             ),
+            if (widget.degraded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .errorContainer
+                        .withValues(alpha: 0.28),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .error
+                          .withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.wifi_off,
+                          size: 16, color: Theme.of(context).colorScheme.error),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text('离线快照：服务端已取不到这条任务，可以试听已存的文件，'
+                            '但收下与微调不可用。',
+                            style: TextStyle(fontSize: 12, height: 1.35)),
+                      ),
+                      TextButton(
+                        onPressed: _adoptBlocked,
+                        child: const Text('清理这条', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             // 翻转候选卡（左右滑动切换候选；波形区由内层手势 seek，优先级更高）
             Expanded(
               child: GestureDetector(
@@ -513,6 +617,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                             : null,
                         onAdopt: _adopt,
                         busy: _busy,
+                        degraded: widget.degraded,
+                        onAdoptBlocked: _adoptBlocked,
                       ),
                     ),
                   ),
@@ -741,10 +847,14 @@ class _CandidateCard extends StatelessWidget {
     required this.onSeek,
     required this.onAdopt,
     required this.busy,
+    this.degraded = false,
+    this.onAdoptBlocked,
   });
 
   final Candidate candidate;
   final bool adopted;
+  final bool degraded;
+  final VoidCallback? onAdoptBlocked;
   final bool playing;
   final List<double>? peaks;
   final double progress;
@@ -848,12 +958,19 @@ class _CandidateCard extends StatelessWidget {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: PrimaryButton(
-                  text: adopted ? '已收下 ✓' : '收下这首',
-                  icon: adopted ? Icons.check_circle : Icons.favorite,
-                  loading: busy && !adopted,
-                  onPressed: adopted || busy ? null : onAdopt,
-                ),
+                child: () {
+                  final b = adoptButton(
+                      degraded: degraded, adopted: adopted, busy: busy);
+                  return PrimaryButton(
+                    text: b.text,
+                    icon: b.icon,
+                    loading: b.loading,
+                    // 降级态点它 = 说清原因 + 给出路；正常态已收下则保持禁用（但文案自证状态）
+                    onPressed: !b.enabled
+                        ? null
+                        : (degraded ? onAdoptBlocked : onAdopt),
+                  );
+                }(),
               ),
             ],
           ),

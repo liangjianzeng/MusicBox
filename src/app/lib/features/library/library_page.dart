@@ -384,7 +384,14 @@ class _WorkCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return InkWell(
+    return GestureDetector(
+      // 真机 2026-11-27 用户反馈「我的里进不去」：卡片只有标题那一行能点开详情，点中间
+      // （波形/封面区）毫无反应。根因是 InkWell 默认 deferToChild，而波形是 CustomPaint
+      // 不接受命中 —— 卡片中间整块是"看得见却点不着"的死区。这里补一层 opaque 的点击面，
+      // 让整张卡（含波形、留白）都能进详情；内部 ▶ 等控件仍各自优先响应。
+      behavior: HitTestBehavior.opaque,
+      onTap: onOpen,
+      child: InkWell(
       onTap: onOpen,
       borderRadius: BorderRadius.circular(16),
       child: Container(
@@ -459,6 +466,7 @@ class _WorkCard extends StatelessWidget {
           ],
         ),
       ),
+    ),
     );
   }
 }

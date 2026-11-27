@@ -98,6 +98,9 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
           resultWorkId: job?.resultWorkId,
           brief: s.brief,
           adopted: s.adopted,
+          // 服务端取不到 job 时吃的是本地快照：把"这是降级态"告诉候选页，
+          // 否则收下按钮会拿着快照里的「已收下」变成没解释的死按钮（2026-11-27 真机）
+          degraded: job == null,
           onRegenerate: ref.read(shelfProvider.notifier).retryHandler(s.jobId),
         ),
       ));
