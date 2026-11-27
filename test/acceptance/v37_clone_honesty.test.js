@@ -55,6 +55,12 @@ describe('V37 克隆诚实性 / 强度唯一真源 / 身份可恢复（v5.6.0）
       'V37-① 失败分支必须显式 stage2_failed=true，端侧才有东西可展示');
     assert.ok(!/cover_strength[^;\n]*\|\|\s*0?\.\d+/.test(src),
       'V37-① 执行器不许自带 cover_strength 默认数（真源只有 config.persona）');
+    // 契约 v5.6.10：变声失败必须留下可诊断面包屑 —— 跨机拓扑下 MUSIC_HTTP 绝大多数是
+    // "引擎那台机器读不到这个路径"，本次真机就是靠执行器日志里的 ref_audio not found 才定位到。
+    assert.ok(/meta\.clone\.ref_path\s*=/.test(src),
+      'V37-① 失败分支必须把"引擎被要求读的声纹路径"落到 meta.clone.ref_path（契约 v5.6.10）');
+    assert.ok(/meta\.clone\.engine\s*=/.test(src),
+      'V37-① 失败分支必须把引擎地址落到 meta.clone.engine，否则每次都要翻执行器日志重查');
   });
 
   // ---------- ② cover_strength 只有一个真源 ----------
