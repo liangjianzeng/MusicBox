@@ -500,6 +500,12 @@ MB_SEC=30 MB_COUNT=1 bash tmp/real_music_run.sh                  # server+执行
 ```
 
 > 只绑 `100.100.140.75` 而**不是** `0.0.0.0`：那台是家用游戏机，别把生乐端口顺手开放给整个局域网。
+
+**谁能碰引擎（架构红线）**：只有**执行器**直连 ACE-Step（`src/executor/lanes/music.js`：`POST /music` 提交 +
+`GET /music/{id}/file` 按协议取件回捞）。App **永远只跟 server 说话**：提交 → 领任务 → 拿 `audio_url` → 经 server 的
+`/f/*` 取件口下载。所以"引擎该绑哪张网卡"的判据是**执行器所在机器能不能打到它**（现在执行器在 DGX →
+绑 Tailscale 网卡就够），而不是"手机能不能打到它"。把生乐引擎开放给手机直连既没必要也不安全：它没有鉴权、
+没有扣费与配额，等于把 5060 Ti 白送出去当免费 GPU。
 > 实测跨机链 30/30 判据全绿；产物经 `GET /music/{id}/file` 回捞（执行器在 DGX，异机 `E:\…\out\*.wav` 直接读不到）。
 
 **② 备用：SSH 隧道反打**（Tailscale 面出问题时才用；此时 `MB_MUSIC_URL` 改回 `http://127.0.0.1:8190`）
