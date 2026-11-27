@@ -12,7 +12,6 @@ const ENTRIES = [
   { key: '忧郁', type: 'mood', aliases: ['忧郁', 'emo', '低落', '致郁'], mood: '忧郁', tags: ['melancholic'], bpm: 76 },
   // 微醺：真实需求（「来点微醺感的歌」）在 24 档心情里无处可选，用户只能退选 忧郁/夜晚，
   // 出来是苦情骨架 —— 2026-11-27 真机验收用户当场反馈「这旋律风格不喜欢」。补一档慵懒微醺。
-  { key: '微醺', type: 'mood', aliases: ['微醺', '醺', '醉', '喝一点', '喝了一点', '半醉', '上头', '慵懒', 'tipsy', 'drunk'], mood: '微醺', tags: ['tipsy', 'chill', 'laid-back'], bpm: 84 },
   { key: '浪漫', type: 'mood', aliases: ['浪漫', '告白', '表白', '恋爱'], mood: '浪漫', tags: ['romantic', 'love'], bpm: 96 },
   { key: '甜蜜', type: 'mood', aliases: ['甜蜜', '甜', '甜甜的', '撒糖'], mood: '甜蜜', tags: ['sweet', 'cute'], bpm: 108 },
   { key: '热血', type: 'mood', aliases: ['热血', '燃', '劲爆', '燃爆', '带感'], mood: '热血', tags: ['epic', 'power'], bpm: 140 },
@@ -58,10 +57,13 @@ const EMOTION_MAP = {
   angry: '紧张', fearful: '神秘', disgusted: '神秘', neutral: '', surprised: '欢快', calm: '平静', gentle: '治愈',
 };
 
-// —— 风格点缀词（深度档选择项，契约 v3.2 style_options.style_words）——
-// zh = 用户在 App 上看到的中文，en = 喂给生乐引擎的规范提示词词。
-// 只放"能被模型听懂的通用风格修饰"，曲风走 ENTRIES(type=genre)，情绪走 ENTRIES(type=mood)——
-// 三者职责分开，用户不再面对一个说不清用途的自由文本框。
+// —— 四个维度，各管各的（2026-11-27 真机后重新归类，见 docs/ia-review-2026-11-27.md §二）——
+//   曲风 genre   = 编曲骨架（流行/古典/爵士…）      → ENTRIES(type=genre)
+//   情绪 mood    = 这首歌唱的是什么心情              → ENTRIES(type=mood)
+//   人声 voice   = **谁在唱、怎么唱**（性别/演唱状态）→ VOICE_WORDS   ← 歌声不是曲声！
+//   质感 style   = 乐器与制作质感（钢琴/弦乐/黑胶…）  → STYLE_WORDS
+// 以前 女声/男声 被塞进 STYLE_WORDS，于是"谁来唱"和"用什么乐器"抢同一份 tags 配额，
+// 还能被挤掉 —— 用户勾了女声却拿到男声（2026-11-27 真机）。性别是演唱维度，不是装饰词。
 const STYLE_WORDS = [
   { zh: '复古', en: 'retro' },
   { zh: '合成器', en: 'synth' },
@@ -78,10 +80,6 @@ const STYLE_WORDS = [
   { zh: '鼓点强劲', en: 'heavy drums' },
   { zh: '鼓机 808', en: '808' },
   { zh: '现场感', en: 'live' },
-  { zh: '女声', en: 'female vocal' },
-  { zh: '男声', en: 'male vocal' },
-  { zh: '和声层叠', en: 'harmonies' },
-  { zh: '副歌大合唱', en: 'choir' },
   { zh: '黑胶噪点', en: 'vinyl crackle' },
   { zh: '大混响', en: 'reverb' },
   { zh: '节奏切分', en: 'syncopated' },
@@ -89,6 +87,23 @@ const STYLE_WORDS = [
   { zh: '循环洗脑', en: 'hypnotic' },
 ];
 
+// —— 人声维度：谁在唱（gender，互斥单选）+ 怎么唱（delivery）+ 人声编排（layer）——
+// 与曲风/质感正交：同一份编曲可以女声唱也可以男声唱，可以清醒唱也可以微醺唱；
+// 反过来，"微醺"不是情绪（开心的事能微醺唱，难过的事也能），"女声"更不是风格点缀。
+const VOICE_WORDS = [
+  { zh: '女声', en: 'female vocal', dim: 'gender', aliases: ['女声','女歌手','女生唱','女主唱','female','female vocal','women vocal'] },
+  { zh: '男声', en: 'male vocal', dim: 'gender', aliases: ['男声','男歌手','男生唱','男主唱','male','male vocal','men vocal'] },
+  { zh: '童声', en: 'children vocal', dim: 'gender', aliases: ['童声','童音','孩子唱','children','kids vocal'] },
+  { zh: '合唱', en: 'choir', dim: 'gender', aliases: ['合唱','合声','群唱','choir','gang vocal'] },
+  { zh: '微醺', en: 'tipsy vocal', dim: 'delivery', aliases: ['微醺','醺','醉','喝一点','喝了一点','半醉','上头','微醺感','tipsy','half drunk','slurred'] },
+  { zh: '气声', en: 'breathy', dim: 'delivery', aliases: ['气声','气音','轻声唱','breathy','whispery'] },
+  { zh: '烟嗓', en: 'husky vocal', dim: 'delivery', aliases: ['烟嗓','沙哑','嘶哑','husky','raspy'] },
+  { zh: '哭腔', en: 'crying vocal', dim: 'delivery', aliases: ['哭腔','哽咽','带哭','哭唱','crying','choking'] },
+  { zh: '嘶吼', en: 'screaming vocal', dim: 'delivery', aliases: ['嘶吼','吼','爆吼','scream','shout'] },
+  { zh: '念白', en: 'spoken word', dim: 'delivery', aliases: ['念白','说白','半说半唱','spoken','spoken word'] },
+  { zh: '拖拍', en: 'behind the beat', dim: 'delivery', aliases: ['拖拍','拖半拍','落后拍','behind the beat','laid back vocal'] },
+  { zh: '和声层叠', en: 'harmonies', dim: 'layer', aliases: ['和声','层叠人声','harmonies','harmony'] },
+];
 // 下发给 APK 的选择项目录（契约 v3.2）：中文给用户看，英文给模型用。
 // App 侧必须以此为准（本地只留同构兜底），杜绝两处词表各写一份导致的漂移。
 function catalog() {
@@ -107,6 +122,8 @@ function catalog() {
     moods,
     genres,
     style_words: STYLE_WORDS.map((w) => ({ zh: w.zh, en: w.en })),
+    // 人声维度（新增，向后兼容：不认识它的旧 App 忽略即可，不会白屏）
+    voice: VOICE_WORDS.map((w) => ({ zh: w.zh, en: w.en, dim: w.dim })),
   };
 }
 
@@ -115,6 +132,7 @@ const _ZH_BY_EN = (() => {
   const m = Object.create(null);
   for (const e of ENTRIES) for (const t of e.tags || []) if (t && !m[t]) m[t] = e.key;
   for (const w of STYLE_WORDS) if (!m[w.en]) m[w.en] = w.zh;
+  for (const w of VOICE_WORDS) if (!m[w.en]) m[w.en] = w.zh;
   return m;
 })();
 function zhFor(word) {
@@ -127,19 +145,46 @@ function zhFor(word) {
 // 关键词扫描：返回 {moods:[], tags:[], bpm:null|n, instrumental:null|true}
 function scan(text) {
   const s = String(text || '').toLowerCase();
-  const moods = []; const tags = []; let bpm = null; let instrumental = null;
+  const moods = []; const tags = []; const gender = [];
+  let bpm = null; let instrumental = null;
+  const push = (t) => { if (t && !tags.includes(t)) tags.push(t); };
+  // 自由文本里的英文词必须整词匹配，否则「alive」会命中「现场感(live)」、
+  // 「delivery」会命中「live」—— 中文词仍按子串匹配（'钢琴'、'弦乐铺底'）。
+  const hit = (k) => {
+    const key = String(k || '').toLowerCase().trim();
+    if (!key) return false;
+    return /^[a-z0-9 +_-]+$/.test(key)
+      ? new RegExp('(^|[^a-z0-9])' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])').test(s)
+      : s.includes(key);
+  };
+  // tags 有 cap（契约 ≤6），而一首歌真正想说的常常有十来个词 —— 谁先占位就成了价值判断。
+  // 排序：**性别 > 曲风 > 情绪 > 质感**。理由是真机教训：曲风决定编曲（决定"会不会把摊牌
+  // 做成咖啡馆 BGM"），质感词是锦上添花；上一次 female vocal 被挤掉，用户要女声拿到男声。
+  const genre = [];
   for (const e of ENTRIES) {
     for (const a of e.aliases) {
-      if (a && s.includes(a.toLowerCase())) {
+      if (hit(a)) {
         if (e.mood && !moods.includes(e.mood)) moods.push(e.mood);
-        for (const t of e.tags || []) if (!tags.includes(t)) tags.push(t);
+        const bucket = e.type === 'genre' ? genre : tags;
+        for (const t of e.tags || []) if (!bucket.includes(t)) bucket.push(t);
         if (e.bpm && bpm === null) bpm = e.bpm;
         if (e.instrumental) instrumental = true;
         break;
       }
     }
   }
-  return { moods, tags, bpm, instrumental };
+  // 自由文本里的人声词与点缀词都要被认出来：以前 scan 完全不查这两类，用户在「灵感描述」
+  // 里写「女声」「钢琴」「弦乐铺底」，一个字都进不了引擎 —— "我明明写了女声却拿到男声"的另一半根因。
+  const delivery = [];
+  for (const w of VOICE_WORDS.concat(STYLE_WORDS)) {
+    const keys = [w.zh, w.en].concat(w.aliases || []);
+    if (!keys.some(hit)) continue;
+    const t = w.en;
+    if (w.dim === 'gender') { if (!gender.includes(t)) gender.push(t); }
+    else if (w.dim === 'delivery' || w.dim === 'layer') { if (!delivery.includes(t)) delivery.push(t); }
+    else push(t);
+  }
+  return { moods, tags: gender.concat(genre).concat(tags).concat(delivery), bpm, instrumental };
 }
 
 // 词典版意图启发式编译（LLM 不可达时；confidence<0.5）
@@ -176,4 +221,4 @@ function defaultQuestions(card) {
   return qs.slice(0, 2); // 每轮 ≤2 题
 }
 
-module.exports = { ENTRIES, EMOTION_MAP, STYLE_WORDS, scan, heuristicIntent, defaultQuestions, question, catalog, zhFor };
+module.exports = { ENTRIES, EMOTION_MAP, STYLE_WORDS, VOICE_WORDS, scan, heuristicIntent, defaultQuestions, question, catalog, zhFor };

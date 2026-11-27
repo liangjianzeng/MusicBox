@@ -25,7 +25,10 @@ function buildMusicPayload(params, actor) {
   // 用户手选必须压过扫描猜测：以前 scan.tags 排在前面，6 个配额被"从文案里猜的词"占满，
   // 用户明确勾的「女声」被静默丢弃 —— 2026-11-27 真机复现：要女声，结果出一首男声，
   // 且界面没有任何地方说"你的选择被丢了"。猜测只能是补充，不能挤掉用户的明确意图。
-  const tags = U.unionArr(U.toArr(params.tags), scan.tags, 6);
+  const tags = U.// 2026-11-27：cap 从 6 提到 12。App 端四类选择项（性别1 + 演唱状态2 + 曲风3 + 质感3）
+// 本来就该有 9 个位置，卡在 6 会让用户"选了却被静默丢"（V31-③ 的同一类缺陷，只是换了个位置）；
+// 引擎侧 tags 只是拼进 prompt 的逗号串，12 个词对 ACE-Step 没有负担。
+unionArr(U.toArr(params.tags), scan.tags, 12);
   const sec = params.sec == null ? G.sec_default : U.clamp(Math.round(Number(params.sec)), G.sec_min, G.sec_max);
   const count = params.count == null ? G.count_default : U.clamp(Math.round(Number(params.count)), G.count_min, G.count_max);
   const bpm = params.bpm == null ? (scan.bpm || 100) : U.clamp(Math.round(Number(params.bpm)), 40, 200);

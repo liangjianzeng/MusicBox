@@ -264,6 +264,10 @@ class _ShellProState extends ConsumerState<ShellPro> {
                         // 「标签」原来是自由文本框 + 英文示例（city pop, retro, synth），
                         // 没人知道它是曲风还是情绪。拆成两组中文选择项，自由补充降为逃生口。
                         StylePicker(
+                          // 卡片叫「曲风与质感」，就只放编曲与制作质感的词。
+                          // 「谁在唱/怎么唱」原来也在这里（我上一版塞进来的），把人声劈成
+                          // 两半放在两个卡片里 —— 用户一眼就看出来了：歌声不是曲声。
+                          groups: const ['genre', 'style'],
                           selected: _catalogTags,
                           onChanged: (next) {
                             setState(() => _catalogTags = next);
@@ -284,7 +288,48 @@ class _ShellProState extends ConsumerState<ShellPro> {
                   const SizedBox(height: 12),
                   _ProCard(
                     step: '04',
-                    title: '心情、人声与节奏',
+                    title: '谁在唱（人声）',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 原来"要不要人声"在这一卡、"男声女声/微醺气声"在「曲风与质感」卡里，
+                        // 同一个问题被拆到两个地方答。现在"谁在唱"一处说清：
+                        // 有没有人 → 什么性别 → 用什么状态唱。
+                        const _H('人声'),
+                        MoodChips(
+                          options: const ['人声演唱', '纯音乐'],
+                          selected: [st.instrumental ? '纯音乐' : '人声演唱'],
+                          single: true,
+                          onChanged: (v) => notifier.setInstrumental(
+                              v.isNotEmpty && v.first == '纯音乐'),
+                        ),
+                        const SizedBox(height: 10),
+                        StylePicker(
+                          groups: const ['gender', 'delivery'],
+                          selected: _catalogTags,
+                          onChanged: (next) {
+                            setState(() => _catalogTags = next);
+                            _syncTags();
+                          },
+                        ),
+                        const SizedBox(height: 6),
+                        // 界面不许撒谎：引擎（src/executor/lanes/music.js）唯一能锁音色的是
+                        // 人格参考音频走 cover 变声；没选人格时，「女声」只是 prompt 里的一个词，
+                        // 出男声是完全可能的（2026-11-27 真机就是这么翻车的）。
+                        Text(
+                          st.instrumental
+                              ? '纯音乐：没有人声，上面的选择不会生效'
+                              : '没选人格时，「女声」只是写给模型的描述词，锁不住音色（可能仍出男声）。'                                '要固定音色：去「人格」上传一段参考音频再选。',
+                          style: const TextStyle(
+                              fontSize: 11, color: CreationPalette.faint),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _ProCard(
+                    step: '05',
+                    title: '心情与节奏',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -303,15 +348,6 @@ class _ShellProState extends ConsumerState<ShellPro> {
                                 if (bpm != null) notifier.setBpm(bpm);
                               }
                             }),
-                        const SizedBox(height: 16),
-                        const _H('人声'),
-                        MoodChips(
-                          options: const ['人声演唱', '纯音乐'],
-                          selected: [st.instrumental ? '纯音乐' : '人声演唱'],
-                          single: true,
-                          onChanged: (v) => notifier.setInstrumental(
-                              v.isNotEmpty && v.first == '纯音乐'),
-                        ),
                         const SizedBox(height: 8),
                         _H('速度 BPM · ${st.bpm}'),
                         SliderTheme(
@@ -358,7 +394,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
                   ),
                   const SizedBox(height: 12),
                   _ProCard(
-                    step: '05',
+                    step: '06',
                     title: '输出控制',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,

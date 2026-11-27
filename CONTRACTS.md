@@ -650,9 +650,21 @@ POST /v1/music/tickets/:id/deny     {} → 200 { ok:true }         # 记 denied�
   style_options = {
     moods:       [{ zh, bpm|null }],              // 24：词典 ENTRIES(type=mood)；bpm=该情绪典型速度，供滑杆给起点
     genres:      [{ zh, en, tags[], instrumental }], // 18：曲风；zh 给用户看，en 为派单规范词
-    style_words: [{ zh, en }],                    // 24：风格点缀（乐器/质感/人声质感等）
+    style_words: [{ zh, en }],                    // 20：风格点缀（**只放乐器与制作质感**）
+    voice:       [{ zh, en, dim }],               // 12：人声维度 dim∈{gender,delivery,layer}（v3.2 增量）
   }
   ```
+  **维度纪律（2026-11-27 真机后定）**：曲风=编曲骨架、情绪=唱什么心情、**人声=谁在唱/怎么唱**、质感=乐器与制作。
+  四者正交，同一个词只允许属于一个维度。`女声/男声/童声/合唱` 属 `voice(dim=gender)`，
+  `微醺/气声/烟嗓/哭腔/嘶吼/念白/拖拍` 属 `voice(dim=delivery)`，**不得再出现在 `style_words`**：
+  性别曾被当成风格点缀，与「钢琴/黑胶噪点」抢同一份 tags 配额并被挤掉，直接造成"用户要女声、拿到男声"。
+  `gender` 为互斥单选（一个性别）；旧 App 不认识 `voice` 时忽略即可（不得白屏），
+  此时服务端 `dict.scan` 仍能从自由文本里认出这些词并把性别词排在 tags 首位。
+
+  **`tags` 上限 = 12**（`works.js` `unionArr(params.tags, scan.tags, 12)`，去重后截断；用户手选在前、扫描猜测在后，
+  所以配额吃紧时先丢猜测而不是丢用户的选择）。2026-11-27 从 6 提到 12：拆出人声维度后 App 四组上限是
+  `性别1 + 演唱状态2 + 曲风3 + 质感3 = 9`，卡在 6 会让"选了却被静默丢"复活（真机丢过「女声」）。
+  端侧 `StylePicker.maxTotal` 必须等于本数字（V31-③ 从 works.js 读真源核对，判词不许写死数字）。
   内容 = `prompts/dictionary.catalog()` 直发（唯一真源，禁止在 App/别处另抄一份词表）；`config_version` 签名纳入 `style_options`（运营改词典即换版本号，APK 据此刷新）。
 - **语言纪律**：`zh` 是界面唯一可见文案（普通用户不该看到 `city pop` 这类模型词），`en` 只做括注与派单，不进标题/按钮/提示主体。心情直发中文（引擎 `mood` 字段本就吃中文，词典默认 `'温暖'` 同源）；曲风/风格点缀发 `en` 规范词。
 - **兼容不变**：`POST /v1/works/generate` 的 `tags` 语义不变（自由字符串数组，原样进 `payload.tags`）。旧版/直连发中文曲风仍可用——`buildMusicPayload` 的 `dict.scan` 会把中文别名补成英文规范词一并下发（例：`电子` → 追加 `electronic,edm`），故不破坏既有验收面；`style_options` 缺失时 App 用同构本地兜底，选择项不得变空白。

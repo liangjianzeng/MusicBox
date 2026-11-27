@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../shared/widgets/waveform_canvas.dart';
+import 'lyrics_view.dart';
 import 'player_page.dart';
 import 'player_provider.dart';
 
@@ -52,9 +53,9 @@ class MiniPlayerBar extends ConsumerWidget {
                             style:
                                 const TextStyle(fontWeight: FontWeight.w600)),
                         if (!compact)
-                          const Text('AI 生成 · MusicBox',
-                              style: TextStyle(
-                                  fontSize: 11, color: Colors.white54)),
+                          // 有歌词就顶掉那行"AI 生成 · MusicBox"占位：迷你条上也看得见
+                          // 唱到哪一行（≈ 表示按行序近似，不是逐字对齐）。
+                          PlayerLyrics(work: cur, singleLine: true),
                       ],
                     ),
                   ),

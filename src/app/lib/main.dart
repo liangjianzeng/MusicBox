@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,6 +14,11 @@ import 'features/auth/session_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 常开语义树。Flutter 默认"按需"生成（只有无障碍服务真正绑定时才有），
+  // 后果是 release 包在没装读屏软件的手机上语义树为空：装了 TalkBack 的用户点开
+  // 我们的页面听到的是"未加标签"，而端侧自动化（真机验收）也完全定位不到控件。
+  // 代价只是一点 CPU，换来读屏可用 + 真机可测，值。
+  SemanticsBinding.instance.ensureSemantics();
   // 锁屏/通知栏播放后台支持
   await JustAudioBackground.init(
     androidNotificationChannelId: 'com.musicbox.musicbox.channel.audio',

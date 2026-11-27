@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/models.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/ai_badge.dart';
 import '../../shared/widgets/waveform_canvas.dart';
+import 'lyrics_view.dart';
 import 'player_provider.dart';
 
-/// 全屏播放页：大波形（可拖拽 seek）+ 上下曲
+/// 全屏播放页：歌词跟随 + 波形（可拖拽 seek）+ 上下曲
 class PlayerPage extends ConsumerStatefulWidget {
   const PlayerPage({super.key});
 
@@ -39,6 +41,182 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     return '${d.inHours > 0 ? '${d.inHours}:' : ''}$m:$s';
   }
 
+  Widget _topBar(BuildContext context) {
+    return Row(
+      children: [
+        IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+        ),
+        const Spacer(),
+        const AiBadge(),
+      ],
+    );
+  }
+
+  /// 封面缩小到 72，把竖向空间让给歌词：歌词是"唱到哪一行"的载体，比一块大渐变更值钱。
+  Widget _header(Work cur, ColorScheme scheme) {
+    return Row(
+      children: [
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                scheme.primary.withValues(alpha: .7),
+                const Color(0xFF1E1B2E),
+              ],
+            ),
+          ),
+          child: const Center(child: Text('🎵', style: TextStyle(fontSize: 30))),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(cur.title.isEmpty ? '未命名作品' : cur.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 19, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 3),
+              Text(
+                [
+                  if (cur.mood != null) cur.mood!,
+                  ...cur.genres,
+                  if (cur.bpm != null) 'BPM ${cur.bpm}',
+                ].join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _transport(
+    Work cur,
+    List<double> peaks,
+    PlayerNotifier notifier,
+    PlayerUiState st,
+  ) {
+    return Column(
+      children: [
+        StreamBuilder<Duration>(
+          stream: notifier.audio.positionStream,
+          builder: (ctx, posSnap) {
+            final pos = posSnap.data ?? Duration.zero;
+            return StreamBuilder<Duration?>(
+              stream: notifier.audio.durationStream,
+              builder: (ctx, durSnap) {
+                final dur =
+                    durSnap.data ?? Duration(seconds: cur.durationSec.round());
+                final progress = dur.inMilliseconds == 0
+                    ? 0.0
+                    : pos.inMilliseconds / dur.inMilliseconds;
+                return Column(
+                  children: [
+                    WaveformCanvas(
+                      peaks: peaks,
+                      progress: progress,
+                      height: 56,
+                      barWidth: 3,
+                      gap: 3,
+                      onSeek: (frac) => notifier.seek(Duration(
+                          milliseconds: (dur.inMilliseconds * frac).round())),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_fmt(pos),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white54)),
+                          Text(_fmt(dur),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white54)),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        ),
+        const SizedBox(height: 10),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+                iconSize: 36,
+                onPressed: notifier.prev,
+                icon: const Icon(Icons.skip_previous_rounded)),
+            const SizedBox(width: 12),
+            StreamBuilder<bool>(
+              stream: notifier.audio.playingStream,
+              initialData: st.playing,
+              builder: (ctx, snap) {
+                final playing = snap.data ?? st.playing;
+                return FilledButton(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(68, 68),
+                    shape: const CircleBorder(),
+                  ),
+                  onPressed: notifier.toggle,
+                  child: Icon(
+                    playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    size: 36,
+                  ),
+                );
+              },
+            ),
+            const SizedBox(width: 12),
+            IconButton(
+                iconSize: 36,
+                onPressed: notifier.next,
+                icon: const Icon(Icons.skip_next_rounded)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _queue(PlayerUiState st, PlayerNotifier notifier) {
+    return SizedBox(
+      height: 62,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: st.queue.length,
+        itemBuilder: (ctx, i) {
+          final w = st.queue[i];
+          final active = i == st.index;
+          return Padding(
+            padding: const EdgeInsets.only(right: 10),
+            child: ChoiceChip(
+              label: SizedBox(
+                width: 110,
+                child: Text(w.title,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
+              selected: active,
+              onSelected: (_) => notifier.playQueue(st.queue, i),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final st = ref.watch(playerProvider);
@@ -51,165 +229,49 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final notifier = ref.read(playerProvider.notifier);
     final peaks = _peaks ?? pseudoPeaks(cur.id, n: 96);
     final scheme = Theme.of(context).colorScheme;
+
+    final topBar = _topBar(context);
+    final header = _header(cur, scheme);
+    final lyrics = PlayerLyrics(work: cur);
+    final transport = _transport(cur, peaks, notifier, st);
+    final queue = _queue(st, notifier);
+
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                  ),
-                  const Spacer(),
-                  const AiBadge(),
-                ],
-              ),
-              const Spacer(),
-              // 大封面块（渐变占位）
-              Container(
-                width: 220,
-                height: 220,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(24),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [scheme.primary.withValues(alpha: .7), const Color(0xFF1E1B2E)],
-                  ),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+          child: LayoutBuilder(builder: (context, box) {
+            // 矮屏（小窗、键盘挤压、小屏手机）：整页改滚动，歌词给固定视口。
+            // 不能在这种高度下还让 Expanded 去吸收负剩余 —— 那是溢出崩溃。
+            if (box.maxHeight < 520) {
+              return SingleChildScrollView(
+                child: Column(
+                  children: [
+                    topBar,
+                    header,
+                    const SizedBox(height: 14),
+                    SizedBox(height: 220, child: lyrics),
+                    const SizedBox(height: 14),
+                    transport,
+                    const SizedBox(height: 8),
+                    queue,
+                  ],
                 ),
-                child: const Center(
-                    child: Text('🎵', style: TextStyle(fontSize: 72))),
-              ),
-              const SizedBox(height: 24),
-              Text(cur.title.isEmpty ? '未命名作品' : cur.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 4),
-              Text(
-                [
-                  if (cur.mood != null) cur.mood!,
-                  ...cur.genres,
-                  if (cur.bpm != null) 'BPM ${cur.bpm}',
-                ].join(' · '),
-                style: const TextStyle(color: Colors.white54),
-              ),
-              const SizedBox(height: 24),
-              // 波形 + 拖拽 seek
-              StreamBuilder<Duration>(
-                stream: notifier.audio.positionStream,
-                builder: (ctx, posSnap) {
-                  final pos = posSnap.data ?? Duration.zero;
-                  return StreamBuilder<Duration?>(
-                    stream: notifier.audio.durationStream,
-                    builder: (ctx, durSnap) {
-                      final dur = durSnap.data ??
-                          Duration(seconds: cur.durationSec.round());
-                      final progress = dur.inMilliseconds == 0
-                          ? 0.0
-                          : pos.inMilliseconds / dur.inMilliseconds;
-                      return Column(
-                        children: [
-                          WaveformCanvas(
-                            peaks: peaks,
-                            progress: progress,
-                            height: 64,
-                            barWidth: 3,
-                            gap: 3,
-                            onSeek: (frac) => notifier.seek(
-                                Duration(
-                                    milliseconds:
-                                        (dur.inMilliseconds * frac).round())),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 2),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(_fmt(pos),
-                                    style: const TextStyle(
-                                        fontSize: 12, color: Colors.white54)),
-                                Text(_fmt(dur),
-                                    style: const TextStyle(
-                                        fontSize: 12, color: Colors.white54)),
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                      iconSize: 40,
-                      onPressed: notifier.prev,
-                      icon: const Icon(Icons.skip_previous_rounded)),
-                  const SizedBox(width: 12),
-                  StreamBuilder<bool>(
-                    stream: notifier.audio.playingStream,
-                    initialData: st.playing,
-                    builder: (ctx, snap) {
-                      final playing = snap.data ?? st.playing;
-                      return FilledButton(
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(76, 76),
-                          shape: const CircleBorder(),
-                        ),
-                        onPressed: notifier.toggle,
-                        child: Icon(
-                          playing
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                          size: 40,
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(width: 12),
-                  IconButton(
-                      iconSize: 40,
-                      onPressed: notifier.next,
-                      icon: const Icon(Icons.skip_next_rounded)),
-                ],
-              ),
-              const Spacer(),
-              // 队列缩略列表
-              SizedBox(
-                height: 72,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: st.queue.length,
-                  itemBuilder: (ctx, i) {
-                    final w = st.queue[i];
-                    final active = i == st.index;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 10),
-                      child: ChoiceChip(
-                        label: SizedBox(
-                          width: 110,
-                          child: Text(w.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        selected: active,
-                        onSelected: (_) =>
-                            notifier.playQueue(st.queue, i),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
+              );
+            }
+            return Column(
+              children: [
+                topBar,
+                header,
+                const SizedBox(height: 16),
+                Expanded(child: lyrics),
+                const SizedBox(height: 10),
+                transport,
+                const SizedBox(height: 8),
+                queue,
+              ],
+            );
+          }),
         ),
       ),
     );

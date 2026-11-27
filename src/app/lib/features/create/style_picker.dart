@@ -22,6 +22,16 @@ class StylePicker extends ConsumerWidget {
     // 以前是 3 + 6 = 9：App 让你选 9 个，服务端只留 6 个，剩下 3 个无声消失 ——
     // 用户勾了「女声」却出男声，就是被这样丢掉的（2026-11-27 真机验收）。
     this.maxStyleWords = 3,
+    // 性别 1 + 演唱状态 2 + 曲风 3 = 6 = 服务端 tags 上限（cap 一到先砍质感词，
+    // 因为决定"会不会把摊牌做成咖啡馆BGM"的是曲风与谁来唱，不是加不加黑胶噪点）。
+    this.maxDelivery = 2,
+    // 四类选择项 + 自由补充**加起来**的总闸门。服务端 generate 只收 maxTotal 个词，
+    // 超出的会被无声砍掉（V31-③ 钉的就是这个）。闸门必须写在这里而不是只写在分组上：
+    // 性别1+状态2+曲风3+点缀3=9，若服务端只收 6，"选了却被丢"就又回来了。
+    this.maxTotal = 12,
+    // 渲染哪些组。深度档把「谁在唱/怎么唱」挪进「人声」卡片（04），「曲风/点缀」留在
+    // 03 —— 歌声不是曲声，把人声词埋在曲风卡片里是分类错误（2026-11-27 用户指出）。
+    this.groups = const ['gender', 'delivery', 'genre', 'style'],
   });
 
   /// 已选规范词（wire 值，含用户自由补充的词）
@@ -29,6 +39,9 @@ class StylePicker extends ConsumerWidget {
   final ValueChanged<List<String>> onChanged;
   final int maxGenres;
   final int maxStyleWords;
+  final int maxDelivery;
+  final int maxTotal;
+  final List<String> groups;
 
   static bool _has(List<String> tags, String wire) =>
       tags.any((t) => t.toLowerCase() == wire.toLowerCase());
@@ -45,11 +58,30 @@ class StylePicker extends ConsumerWidget {
     String wire,
     bool on,
     int max,
-    String groupLabel,
-  ) {
+    String groupLabel, {
+    // 性别是**互斥**的：一首歌不能又是女声又是男声。以前它们混在「风格点缀」里当装饰词，
+    // 既可以多选互相打架，又能被钢琴/黑胶噪点挤掉配额（真机：勾了女声出男声）。
+    // 互斥组的行为改成"换人"，而不是弹一句"最多选 1 个"把用户堵在那儿。
+    bool exclusive = false,
+  }) {
     final next = [...selected];
+    if (on && exclusive) {
+      final wires = options.map((o) => o.wire.toLowerCase()).toSet();
+      next.removeWhere((t) => wires.contains(t.toLowerCase()));
+      next.add(wire);
+      onChanged(next);
+      return;
+    }
     if (on) {
       if (_has(next, wire)) return;
+      // 先判总量再判分组：分组没满但总量满了的时候，说"某组最多N个"是在骗人。
+      if (next.length >= maxTotal) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('选择项加起来最多 $maxTotal 个词（服务端只收 $maxTotal 个），先取消一个再选'),
+          duration: const Duration(seconds: 2),
+        ));
+        return;
+      }
       if (_groupCount(options, next) >= max) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('$groupLabel最多选 $max 个，先取消一个再选'),
@@ -70,6 +102,35 @@ class StylePicker extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // —— 谁在唱：先定"人"，再定"曲" ——
+        // 排在最前是有意的：性别是一首歌最贵的选择，之前它被埋在最后一组的第 16 个位置。
+        if (groups.contains('gender'))
+        _Group(
+          title: '谁在唱（性别）',
+          hint: '同一份编曲可以女声唱也可以男声唱 —— 这是"人"，不是风格',
+          options: cat.genders,
+          selected: selected,
+          max: 1,
+          groupLabel: '人声',
+          onToggle: (wire, on) => _toggle(context, cat.genders, wire, on, 1, '人声',
+              exclusive: true),
+        ),
+        if (groups.contains('gender') && groups.contains('delivery'))
+          const SizedBox(height: 12),
+        if (groups.contains('delivery'))
+        _Group(
+          title: '怎么唱（演唱状态）',
+          hint: '微醺、气声、哭腔…是唱法，与开心/难过无关：难过的事也能微醺着唱',
+          options: cat.deliveries,
+          selected: selected,
+          max: maxDelivery,
+          groupLabel: '演唱状态',
+          onToggle: (wire, on) => _toggle(
+              context, cat.deliveries, wire, on, maxDelivery, '演唱状态'),
+        ),
+        if (groups.contains('delivery') && groups.contains('genre'))
+          const SizedBox(height: 12),
+        if (groups.contains('genre'))
         _Group(
           title: '曲风',
           options: cat.genres,
@@ -79,7 +140,9 @@ class StylePicker extends ConsumerWidget {
           onToggle: (wire, on) =>
               _toggle(context, cat.genres, wire, on, maxGenres, '曲风'),
         ),
-        const SizedBox(height: 12),
+        if (groups.contains('genre') && groups.contains('style'))
+          const SizedBox(height: 12),
+        if (groups.contains('style'))
         _Group(
           title: '风格点缀',
           options: cat.styleWords,
@@ -102,9 +165,11 @@ class _Group extends StatelessWidget {
     required this.max,
     required this.groupLabel,
     required this.onToggle,
+    this.hint,
   });
 
   final String title;
+  final String? hint;
   final List<StyleOption> options;
   final List<String> selected;
   final int max;
@@ -134,6 +199,11 @@ class _Group extends StatelessWidget {
                       fontSize: 11, color: CreationPalette.violetBright)),
           ],
         ),
+        if (hint != null && hint!.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(hint!,
+              style: const TextStyle(fontSize: 11, color: CreationPalette.faint)),
+        ],
         const SizedBox(height: 6),
         Wrap(
           spacing: 7,

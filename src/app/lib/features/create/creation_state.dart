@@ -11,6 +11,7 @@ class CreationState {
     this.lyrics = '',
     this.tags = '',
     this.mood = const [],
+    this.voice = const [],
     this.genre,
     this.instrumental = false,
     this.sec = 45,
@@ -28,6 +29,9 @@ class CreationState {
   final List<String> mood;
   final String? genre;
   final bool instrumental; // false=人声
+  /// 人声维度选中项（存中文标签，提交时换算成规范词）：谁来唱 + 怎么唱。
+  /// 单独成字段而不是混进 tags 字符串：性别是这首歌最贵的选择，不该和装饰词同锅。
+  final List<String> voice;
   final int sec; // 15-240
   final int bpm; // 60-180
   final int count; // 1-4
@@ -41,6 +45,7 @@ class CreationState {
     String? lyrics,
     String? tags,
     List<String>? mood,
+    List<String>? voice,
     String? genre,
     bool? instrumental,
     int? sec,
@@ -56,6 +61,7 @@ class CreationState {
         lyrics: lyrics ?? this.lyrics,
         tags: tags ?? this.tags,
         mood: mood ?? this.mood,
+        voice: voice ?? this.voice,
         genre: genre ?? this.genre,
         instrumental: instrumental ?? this.instrumental,
         sec: sec ?? this.sec,
@@ -88,6 +94,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
   void setMood(List<String> v) => state = state.copyWith(mood: v);
   void setGenre(String? v) => state = state.copyWith(genre: v);
   void setInstrumental(bool v) => state = state.copyWith(instrumental: v);
+  void setVoice(List<String> v) => state = state.copyWith(voice: v);
   void setSec(int v) => state = state.copyWith(sec: v);
   void setBpm(int v) => state = state.copyWith(bpm: v);
   void setCount(int v) => state = state.copyWith(count: v);

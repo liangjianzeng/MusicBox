@@ -11,7 +11,7 @@ import '../../core/state.dart';
 ///    12+12 的选项、服务端另有一份 24+18，选「激昂/未来感」这类词词典命中不到，
 ///    BPM/tags 补全静默失效——两份词表各写一份必然漂移， hence 下发。
 class StyleOption {
-  const StyleOption(this.zh, {this.en, this.bpm});
+  const StyleOption(this.zh, {this.en, this.bpm, this.dim});
 
   /// 界面展示（中文）
   final String zh;
@@ -22,8 +22,29 @@ class StyleOption {
   /// 该情绪的典型 BPM（选中的第一项用来给 BPM 滑杆一个合理起点，可再手调）
   final int? bpm;
 
+  /// 仅人声维度使用：gender（谁在唱，互斥单选）/ delivery（怎么唱）/ layer（人声编排）
+  final String? dim;
+
   String get wire => (en == null || en!.isEmpty) ? zh : en!;
 }
+
+/// 人声 12 项（与服务端 VOICE_WORDS 同构）。
+/// 为什么单独一组：**歌声不是曲声**。女声/男声 曾被放进「风格点缀」，于是"谁来唱"
+/// 与「钢琴/黑胶噪点」抢同一份 tags 配额还能被挤掉 —— 用户勾了女声拿到男声（2026-11-27 真机）。
+const kVoiceCatalog = <StyleOption>[
+  StyleOption('女声', en: 'female vocal', dim: 'gender'),
+  StyleOption('男声', en: 'male vocal', dim: 'gender'),
+  StyleOption('童声', en: 'children vocal', dim: 'gender'),
+  StyleOption('合唱', en: 'choir', dim: 'gender'),
+  StyleOption('微醺', en: 'tipsy vocal', dim: 'delivery'),
+  StyleOption('气声', en: 'breathy', dim: 'delivery'),
+  StyleOption('烟嗓', en: 'husky vocal', dim: 'delivery'),
+  StyleOption('哭腔', en: 'crying vocal', dim: 'delivery'),
+  StyleOption('嘶吼', en: 'screaming vocal', dim: 'delivery'),
+  StyleOption('念白', en: 'spoken word', dim: 'delivery'),
+  StyleOption('拖拍', en: 'behind the beat', dim: 'delivery'),
+  StyleOption('和声层叠', en: 'harmonies', dim: 'layer'),
+];
 
 /// 心情 24 项（与服务端 ENTRIES(type=mood) 同构）
 const kMoodCatalog = <StyleOption>[
@@ -33,7 +54,6 @@ const kMoodCatalog = <StyleOption>[
   StyleOption('助眠', bpm: 62),
   StyleOption('悲伤', bpm: 72),
   StyleOption('忧郁', bpm: 76),
-  StyleOption('微醺', bpm: 84),
   StyleOption('浪漫', bpm: 96),
   StyleOption('甜蜜', bpm: 108),
   StyleOption('热血', bpm: 140),
@@ -93,10 +113,6 @@ const kStyleWordCatalog = <StyleOption>[
   StyleOption('鼓点强劲', en: 'heavy drums'),
   StyleOption('鼓机 808', en: '808'),
   StyleOption('现场感', en: 'live'),
-  StyleOption('女声', en: 'female vocal'),
-  StyleOption('男声', en: 'male vocal'),
-  StyleOption('和声层叠', en: 'harmonies'),
-  StyleOption('副歌大合唱', en: 'choir'),
   StyleOption('黑胶噪点', en: 'vinyl crackle'),
   StyleOption('大混响', en: 'reverb'),
   StyleOption('节奏切分', en: 'syncopated'),
@@ -119,22 +135,29 @@ class StyleCatalog {
     required this.moods,
     required this.genres,
     required this.styleWords,
+    required this.voice,
   });
 
   final List<StyleOption> moods;
   final List<StyleOption> genres;
   final List<StyleOption> styleWords;
+  final List<StyleOption> voice;
+
+  List<StyleOption> get genders => voice.where((v) => v.dim == 'gender').toList();
+  List<StyleOption> get deliveries => voice.where((v) => v.dim != 'gender').toList();
 
   static const StyleCatalog fallback = StyleCatalog(
     moods: kMoodCatalog,
     genres: kGenreCatalog,
     styleWords: kStyleWordCatalog,
+    voice: kVoiceCatalog,
   );
 
   /// 远程目录（`style_options`）；任一段缺失/为空即回落本地兜底——
   /// 服务端没下发也要能选，不许把选择项做成空白
   factory StyleCatalog.fromRemote(Map? remote) {
-    List<StyleOption> parse(dynamic v, List<StyleOption> dflt, {bool withBpm = false}) {
+    List<StyleOption> parse(dynamic v, List<StyleOption> dflt,
+        {bool withBpm = false, bool withDim = false}) {
       if (v is! List || v.isEmpty) return dflt;
       final out = <StyleOption>[];
       for (final e in v.whereType<Map>()) {
@@ -142,7 +165,11 @@ class StyleCatalog {
         if (zh.isEmpty) continue;
         final en = '${e['en'] ?? ''}'.trim();
         final bpm = e['bpm'] == null ? null : int.tryParse('${e['bpm']}');
-        out.add(StyleOption(zh, en: en.isEmpty ? null : en, bpm: withBpm ? bpm : null));
+        final dim = '${e['dim'] ?? ''}'.trim();
+        out.add(StyleOption(zh,
+            en: en.isEmpty ? null : en,
+            bpm: withBpm ? bpm : null,
+            dim: (withDim && dim.isNotEmpty) ? dim : null));
       }
       return out.isEmpty ? dflt : out;
     }
@@ -151,10 +178,19 @@ class StyleCatalog {
       moods: parse(remote?['moods'], kMoodCatalog, withBpm: true),
       genres: parse(remote?['genres'], kGenreCatalog),
       styleWords: parse(remote?['style_words'], kStyleWordCatalog),
+      voice: parse(remote?['voice'], kVoiceCatalog, withDim: true),
     );
   }
 
-  List<StyleOption> get _all => [...genres, ...styleWords, ...moods];
+  List<StyleOption> get _all => [...genres, ...styleWords, ...moods, ...voice];
+
+  /// 中文标签 → 派单规范词（人声/曲风存在状态里用中文，提交时才换算，避免界面出现模型词）
+  String wireOf(String zh) {
+    for (final o in _all) {
+      if (o.zh == zh) return o.wire;
+    }
+    return zh; // 查不到原样交出，交给服务端词典兜底，不自己造英文词
+  }
 
   /// 英文规范词/未知词 → 中文展示（意图卡的流派假设常是英文 tags）。
   /// 查不到原样回显，绝不编一个中文上去。

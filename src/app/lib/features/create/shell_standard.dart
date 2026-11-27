@@ -7,6 +7,7 @@ import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/primary_button.dart';
 import '../../shared/widgets/tag_chip.dart';
 import 'credit_guard.dart';
+import 'style_options.dart';
 import 'creation_state.dart';
 import 'creation_ui.dart';
 import 'intent_flow_page.dart';
@@ -105,7 +106,11 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
           action: '标准生成')) {
         return;
       }
+      final cat = styleCatalogOf(ref);
       final tags = <String>[
+        // 人声词排在最前：服务端 tags 有 cap，先保住"谁来唱"，被挤掉的只能是装饰词。
+        // （真机教训：勾了女声却出男声 —— 女声当年被当成风格点缀，配额被钢琴/黑胶吃光。）
+        ...st.voice.map(cat.wireOf),
         if (st.genre != null) st.genre!,
         if (st.instrumental) '纯音乐',
       ];
@@ -153,6 +158,8 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
 
   @override
   Widget build(BuildContext context) {
+    // 三档同源：选择项一律吃服务端下发的 style_options（唯一真源），不再用编译期硬编表
+    final cat = styleCatalogOf(ref);
     ref.listen(creationProvider, (previous, next) {
       if (_prompt.text != next.prompt) _setPrompt(next.prompt);
     });
@@ -207,16 +214,40 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                 ),
               ],
               const SizedBox(height: 22),
+              // 以前这两组吃的是编译期硬编的 kMoodOptions/kGenreOptions：运营在服务端
+              // 词典加了词（比如「微醺」），标准档永远看不见 —— 三档必须吃同一份下发目录。
               const CreationSectionLabel('心情', trailing: '可多选'),
               MoodChips(
-                options: kMoodOptions,
+                options: cat.moods.map((e) => e.zh).toList(growable: false),
                 selected: st.mood,
                 onChanged: notifier.setMood,
               ),
               const SizedBox(height: 22),
-              const CreationSectionLabel('流派', trailing: '单选'),
+              const CreationSectionLabel('谁来唱', trailing: '单选 · 这是"人"不是风格'),
               MoodChips(
-                options: kGenreOptions,
+                options: cat.genders.map((e) => e.zh).toList(growable: false),
+                selected: st.voice
+                    .where((z) => cat.genders.any((e) => e.zh == z))
+                    .toList(growable: false),
+                single: true,
+                onChanged: (v) => notifier.setVoice([
+                  ...st.voice.where((z) => !cat.genders.any((e) => e.zh == z)),
+                  ...v,
+                ]),
+              ),
+              const SizedBox(height: 14),
+              const CreationSectionLabel('怎么唱', trailing: '可多选 · 唱法≠情绪'),
+              MoodChips(
+                options: cat.deliveries.map((e) => e.zh).toList(growable: false),
+                selected: st.voice
+                    .where((z) => cat.deliveries.any((e) => e.zh == z))
+                    .toList(growable: false),
+                onChanged: notifier.setVoice,
+              ),
+              const SizedBox(height: 22),
+              const CreationSectionLabel('曲风', trailing: '单选'),
+              MoodChips(
+                options: cat.genres.map((e) => e.zh).toList(growable: false),
                 selected: st.genre == null ? const [] : [st.genre!],
                 single: true,
                 onChanged: (v) => notifier.setGenre(v.isEmpty ? null : v.first),
