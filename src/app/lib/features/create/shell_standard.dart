@@ -61,13 +61,19 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
       _toast(cap.local?.error ?? '没听清，再说一遍');
       return;
     }
+    final localText = cap.local?.text.trim() ?? '';
+    if (localText.isNotEmpty) _setPrompt(localText);
     setState(() => _busy = true);
     try {
       if (!mounted) return;
       final exit = await Navigator.of(context).push<ConfirmExit>(
         MaterialPageRoute(
             builder: (_) => TranscriptConfirmPage(
-                capture: cap, easy: false, autoOpenFlow: false)),
+                  capture: cap,
+                  easy: false,
+                  autoOpenFlow: false,
+                  onTranscript: _setPrompt,
+                )),
       );
       if (!mounted) return;
       if (exit?.kind == kConfirmIntent && exit!.text.isNotEmpty) {
@@ -340,6 +346,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                     compact: true,
                     enabled: !_busy,
                     onResult: _onVoice,
+                    onPartial: _setPrompt,
                   ),
                   onPhoto: _busy ? null : _onPhoto,
                 ),

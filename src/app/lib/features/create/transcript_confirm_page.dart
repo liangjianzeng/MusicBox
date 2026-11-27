@@ -47,6 +47,7 @@ class TranscriptConfirmPage extends ConsumerStatefulWidget {
     required this.capture,
     this.easy = true,
     this.autoOpenFlow = true,
+    this.onTranscript,
   });
 
   final VoiceCaptureResult capture;
@@ -55,12 +56,18 @@ class TranscriptConfirmPage extends ConsumerStatefulWidget {
   /// true：确认后本页面自己打开意图流；false：只回传 intent_id（宿主自己接管）
   final bool autoOpenFlow;
 
+  /// 服务端逐字到达后同步回填宿主的灵感输入框。
+  final ValueChanged<String>? onTranscript;
+
   @override
   ConsumerState<TranscriptConfirmPage> createState() =>
       _TranscriptConfirmPageState();
 }
 
 enum _Phase { waitingServer, ready, failed, submitting }
+
+const Duration _serverResultWait = Duration(seconds: 120);
+const Duration _serverPollInterval = Duration(milliseconds: 400);
 
 class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   _Phase _phase = _Phase.waitingServer;
@@ -70,7 +77,6 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   bool _serverAuthoritative = false; // 逐字是否来自服务端
   String? _note; // 诚实说明（换档/降级原因）
   String? _error;
-  Timer? _timeout;
   bool _cancelled = false;
 
   @override
@@ -85,12 +91,18 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
   @override
   void dispose() {
     _cancelled = true;
-    _timeout?.cancel();
     _text.dispose();
     super.dispose();
   }
 
   AsrOutcome? get _local => widget.capture.local;
+
+  void _acceptServerText(String text) {
+    _serverAuthoritative = true;
+    _text.text = text;
+    widget.onTranscript?.call(text);
+    _phase = _Phase.ready;
+  }
 
   bool get _edited =>
       _card?.sourceText != null &&
@@ -128,21 +140,17 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
           _card = card;
           final sv = card.sourceText?.trim() ?? '';
           if (sv.isNotEmpty && !card.degraded) {
-            _serverAuthoritative = true;
-            _text.text = sv;
-            _phase = _Phase.ready;
+            _acceptServerText(sv);
           } else if (sv.isNotEmpty) {
             // 服务端有逐字但理解是兜底的
-            _serverAuthoritative = true;
-            _text.text = sv;
-            _phase = _Phase.ready;
+            _acceptServerText(sv);
             _note = '理解服务在兜底状态，卡片参数可能偏保守，可以直接改。';
           } else if (_local != null && _local!.hasText) {
             _phase = _Phase.ready;
             _note = '服务端没听清，这一版用的是本机识别的结果。';
           } else {
             _phase = _Phase.failed;
-            _error = '服务端没听清，本机也没识别出内容。';
+            _error = '服务端暂时没返回识别内容，本机也没识别出内容。';
           }
         } else {
           final bool okLocal = _local?.hasText ?? false;
@@ -186,15 +194,16 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
 
   /// 轮询意图卡直到逐字/兜底标记出现（服务端完成时才一起写库）
   Future<mb.Intent?> _pollCard(ApiClient api, String id) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 22));
+    final maxPolls =
+        _serverResultWait.inMilliseconds ~/ _serverPollInterval.inMilliseconds;
     mb.Intent? last;
-    while (DateTime.now().isBefore(deadline)) {
+    for (var poll = 0; poll < maxPolls; poll++) {
       try {
         final c = await api.intent(id);
         last = c;
         if (c.sourceText != null || c.degraded) return c;
       } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await Future<void>.delayed(_serverPollInterval);
     }
     return last;
   }
@@ -277,6 +286,14 @@ class _TranscriptConfirmPageState extends ConsumerState<TranscriptConfirmPage> {
                       busy: _phase == _Phase.waitingServer,
                       localLabel: _local?.engineLabel,
                     ),
+                    if (_phase == _Phase.waitingServer) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        '正在识别并理解，首次加载可能需要几十秒。',
+                        style: TextStyle(
+                            color: scheme.onSurfaceVariant, fontSize: 12.5),
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     if (_note != null)
                       _HintBar(text: _note!, tone: _HintTone.warn),

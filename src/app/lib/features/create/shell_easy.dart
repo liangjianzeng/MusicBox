@@ -59,12 +59,18 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
       _toast(cap.local?.error ?? '没听清，再说一遍');
       return;
     }
+    final localText = cap.local?.text.trim() ?? '';
+    if (localText.isNotEmpty) _setText(localText);
     setState(() => _busy = true);
     try {
       if (!mounted) return;
       final exit = await Navigator.of(context).push<ConfirmExit>(
         MaterialPageRoute(
-            builder: (_) => TranscriptConfirmPage(capture: cap, easy: true)),
+            builder: (_) => TranscriptConfirmPage(
+                  capture: cap,
+                  easy: true,
+                  onTranscript: _setText,
+                )),
       );
       if (!mounted) return;
       if (exit?.kind == kConfirmTyped && exit!.text.isNotEmpty) {
@@ -277,6 +283,7 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                     compact: true,
                     enabled: !_busy,
                     onResult: _onVoice,
+                    onPartial: _setText,
                   ),
                   onPhoto: _busy ? null : _onPhoto,
                 ),
