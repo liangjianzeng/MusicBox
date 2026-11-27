@@ -39,6 +39,54 @@ async function callMusic(musicUrl, body, log) {
   return j; // {file, seconds, seed, gen_seconds, vram_peak_mb, task_type}
 }
 
+// 把**执行器本机的音频**投到引擎，换回**引擎本机绝对路径**（2026-11-27）。
+// 声纹（ref_audio）和源曲（src_audio）**都要走它**：cover 任务里引擎要同时读这两个文件，只投一个
+// 照样 HTTP 400 —— 声纹修好了、源曲还是异机路径，等于白修（2026-11-27 写判词时才发现）。
+// 为什么非做不可：/music 的 ref_audio 走的是引擎侧 `os.path.isfile()`，只认它自己文件系统里的路径。
+// 人格 WAV 存在服务端这台 Linux 机上，跨机拓扑下我们把 `/tmp/mb-dev/voices/xxx.wav` 递过去，
+// 引擎那边永远读不到 —— 真机日志 `HTTP 400 {"detail":"ref_audio not found: ..."}` 就是它，
+// 也就是说**人格克隆自上线以来没有一次真的生效过**，用户听到的"不像我的人格"根因在此。
+// 老引擎没有 /ref（404/405）→ 诚实退回旧行为（直接用本机路径，同机部署本就正确），并回传 reason；
+// 绝不因为投递失败就假装克隆成功，也绝不静默吞掉原因。
+async function deliverAudio(refAbs, musicUrl, cfg, log) {
+  const base = String(musicUrl || '').replace(/\/+$/, '');
+  const key = process.env.ACE_REF_KEY || (cfg && cfg.aceRefKey) || '';
+  if (!base) return { path: refAbs, uploaded: false, reason: 'no_endpoint' };
+  let buf;
+  try { buf = fs.readFileSync(refAbs); }
+  catch (e) { return { path: refAbs, uploaded: false, reason: 'ref_unreadable' }; }
+  const ext = (path.extname(refAbs) || '.wav').toLowerCase();
+  let res;
+  try {
+    res = await net.request('POST', base + '/ref', {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-mb-ref-key': key,          // 引擎未配 ACE_REF_KEY 时会 503；空 key 会 401 —— 都会落到 meta
+        'x-mb-ext': ext,
+      },
+      body: buf,
+      timeoutMs: 60000,
+    });
+  } catch (e) { return { path: refAbs, uploaded: false, reason: 'net_' + (e && e.code || 'err') }; }
+  if (res.status === 404 || res.status === 405) {
+    log('引擎没有 /ref 声纹口（旧版本），退回本机路径 —— 跨机部署下这一步必然导致变声失败');
+    return { path: refAbs, uploaded: false, reason: 'unsupported' };
+  }
+  if (res.status === 401) return { path: refAbs, uploaded: false, reason: 'key_rejected' };
+  if (res.status === 503) return { path: refAbs, uploaded: false, reason: 'intake_disabled' };
+  if (res.status !== 200) {
+    const detail = res.body.slice(0, 160).toString('utf8');
+    log('声纹投递被拒 HTTP ' + res.status + '：' + detail);
+    return { path: refAbs, uploaded: false, reason: 'http_' + res.status, detail };
+  }
+  let j = null;
+  try { j = res.json(); } catch (e) { /* 下面按坏响应处理 */ }
+  const p = j && typeof j.path === 'string' ? j.path : '';
+  if (!p) return { path: refAbs, uploaded: false, reason: 'bad_response' };
+  log('声纹已投递 → 引擎路径 ' + p);
+  return { path: p, uploaded: true, engineRefId: j.id, bytes: j.bytes };
+}
+
 // 生成产物落盘到工作目录。三种形态都要认（2026-11-27 真机实测：跨机部署必然走到第三种）：
 //   ① URL → 下载；
 //   ② 本机绝对路径 → 直接复制（生成服务与执行器同机，剧场 :8190 协议的原意）；
@@ -200,10 +248,34 @@ async function runMusic(job, ctx) {
         // 历史 bug：这里曾直接写 applied:true，失败分支只补 stage2_failed，于是出现
         // `applied:true + stage2_failed:true` —— 用户以为用了他的人格，其实拿到的是默认音色。
         meta.clone = { applied: false, attempted: true, stage2_failed: false, mode: persona.clone_mode || 'full', cover_strength: cs };
+        let refForEngine = refAbs;
+        let srcForEngine = finalAbs;   // 同机时就是本机路径；跨机由 /ref 换回来
         try {
+          // 先把声纹投到引擎再发 cover：ref_audio 只认引擎自己文件系统里的路径。
+          // 同机部署（引擎与执行器同一台机器）时 /ref 可能不存在，退回本机路径是正确行为；
+          // 跨机部署时不投递就必然 MUSIC_HTTP —— 投递结果连同原因一起落到 meta，不留猜的空间。
+          const dlv = await deliverAudio(refAbs, musicUrl, cfg, ctx.log);
+          refForEngine = dlv.path;
+          meta.clone.ref_delivery = {
+            uploaded: dlv.uploaded === true,
+            reason: dlv.reason || null,
+            engine_path: dlv.uploaded ? dlv.path : null,
+            engine_ref_id: dlv.engineRefId || null,
+            bytes: typeof dlv.bytes === 'number' ? dlv.bytes : null,
+          };
+          // 源曲（① 的完整歌）也必须投：cover 任务里引擎要**同时**读 src_audio，
+          // 只投声纹等于修了一半 —— 源曲还是执行器本机的路径，引擎那边照样 HTTP 400。
+          const dlvs = await deliverAudio(finalAbs, musicUrl, cfg, ctx.log);
+          srcForEngine = dlvs.path;
+          meta.clone.src_delivery = {
+            uploaded: dlvs.uploaded === true,
+            reason: dlvs.reason || null,
+            engine_path: dlvs.uploaded ? dlvs.path : null,
+            bytes: typeof dlvs.bytes === 'number' ? dlvs.bytes : null,
+          };
           const body2 = Object.assign({}, baseBody, {
-            src_audio: finalAbs,                       // ① 的完整歌
-            ref_audio: refAbs,                         // 人格声纹参考（本机直读或经鉴权取件口回捞，必须真实可读）
+            src_audio: srcForEngine,                   // ① 的完整歌（跨机时由 /ref 换来）
+            ref_audio: refForEngine,                   // 引擎被要求读的声纹路径（跨机时由 /ref 换来）
             cover_strength: cs,
             instrumental: false,
           });
@@ -224,7 +296,9 @@ async function runMusic(job, ctx) {
           // 面包屑：跨机拓扑下的 MUSIC_HTTP 绝大多数是"引擎那台机器读不到这个路径"
           // （2026-11-27 真机就是靠 executor 日志里的 ref_audio not found 才定位到，查了 20 分钟）。
           // 把引擎被要求读的路径和引擎地址一起落到 meta 里，下次一眼可见。
-          meta.clone.ref_path = refAbs;
+          meta.clone.ref_path = refForEngine;   // 引擎**被要求读**的那个路径（跨机时是 /ref 换回来的）
+          meta.clone.src_path = srcForEngine;   // 源曲也是引擎要读的文件，失败时同样要看得见
+          meta.clone.ref_local = refAbs;        // 我们这边真正的声纹文件，两边不一致才看得出纳不到
           try { meta.clone.engine = new URL(musicUrl).host; } catch (err) { /* 地址不合法就不记，不影响降级 */ }
         }
       }

@@ -7,6 +7,7 @@ API 契约:
   POST /music            {mood, seconds 15-600, seed?, tags?, lyrics?, instrumental?, caption?, bpm?,
                           ref_audio?, src_audio?, cover_strength?} -> {id, seconds, file, task_type, ...}
   GET  /music/{id}/file  -> 音频字节 (audio/wav)
+  POST /ref              {raw bytes} + 头 x-mb-ref-key（配 ACE_REF_KEY 才开）; 可选 x-mb-ext / Content-Type -> {id, path, bytes, ext, pruned}
   POST /unload           -> 释放显存 {ok, vram_*}
   GET  /health           -> 服务/模型/显存状态
 
@@ -28,6 +29,8 @@ REPO_DIR = BASE_DIR / "acestep-repo"
 MODELS_DIR = BASE_DIR / "models"
 OUT_DIR = BASE_DIR / "out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+REF_DIR = BASE_DIR / "refs"
+REF_DIR.mkdir(parents=True, exist_ok=True)
 
 os.environ["ACESTEP_CHECKPOINTS_DIR"] = str(MODELS_DIR)
 os.environ["ACESTEP_DISABLE_TQDM"] = "1"
@@ -40,7 +43,8 @@ os.environ["MODELSCOPE_CACHE"] = str(BASE_DIR / "work" / "modelscope_cache")
 sys.path.insert(0, str(REPO_DIR))
 
 import torch                                    # noqa: E402
-from fastapi import FastAPI, HTTPException      # noqa: E402
+from fastapi import FastAPI, HTTPException, Request# noqa: E402
+from ref_intake import RefError, store_ref           # noqa: E402
 from fastapi.responses import FileResponse      # noqa: E402
 from pydantic import BaseModel, Field           # noqa: E402
 import uvicorn                                  # noqa: E402
@@ -204,6 +208,28 @@ class MusicRequest(BaseModel):
     src_audio: str | None = Field(None, max_length=1000, description="两段式源曲路径（绝对）；给值则 task=cover，时长锁源曲")
     cover_strength: float | None = Field(None, ge=0.0, le=1.0, description="参考/源曲影响强度；缺省 cover=0.7、风格迁移=0.2")
 
+
+@app.post("/ref")
+async def post_ref(request: Request):
+    """声纹投递口（2026-11-27）：服务端把人格 WAV 送进来，换回一个**引擎本机绝对路径**给 /music 用。
+
+    为什么必须有它：/music 的 ref_audio 只认引擎自己文件系统里的路径（os.path.isfile 校验），
+    人格 WAV 却存在服务端那台机器上 —— 跨机部署下声纹永远送不到，人格克隆从未真正生效过
+    （真机日志：HTTP 400 {"detail":"ref_audio not found: ..."}）。
+    鉴权/上限/白名单/防穿越/到期清理都在 ref_intake.py（可脱离 torch 单独自测：
+    scripts/check_ace_ref_intake.py）。ACE_REF_KEY 没配 -> 503，绝不静默开一个匿名写文件的门。
+    """
+    try:
+        body = await request.body()
+        return store_ref(
+            body,
+            key=request.headers.get("x-mb-ref-key"),
+            ref_dir=REF_DIR,
+            header_ext=request.headers.get("x-mb-ext"),
+            content_type=request.headers.get("content-type"),
+        )
+    except RefError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
 
 @app.post("/music")
 def post_music(req: MusicRequest):
