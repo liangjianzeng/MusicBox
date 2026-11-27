@@ -195,7 +195,7 @@ async function runMusic(job, ctx) {
   const sec = Math.max(15, Math.min(240, Number(p.sec) || 45));
   const tags = Array.isArray(p.tags) ? p.tags : String(p.tags || '').split(/[,，]/).filter(Boolean);
   const instrumental = !!p.instrumental;
-  const persona = p.persona && (p.persona.ref_abs_path || p.persona.id) ? p.persona : null;
+  let persona = p.persona && (p.persona.ref_abs_path || p.persona.id) ? p.persona : null;   // let：无歌词时会被置空（不许对纯音乐做 cover）
   let cloneAppliedAny = false;
 
   const files = [];
@@ -210,6 +210,19 @@ async function runMusic(job, ctx) {
     // :8190 严格 schema（2026-11-23 实测 422 教训）：tags=逗号串（非数组）；bpm=null 或 30-300（0 非法）；
     // seconds 上限历史上是 180（引擎入口自设），2026-11-27 收编进 vendor/acestep 后放到 600（模型自身能力）。
     // 注意：**对外 API 仍是 sec 15-240**（contract sec_max），这里放宽只是不再让引擎入口二次砍用户的时长。
+    // 「要人声 + 没歌词」是引擎根本没得可唱的组合（2026-11-28 真机：用户选了「人声演唱」、
+    // 歌词留空，载荷 `instrumental:false` 一路照发到引擎，出的却是**纯音乐**；而界面上写着
+    // 「留空则由 AI 自动填词」—— 那个填词功能从来不存在，全仓零实现）。
+    // 执行器不跟着装：既然引擎只能出纯音乐，就别拿 instrumental:false 去骗引擎；
+    // 同时把「你要人声、给你的是纯音乐」记进 meta.vocal 交给揭晓页说破。
+    // 宁可降级说破，不许静默交付一首和承诺不符的歌（和克隆诚实性同一口径）。
+    const noLyrics = !String(p.lyrics || '').trim();
+    const vocalRequested = instrumental === false;
+    const vocalImpossible = vocalRequested && noLyrics;
+    const sentInstrumental = vocalImpossible ? true : instrumental;
+    if (vocalImpossible) {
+      ctx.log('候选' + seq + ' 要人声但没有歌词：AI 写词未实现，本候选按纯音乐交付并如实标注（不装成有人声的歌）');
+    }
     const baseBody = {
       mood: p.mood || '温暖',
       seconds: Math.max(15, Math.min(600, sec)),
@@ -217,7 +230,7 @@ async function runMusic(job, ctx) {
       tags: tags.join(','),
       lyrics: p.lyrics || '',
       prompt: p.prompt || [p.mood, tags.join(' ')].filter(Boolean).join(' '),
-      instrumental,
+      instrumental: sentInstrumental,
     };
     const bpmN = Number(p.bpm);
     if (Number.isFinite(bpmN) && bpmN >= 30 && bpmN <= 300) baseBody.bpm = Math.round(bpmN);
@@ -226,11 +239,25 @@ async function runMusic(job, ctx) {
     const r1 = await callMusic(musicUrl, baseBody, ctx.log);
     let finalAbs = path.join(ctx.workDir, 'cand_' + seq + '.wav');
     await ingestArtifact(r1, finalAbs, ctx.log, musicUrl);
-    let meta = { clone: { applied: false, stage2_failed: false }, gen_seconds: r1.gen_seconds, task_type: r1.task_type };
+    let meta = {
+      clone: { applied: false, stage2_failed: false },
+      // 只在用户**要过人声**时留这个块：纯音乐本来就是纯音乐，没必要假装"没兑现"。
+      vocal: vocalRequested
+        ? { requested: true, delivered: !vocalImpossible, reason: vocalImpossible ? 'no_lyrics' : null }
+        : undefined,
+      gen_seconds: r1.gen_seconds,
+      task_type: r1.task_type,
+    };
     let finalSeconds = Number(r1.seconds) || sec;
     let finalSeed = Number.isFinite(Number(r1.seed)) ? Number(r1.seed) : seed;
 
     // ② persona：cover 变声（ref_audio + cover_strength）；失败诚实降级交 ①
+    if (persona && vocalImpossible) {
+      // 一首没有人的歌不值得 cover：白烧一次 GPU，还会让用户以为"套上了我的人声"。
+      ctx.log('候选' + seq + ' 没有歌词（本候选已按纯音乐交付），跳过变声阶段：对纯音乐做 cover 只会白烧 GPU 并谎称用了你的人格');
+      meta.clone = { applied: false, stage2_failed: false, skipped_no_vocal: true, mode: persona.clone_mode || 'full' };
+      persona = null;   // 下面不再走 ②，也不许多打一次投递口
+    }
     if (persona) {
       // cover_strength 由**服务端唯一写入**（works.js 归一化），执行器不再自己兜一个默认值：
       // 0.2 曾在 personas.js 两处 + 这里共三处硬编码，改一处漏两处，而且它恰恰是"能不能锁住音色/性别"的唯一旋钮。

@@ -521,6 +521,21 @@ class _RevealPageState extends ConsumerState<RevealPage> {
                       color: Theme.of(context).colorScheme.onErrorContainer),
                 ),
               ),
+            // 要了人声却给了纯音乐，同样必须当场说破（真机 2026-11-28：歌词留空 +
+            // 「留空则由 AI 自动填词」这句谎话，而用户选的是「人声演唱」）。
+            // 只报错不给出路是甩锅，所以顺手说清怎么才真能要到人声。
+            if (_cur.vocalUnmet)
+              Container(
+                width: double.infinity,
+                color: Theme.of(context).colorScheme.errorContainer,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Text(
+                  '${_cur.vocalUnmetReason}。想要人声请把歌词填上（结构标记用 [Verse]/[Chorus]）。',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: Theme.of(context).colorScheme.onErrorContainer),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(

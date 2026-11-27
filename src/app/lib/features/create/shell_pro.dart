@@ -249,12 +249,30 @@ class _ShellProState extends ConsumerState<ShellPro> {
                             height: 1.45,
                           ),
                           onChanged: notifier.setLyrics,
+                          // 以前这里写「留空则由 AI 自动填词」—— **那是谎话**：全仓没有任何写词实现，
+                          // 留空 + 「人声演唱」实际出的是纯音乐（真机 2026-11-28，用户原话
+                          // 「这不是纯音乐么？」）。界面只准说做得到的事（契约 v5.6.14）。
                           decoration: creationFieldDecoration(
-                            hint: '留空则由 AI 自动填词',
+                            hint: st.instrumental
+                                ? '纯音乐可以留空'
+                                : '要人声必须给歌词（留空只能出纯音乐）',
                             alignLabelWithHint: true,
                           ),
                         ),
                         const SizedBox(height: 10),
+                        // 说了规则就要在违反时提醒：选了人声却没歌词 = 必然纯音乐，
+                        // 当场讲清，比让用户生成完才发现强（这不是"解释控件不是什么"，是讲后果）。
+                        if (!st.instrumental && st.lyrics.trim().isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              '现在是「人声演唱」但歌词为空 → 出来的会是纯音乐（AI 写词还没实现）',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: CreationPalette.amber,
+                              ),
+                            ),
+                          ),
                         Wrap(
                           spacing: 7,
                           runSpacing: 7,

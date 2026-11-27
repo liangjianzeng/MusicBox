@@ -175,6 +175,33 @@ class Candidate {
     return e == null ? '变声失败' : '变声失败（$e）';
   }
 
+  /// 「要人声」的兑现回执（契约 v5.6.14）。和 `_clone` 同样要容错读 `raw.meta.vocal`：
+  /// 老快照只把它嵌在 raw 里，读不到就等于界面永远不说破（真机 2026-11-27 的老现场）。
+  Map? get _vocal {
+    final v = meta['vocal'];
+    if (v is Map) return v;
+    final raw = meta['raw'];
+    if (raw is Map) {
+      final rm = raw['meta'];
+      if (rm is Map && rm['vocal'] is Map) return rm['vocal'] as Map;
+    }
+    return null;
+  }
+
+  /// 用户选了「人声演唱」，这条却是纯音乐（歌词为空 + AI 写词未实现，执行器已如实记录）。
+  /// 真机 2026-11-28 的现场：载荷里 `instrumental:false` 一路照发，用户拿到纯音乐，
+  /// 而界面写着「留空则由 AI 自动填词」—— 那个功能全仓零实现。**必须说破**。
+  bool get vocalUnmet =>
+      _vocal?['requested'] == true && _vocal?['delivered'] == false;
+
+  String get vocalUnmetReason {
+    final v = _vocal;
+    if (v == null) return '';
+    return v['reason'] == 'no_lyrics'
+        ? '你要的是人声，但歌词是空的：AI 写词还没实现，这首其实是纯音乐'
+        : '你要的是人声，但这首没能做到有人声';
+  }
+
   factory Candidate.fromMap(Map m) => Candidate(
         id: '${m['id'] ?? ''}',
         seq: _asInt(m['seq']),
