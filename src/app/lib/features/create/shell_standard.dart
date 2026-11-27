@@ -229,7 +229,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                 onChanged: notifier.setMood,
               ),
               const SizedBox(height: 22),
-              const CreationSectionLabel('谁来唱', trailing: '单选 · 这是"人"不是风格'),
+              const CreationSectionLabel('谁来唱'),
               MoodChips(
                 options: cat.genders.map((e) => e.zh).toList(growable: false),
                 selected: st.voice

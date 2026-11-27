@@ -78,7 +78,8 @@ describe('V31 用户手选优先 + 词表配额一致', () => {
     const maxWords = num(/this\.maxStyleWords\s*=\s*(\d+)/, 'maxStyleWords');
     const maxDeliv = num(/this\.maxDelivery\s*=\s*(\d+)/, 'maxDelivery');
     const maxTotal = num(/this\.maxTotal\s*=\s*(\d+)/, 'maxTotal');
-    const genderMax = num(/谁在唱（性别）[\s\S]{0,400}?max: (\d+)/, '性别组上限');
+    // 锚点跟着标题走：标题已从「谁在唱（性别）」收成「谁在唱」（说明句被删，见 v5.6.13）。
+    const genderMax = num(/谁在唱[\s\S]{0,400}?max: (\d+)/, '性别组上限');
     const works = read('src/server/api/works.js');
     const capM = works.match(/unionArr\(\s*U\.to(?:Tag)?Arr\(params\.tags\),\s*scan\.tags,\s*(\d+)\s*\)/);
     assert.ok(capM, 'V31-③ 读不到服务端 tags cap（works.js unionArr 第三参），改法要同步本测试');

@@ -290,30 +290,22 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                 // 恰恰是锁不住音色的那一档。必须放在 sticky dock 里 —— hero 区不滚动，
                 // 放上去会被输入卡片整个盖住（2026-11-27 真机第一次就踩了这个）。
                 if (!shortScreen) const SizedBox(height: 10),
-                // 小屏（含 2 倍字号）先牺牲说明文字，**不牺牲控件**：
-                // 没有这行提示也得能选「谁来唱」（V37-④：性别是最贵的选择）。
-                if (!shortScreen)
-                  const Row(
-                    children: [
-                      Text(
-                        '谁来唱',
-                        style: TextStyle(
-                          color: CreationPalette.text,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                        ),
+                // 标签**无条件显示**：小屏上只剩一排裸 chips 时，用户无从知道这排是"选人"
+                // 还是"选风格"（这正是当年女声/男声被塞进风格点缀后留下的误会）。
+                // 反过来，"这是人不是风格"这类**解释控件不是什么**的说明句一律不许存在：
+                // 需要澄清自己不是什么的控件，是设计失败，该删的是控件不是加脚注（2026-11-28 用户原话）。
+                const Row(
+                  children: [
+                    Text(
+                      '谁来唱',
+                      style: TextStyle(
+                        color: CreationPalette.text,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
                       ),
-                    ],
-                  ),
-                  // 说明行只给放得下的屏：小屏 + 2 倍字号时它是压垮 sticky dock 的稻草之一
-                  if (!shortScreen) ...[
-                    const SizedBox(height: 2),
-                    const Text(
-                      '单选 · 这是"人"，不是风格',
-                      style:
-                          TextStyle(fontSize: 10.5, color: CreationPalette.faint),
                     ),
                   ],
+                ),
                 const SizedBox(height: 6),
                 // chips 必须**单行横向滚动**：MoodChips 是 Wrap，320×568 + 2 倍字号下会折成
                 // 两三行，把 sticky dock 顶出屏幕 143px（flutter test create_layout_test 抓到；

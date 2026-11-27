@@ -106,8 +106,7 @@ class StylePicker extends ConsumerWidget {
         // 排在最前是有意的：性别是一首歌最贵的选择，之前它被埋在最后一组的第 16 个位置。
         if (groups.contains('gender'))
         _Group(
-          title: '谁在唱（性别）',
-          hint: '同一份编曲可以女声唱也可以男声唱 —— 这是"人"，不是风格',
+          title: '谁在唱',
           options: cat.genders,
           selected: selected,
           max: 1,
