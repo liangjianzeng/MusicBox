@@ -106,6 +106,25 @@ describe('V31 用户手选优先 + 词表配额一致', () => {
     before(async () => { S2 = await H.boot('V31b'); });
     after(async () => { if (S2) await S2.close(); });
 
+    it('V31-⑥ 任务详情必须回吐用户自己提交的歌词与配方（歌词不能用完就丢）', async () => {
+      const g = await S2.newGuest();
+      const lyrics = '[Verse]\n测试歌词甲\n测试歌词乙\n[Chorus]\n测试歌词丙';
+      const r = await S2.api('POST', '/v1/works/generate', { token: g.token, json: {
+        mode: 'custom', prompt: '悲伤 流行', lyrics, mood: '悲伤', tags: ['female vocal'], sec: 15, count: 1,
+      } });
+      assert.strictEqual(r.status, 202, 'V31-⑥ generate 应 202，实际 ' + r.status + ' ' + (r.text || '').slice(0, 160));
+      const jid = r.json.job_id || (r.json.job && r.json.job.id);
+      const j = await S2.api('GET', '/v1/jobs/' + jid, { token: g.token });
+      assert.strictEqual(j.status, 200, 'V31-⑥ 任务详情应 200，实际 ' + j.status);
+      const gen = j.json.gen;
+      assert.ok(gen && typeof gen === 'object', 'V31-⑥ 响应应含 gen（契约 v3.3 用户输入回显），实际键=' + Object.keys(j.json || {}).join(','));
+      assert.ok(String(gen.lyrics || '').includes('测试歌词甲'),
+        'V31-⑥ 用户填的歌词必须在任务详情里回得来，否则候选一旦离开生成页就再也看不到歌词：' + JSON.stringify(gen.lyrics));
+      assert.strictEqual(gen.mood, '悲伤', 'V31-⑥ 配方 mood 应回显，实际 ' + gen.mood);
+      assert.ok(Array.isArray(gen.tags) && gen.tags.indexOf('female vocal') >= 0,
+        'V31-⑥ 配方 tags 应回显且带空格规范词不许被切碎：' + JSON.stringify(gen.tags));
+    });
+
     it('V31-④ /v1/app/config 下发 voice 维度，且性别/演唱状态词绝不留在 style_words 里', async () => {
       const r = await S2.api('GET', '/v1/app/config', {});
       const so = r.json.style_options;

@@ -76,6 +76,34 @@ class MeInfo {
 }
 
 /// candidate = {id, seq, title, audio_url, duration_sec, format, waveform_url, meta}
+class JobGen {
+  JobGen(
+      {this.lyrics,
+      this.mood,
+      this.bpm,
+      this.sec,
+      this.tags = const [],
+      this.instrumental});
+
+  final String? lyrics;
+  final String? mood;
+  final int? bpm;
+  final int? sec;
+  final List<String> tags;
+  final bool? instrumental;
+
+  bool get hasLyrics => (lyrics ?? '').trim().isNotEmpty;
+
+  factory JobGen.fromMap(Map m) => JobGen(
+        lyrics: m['lyrics']?.toString(),
+        mood: m['mood']?.toString(),
+        bpm: m['bpm'] == null ? null : _asInt(m['bpm']),
+        sec: m['sec'] == null ? null : _asInt(m['sec']),
+        tags: _asStrList(m['tags']),
+        instrumental: m['instrumental'] == null ? null : m['instrumental'] == true,
+      );
+}
+
 class Candidate {
   Candidate({
     required this.id,
@@ -220,6 +248,7 @@ class Job {
     this.candidates,
     this.error,
     this.resultWorkId,
+    this.gen,
   });
 
   final String id;
@@ -230,6 +259,10 @@ class Job {
   final List<Candidate>? candidates;
   final Map? error;
   final String? resultWorkId;
+
+  /// 用户当初提交的歌词与配方回显（契约 v3.3 `gen`）。
+  /// 「歌词不能用完就丢」：候选/暂存架离开生成页后也要能看到当时填的词。
+  final JobGen? gen;
 
   bool get isDone => status == 'done';
   bool get isFailed => status == 'failed' || status == 'canceled';
@@ -252,6 +285,7 @@ class Job {
       candidates: cands,
       error: m['error'] as Map?,
       resultWorkId: m['result_work_id']?.toString(),
+      gen: m['gen'] is Map ? JobGen.fromMap(m['gen'] as Map) : null,
     );
   }
 }

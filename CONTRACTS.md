@@ -44,6 +44,7 @@ POST /v1/works/generate   {mode:"simple"|"custom", prompt?, lyrics?, tags?, mood
                           → 202 {job_id, credits_charged, idempotent:false|true}
                           # 幂等键=hash(user_id+归一化参数，含 seed/instrumental)；重复提交返回同一 job（idempotent:true，不重复扣分）
 GET  /v1/jobs/:id         → 200 {id, type, status:"queued"|"leased"|"running"|"done"|"failed"|"canceled",
+                          gen?:{lyrics,mood,bpm,sec,tags,instrumental} // 用户自己提交的输入回显（v3.3：候选/暂存架要能回看歌词，不许"用完就丢"）；payload 未落时缺省
                                  progress:0-100, note, candidates:[candidate]|null,
                                  error:{code,message}|null, result_work_id|null}
     candidate = {id, seq, title, audio_url, duration_sec, format:"mp3", waveform_url|null, meta:{}}

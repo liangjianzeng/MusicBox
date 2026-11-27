@@ -92,6 +92,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
   Map? _error;
   List<Candidate>? _candidates;
   String? _resultWorkId;
+  JobGen? _gen;
   bool _finished = false;
   bool _retryBlocked = false; // 命中服务端 10 分钟幂等窗口
   bool _retrying = false;
@@ -210,6 +211,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
           _candidates = job.candidates;
         }
         _resultWorkId = job.resultWorkId ?? _resultWorkId;
+        _gen = job.gen; // 歌词/配方回显：交给候选预览页，别让它随生成页一起被丢掉
       });
       if (job.isDone) {
         _poll?.cancel();
@@ -253,6 +255,7 @@ class _ProgressPageState extends ConsumerState<ProgressPage> {
           resultWorkId: _resultWorkId,
           brief: _brief,
           adopted: _shelfAdopted,
+          lyrics: _gen?.lyrics,
           onRegenerate: widget.onRetry, // 提交侧持有原参数 → 「再来一批」才为真
         ),
       ));

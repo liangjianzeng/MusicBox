@@ -96,6 +96,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage> {
           jobId: s.jobId,
           candidates: cands,
           resultWorkId: job?.resultWorkId,
+          lyrics: job?.gen?.lyrics,
           brief: s.brief,
           adopted: s.adopted,
           // 服务端取不到 job 时吃的是本地快照：把"这是降级态"告诉候选页，

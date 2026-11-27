@@ -183,6 +183,18 @@ function getJob(ctx) {
       progress: job.progress || 0, note: job.note || '',
       candidates: cands.length ? cands : null,
       error: job.status === 'failed' ? { code: job.error_code || 'INTERNAL', message: job.error_message || '后台处理失败，请稍后重试' } : null,
+      // 「歌词不能用完就丢」（2026-11-27 用户要求）：候选/暂存架要能回看当初填的词与配方。
+      // 这些本来就是**用户自己提交的输入**（generate 的 lyrics/mood/bpm/sec/tags），不是引擎内部数据，
+      // 回吐给自己没有隐私问题；不回吐的话，候选一旦离开生成页就再也看不到歌词，歌词能力等于半废。
+      gen: (() => {
+        const p = U.jparse(job.payload, {}) || {};
+        return {
+          lyrics: typeof p.lyrics === 'string' && p.lyrics.trim() ? p.lyrics : null,
+          mood: p.mood || null, bpm: p.bpm == null ? null : p.bpm,
+          sec: p.sec == null ? null : p.sec, tags: U.toTagArr(p.tags),
+          instrumental: p.instrumental === undefined ? null : !!p.instrumental,
+        };
+      })(),
       result_work_id: (adoptedWork && adoptedWork.work_id) || result.work_id || null,
     },
   };

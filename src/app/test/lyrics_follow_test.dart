@@ -55,6 +55,33 @@ List<String> _headings(WidgetTester tester) => tester
     .toList();
 
 void main() {
+  group('任务详情回吐用户输入（歌词不能用完就丢）', () {
+    test('Job.gen 解析出歌词与配方；空串/空白算没有歌词，不许当有词糊上去', () {
+      final j = Job.fromMap({
+        'id': 'j_1', 'type': 'generate', 'status': 'done', 'progress': 100,
+        'gen': {'lyrics': '[Verse]\n甲\n乙', 'mood': '悲伤', 'bpm': 72, 'sec': 240,
+                'tags': ['female vocal', 'tipsy vocal'], 'instrumental': false},
+      });
+      expect(j.gen, isNotNull);
+      expect(j.gen!.hasLyrics, isTrue);
+      expect(j.gen!.lyrics, contains('甲'));
+      expect(j.gen!.mood, '悲伤');
+      expect(j.gen!.bpm, 72);
+      expect(j.gen!.sec, 240);
+      expect(j.gen!.tags, <String>['female vocal', 'tipsy vocal'],
+          reason: '带空格规范词必须在端侧也保持一个词，否则又是被切碎的那类缺陷');
+      expect(j.gen!.instrumental, isFalse);
+
+      final empty = Job.fromMap({
+        'id': 'j_2', 'type': 'generate', 'status': 'done', 'progress': 100,
+        'gen': {'lyrics': '   \n  ', 'tags': []},
+      });
+      expect(empty.gen!.hasLyrics, isFalse, reason: '全空白不是歌词，界面该说"没填词"而不是显示空气');
+      expect(Job.fromMap({'id': 'j_3', 'status': 'done'}).gen, isNull,
+          reason: '老服务端不下发 gen 时必须安静降级，不许崩');
+    });
+  });
+
   group('歌词解析器（parseLyricLines）', () {
     test('段落标记本身不算一行，但作为所属小节挂在每行上', () {
       final lines = parseLyricLines(_deepLyrics);

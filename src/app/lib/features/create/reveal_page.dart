@@ -77,6 +77,7 @@ class AdoptButton {
 /// 收下、说一句改一点（隐式收下母本会明说）、追问快捷
 class RevealPage extends ConsumerStatefulWidget {
   const RevealPage({
+    this.lyrics,
     super.key,
     required this.jobId,
     required this.candidates,
@@ -90,6 +91,11 @@ class RevealPage extends ConsumerStatefulWidget {
 
   final String jobId;
   final List<Candidate> candidates;
+
+  /// 当初提交的歌词（来自 GET /v1/jobs/:id 的 gen，契约 v3.3）。
+  /// 「歌词不能用完就丢」：以前候选造出来的 Work 没有 lyrics，播放器歌词区只能说
+  /// "歌词没取到 · 离线或这首已不在"，用户刚填完 38 行词却在下一次试听时看不到自己写的东西。
+  final String? lyrics;
 
   /// generate 任务关联的 draft work id（adopt 用）
   final String? resultWorkId;
@@ -204,6 +210,8 @@ class _RevealPageState extends ConsumerState<RevealPage> {
         createdAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         audioUrl: c.audioUrl,
         waveformUrl: c.waveformUrl,
+        // 候选行本身不带歌词（服务端 candidates 表只有 meta），所以由任务详情的 gen 传进来
+        lyrics: (widget.lyrics ?? '').trim().isEmpty ? null : widget.lyrics,
       );
 
   void _toast(String m) {
