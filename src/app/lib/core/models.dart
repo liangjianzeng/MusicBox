@@ -129,26 +129,49 @@ class Candidate {
   /// 引擎的音色/性别锁定只发生在 stage②（cover 变声，ref_audio+cover_strength）；
   /// 那一步失败时执行器诚实标 stage2_failed 且 applied 必为 false。
   /// 端侧必须把它说出来：不能让用户把默认音色当成自己的声线（v5.2.6 禁止"以为克隆生效"）。
-  bool get personaApplied {
+  /// 克隆回执的唯一读取入口。首选根上的 `meta.clone`（服务端 store.candidateOf 归位过，
+  /// 契约 v5.6.9）；但**老服务端/老快照**只把它放在 `raw.meta.clone` —— 那里读不到就等于
+  /// 揭晓页永远不显示「没有套上」（真机 2026-11-27 的现场）。容错不是冗余：静默的乐观
+  /// 比诚实的报错更贵。
+  Map? get _clone {
     final c = meta['clone'];
-    return c is Map && c['applied'] == true;
+    if (c is Map) return c;
+    final raw = meta['raw'];
+    if (raw is Map) {
+      final rm = raw['meta'];
+      if (rm is Map) {
+        final c2 = rm['clone'];
+        if (c2 is Map) return c2;
+      }
+    }
+    return null;
   }
 
+  bool get personaApplied => _clone?['applied'] == true;
+
   /// 选了人格但这条其实没套上（变声失败 / 声纹取不到 / 强度非法）。
+  /// 注意：**只要 stage2_failed 为真就算失败**，哪怕同一份 meta 里还写着 applied:true
+  /// （历史上真出现过这种自相矛盾的谎话数据，见契约 v5.6.1）。
   bool get personaFailed {
-    final c = meta['clone'];
-    if (c is! Map) return false;
+    final c = _clone;
+    if (c == null) return false;
     return c['stage2_failed'] == true ||
         c['ref_unavailable'] == true ||
         c['invalid_strength'] == true;
   }
 
   String get personaFailReason {
-    final c = meta['clone'];
-    if (c is! Map) return '未套用';
+    final c = _clone;
+    if (c == null) return '未套用';
     if (c['ref_unavailable'] == true) return '声纹取不到';
     if (c['invalid_strength'] == true) return '强度非法';
     final e = c['stage2_error'];
+    // 跨机部署下 MUSIC_HTTP 绝大多数是"引擎那台机器读不到这个路径"（执行器已把 ref_path/engine
+    // 落进 meta，见契约 v5.6.10）。把这句说出来，用户才知道这不是"人格没录好"，而是部署缺口。
+    if (e == 'MUSIC_HTTP' && c['ref_path'] != null && c['engine'] != null) {
+      return '变声失败（MUSIC_HTTP）：引擎 ${c['engine']} 可能读不到这条声纹 ${c['ref_path']}'
+          '（跨机部署需要引擎侧声纹通道）';
+    }
     return e == null ? '变声失败' : '变声失败（$e）';
   }
 
