@@ -553,7 +553,8 @@ function workOf(r) {
   if (!r) return null;
   return {
     id: r.id, title: r.title || '', status: r.status || 'draft',
-    mood: r.mood || '', genres: U.toArr(r.genres), bpm: r.bpm == null ? null : r.bpm,
+    // 标签走 toTagArr：带空格规范词（female vocal / vinyl crackle）不许被空格切碎
+    mood: r.mood || '', genres: U.toTagArr(r.genres), bpm: r.bpm == null ? null : r.bpm,
     duration_sec: r.duration_sec == null ? null : r.duration_sec,
     lyrics: r.lyrics || '', language: r.language || 'zh',
     gen: { engine: r.gen_engine || 'music', seed: r.gen_seed == null ? null : r.gen_seed },

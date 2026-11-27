@@ -39,6 +39,21 @@ void main() {
           reason: '服务端没发也必须能选，选择项不许空白');
     });
 
+    test('展示层把规范词翻回中文；带空格的词不许被切碎、查不到的不许编中文', () {
+      const cat = StyleCatalog.fallback;
+      // 真机现场：曲库卡片与全屏播放器写的是 `夜晚 · female · vocal · sax…`
+      // —— 服务端 util.toArr 把空格当分隔符切碎了 female vocal / vinyl crackle，
+      // 界面又直接 join 原始规范词，等于把引擎词汇表甩给用户看。
+      expect(cat.displayTags(['female vocal', 'vinyl crackle', 'pop']),
+          containsAll(<String>['女声', '黑胶噪点', '流行']));
+      expect(cat.displayTags(['female vocal']).first, isNot('female'),
+          reason: '带空格规范词不许被切成两截');
+      expect(cat.displayTags(['彻夜未眠']), <String>['彻夜未眠'],
+          reason: '目录外的词原样回显，不许编中文');
+      expect(cat.displayTags(['女声', 'female vocal']), <String>['女声'],
+          reason: '中英同义重复出现时只留一个，别把同一件事说两遍');
+    });
+
     test('中文标签换算成派单词；查不到的原样交出，不自造英文词', () {
       const cat = StyleCatalog.fallback;
       expect(cat.wireOf('女声'), 'female vocal');

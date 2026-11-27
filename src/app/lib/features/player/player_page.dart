@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models.dart';
 import '../../core/state.dart';
+import '../create/style_options.dart';
 import '../../shared/widgets/ai_badge.dart';
 import '../../shared/widgets/waveform_canvas.dart';
 import 'lyrics_view.dart';
@@ -86,11 +87,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       fontSize: 19, fontWeight: FontWeight.w700)),
               const SizedBox(height: 3),
               Text(
-                [
+                styleCatalogOf(ref).displayTags([
+                  // 以前直接 join 原始规范词，全屏播放器上是一串 `female · vocal · sax…`：
+                  // 用户不该在我们的界面上读引擎的词汇表（服务端 util.toTagArr 同批修掉切碎）
                   if (cur.mood != null) cur.mood!,
                   ...cur.genres,
-                  if (cur.bpm != null) 'BPM ${cur.bpm}',
-                ].join(' · '),
+                ]).join(' · ') + (cur.bpm != null ? ' · BPM ${cur.bpm}' : ''),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white54, fontSize: 12),

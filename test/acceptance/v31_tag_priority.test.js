@@ -45,7 +45,7 @@ describe('V31 用户手选优先 + 词表配额一致', () => {
       'V31-① 用户手选必须排在猜测之前（配额吃紧时先保用户的话）：' + JSON.stringify(p.tags));
         // cap 不许写死在判词里（今天就被契约变更打中一次）：从 works.js 读真源。
     const capM = read('src/server/api/works.js')
-      .match(/unionArr\(\s*U\.toArr\(params\.tags\),\s*scan\.tags,\s*(\d+)\s*\)/);
+      .match(/unionArr\(\s*U\.to(?:Tag)?Arr\(params\.tags\),\s*scan\.tags,\s*(\d+)\s*\)/);
     assert.ok(capM, 'V31-① 读不到服务端 tags cap，改法要同步本测试');
     assert.ok(p.tags.length <= Number(capM[1]),
       'V31-① 派单 tags ' + p.tags.length + ' 个，超过服务端 cap ' + capM[1] + '：说明截断没生效');
@@ -80,7 +80,7 @@ describe('V31 用户手选优先 + 词表配额一致', () => {
     const maxTotal = num(/this\.maxTotal\s*=\s*(\d+)/, 'maxTotal');
     const genderMax = num(/谁在唱（性别）[\s\S]{0,400}?max: (\d+)/, '性别组上限');
     const works = read('src/server/api/works.js');
-    const capM = works.match(/unionArr\(\s*U\.toArr\(params\.tags\),\s*scan\.tags,\s*(\d+)\s*\)/);
+    const capM = works.match(/unionArr\(\s*U\.to(?:Tag)?Arr\(params\.tags\),\s*scan\.tags,\s*(\d+)\s*\)/);
     assert.ok(capM, 'V31-③ 读不到服务端 tags cap（works.js unionArr 第三参），改法要同步本测试');
     const cap = Number(capM[1]);
     const sum = genderMax + maxDeliv + maxGenres + maxWords;

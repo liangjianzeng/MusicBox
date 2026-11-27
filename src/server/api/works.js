@@ -25,10 +25,11 @@ function buildMusicPayload(params, actor) {
   // 用户手选必须压过扫描猜测：以前 scan.tags 排在前面，6 个配额被"从文案里猜的词"占满，
   // 用户明确勾的「女声」被静默丢弃 —— 2026-11-27 真机复现：要女声，结果出一首男声，
   // 且界面没有任何地方说"你的选择被丢了"。猜测只能是补充，不能挤掉用户的明确意图。
-  const tags = U.// 2026-11-27：cap 从 6 提到 12。App 端四类选择项（性别1 + 演唱状态2 + 曲风3 + 质感3）
-// 本来就该有 9 个位置，卡在 6 会让用户"选了却被静默丢"（V31-③ 的同一类缺陷，只是换了个位置）；
-// 引擎侧 tags 只是拼进 prompt 的逗号串，12 个词对 ACE-Step 没有负担。
-unionArr(U.toArr(params.tags), scan.tags, 12);
+  // 2026-11-27：cap 从 6 提到 12。App 端四类选择项（性别1 + 演唱状态2 + 曲风3 + 质感3）本来就该有
+  // 9 个位置，卡在 6 会让用户"选了却被静默丢"（V31-③ 钉的同一类缺陷，只是换了个位置）；引擎侧 tags
+  // 只是拼进 prompt 的逗号串，12 个词对 ACE-Step 没有负担。
+  // 标签解析走 toTagArr（只认逗号族），否则 female vocal 会被切成两个词、各占一份配额。
+  const tags = U.unionArr(U.toTagArr(params.tags), scan.tags, 12);
   const sec = params.sec == null ? G.sec_default : U.clamp(Math.round(Number(params.sec)), G.sec_min, G.sec_max);
   const count = params.count == null ? G.count_default : U.clamp(Math.round(Number(params.count)), G.count_min, G.count_max);
   const bpm = params.bpm == null ? (scan.bpm || 100) : U.clamp(Math.round(Number(params.bpm)), 40, 200);
@@ -67,7 +68,7 @@ function normalizeForIdem(user, kind, params) {
   delete p.idempotency_key;
   return U.sha256hex([user.id, kind,
     String(p.prompt || '').trim(), String(p.lyrics || '').trim().slice(0, 2000),
-    (U.toArr(p.tags) || []).sort().join(','), String(p.mood || '').trim(),
+    (U.toTagArr(p.tags) || []).sort().join(','), String(p.mood || '').trim(),
     p.bpm == null ? '' : p.bpm, p.sec == null ? '' : p.sec, p.count == null ? '' : p.count,
     p.persona_id || '', p.candidate_id || '', p.op || '', p.model || '',
     // seed/instrumental 必须进幂等键：否则改 seed 重试会被旧 job 吃掉（10 分钟窗口）
@@ -159,7 +160,7 @@ function generate(ctx) {
     else throw new U.ApiError('BAD_REQUEST', 'instrumental 需为布尔值');
   }
   return dispatchMusic(user, 'generate', {
-    prompt, lyrics, tags: U.toArr(body.tags), mood: body.mood, bpm: body.bpm,
+    prompt, lyrics, tags: U.toTagArr(body.tags), mood: body.mood, bpm: body.bpm,
     sec: body.sec, count: body.count, persona_id: body.persona_id, model: body.model,
     ...(seedBase === undefined ? {} : { seed_base: seedBase }),
     ...(instrumental === undefined ? {} : { instrumental }),
@@ -290,7 +291,7 @@ function patchWorkInternal(user, w, b) {
   const sets = []; const args = [];
   if (b.title !== undefined) { rules.moderateFields([b.title]); sets.push('title=?'); args.push(String(b.title).slice(0, 80)); }
   if (b.mood !== undefined) { rules.moderateFields([b.mood]); sets.push('mood=?'); args.push(String(b.mood).slice(0, FL.mood)); }
-  if (b.genres !== undefined) { rules.moderateFields([b.genres]); sets.push('genres=?'); args.push(U.toArr(b.genres).slice(0, 8).join(',')); }
+  if (b.genres !== undefined) { rules.moderateFields([b.genres]); sets.push('genres=?'); args.push(U.toTagArr(b.genres).slice(0, 8).join(',')); }
   if (b.rating !== undefined) {
     const r = Number(b.rating);
     if (!Number.isFinite(r) || r < 1 || r > 5) throw new U.ApiError('BAD_REQUEST', '评分需在 1-5 之间');
@@ -320,7 +321,7 @@ function extend(ctx) {
   if (!Number.isFinite(sec) || sec < G.sec_min || sec > G.sec_max) throw new U.ApiError('BAD_REQUEST', `续写时长需在 ${G.sec_min}-${G.sec_max} 秒之间`);
   const payload = U.jparse(w.gen_params, {}) || {};
   return dispatchMusic(user, 'extend', {
-    prompt: payload.prompt || w.title, tags: U.toArr(w.genres), mood: w.mood, bpm: w.bpm,
+    prompt: payload.prompt || w.title, tags: U.toTagArr(w.genres), mood: w.mood, bpm: w.bpm,
     sec, count: 1, lyrics: w.lyrics, instrumental: payload.instrumental,
     src_audio: w.audio_master ? path.join(config.paths.out, w.audio_master) : null,
   }, { cost: AC.credits().extend, reason: 'extend', lineage: { kind: 'extend', parent_id: w.id } });
@@ -336,7 +337,7 @@ function cover(ctx) {
   if (!p || (p.user_id !== user.id && !p.is_public)) throw new U.ApiError('NOT_FOUND', '声音人格不存在');
   const payload = U.jparse(w.gen_params, {}) || {};
   const r = dispatchMusic(user, 'cover', {
-    prompt: payload.prompt || w.title, tags: U.toArr(w.genres), mood: w.mood, bpm: w.bpm,
+    prompt: payload.prompt || w.title, tags: U.toTagArr(w.genres), mood: w.mood, bpm: w.bpm,
     sec: w.duration_sec || G.sec_default, count: 1, lyrics: w.lyrics, instrumental: false,
     persona_id: personaId, src_audio: w.audio_master ? path.join(config.paths.out, w.audio_master) : null,
   }, { cost: AC.credits().cover, reason: 'cover', lineage: { kind: 'cover', parent_id: w.id } });
@@ -360,7 +361,7 @@ function variation(ctx) {
 function variationBase(w) {
   const payload = U.jparse(w.gen_params, {}) || {};
   return {
-    prompt: payload.prompt || w.title, tags: U.toArr(w.genres), mood: w.mood, bpm: w.bpm,
+    prompt: payload.prompt || w.title, tags: U.toTagArr(w.genres), mood: w.mood, bpm: w.bpm,
     sec: w.duration_sec || G.sec_default, lyrics: w.lyrics,
     instrumental: payload.instrumental === undefined ? !!String(w.lyrics || '').trim() : payload.instrumental,
     seed_base: payload.seed_base == null ? null : payload.seed_base,
@@ -443,7 +444,7 @@ function seedPack(ctx) {
     body: {
       seed_pack: {
         prompt: payload.prompt || w.title || '',
-        tags: U.toArr(w.genres),
+        tags: U.toTagArr(w.genres),
         bpm: w.bpm || payload.bpm || null,
         sec: w.duration_sec || payload.sec || G.sec_default,
         seed: w.gen_seed == null ? payload.seed_base : w.gen_seed,

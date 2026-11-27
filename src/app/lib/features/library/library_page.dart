@@ -9,6 +9,7 @@ import '../../shared/widgets/mood_chips.dart';
 import '../../shared/widgets/waveform_canvas.dart';
 import '../assistant/assistant_surface.dart';
 import '../create/shelf_page.dart';
+import '../create/style_options.dart';
 import '../create/shelf_store.dart';
 import '../player/player_provider.dart';
 import 'work_detail_page.dart';
@@ -368,7 +369,7 @@ class _ShelfChip extends ConsumerWidget {
   }
 }
 
-class _WorkCard extends StatelessWidget {
+class _WorkCard extends ConsumerWidget {
   const _WorkCard(
       {required this.work, required this.onPlay, required this.onOpen});
 
@@ -382,7 +383,7 @@ class _WorkCard extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     return GestureDetector(
       // 真机 2026-11-27 用户反馈「我的里进不去」：卡片只有标题那一行能点开详情，点中间
@@ -458,7 +459,12 @@ class _WorkCard extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             if (work.mood != null || work.genres.isNotEmpty)
               Text(
-                [if (work.mood != null) work.mood!, ...work.genres].join(' · '),
+                styleCatalogOf(ref) // 规范词翻回中文给用户看；查不到原样回显，不编词
+                    .displayTags([
+                  if (work.mood != null) work.mood!,
+                  ...work.genres,
+                ])
+                    .join(' · '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Colors.white38),

@@ -203,6 +203,20 @@ class StyleCatalog {
     return s;
   }
 
+  /// 展示用：把作品上存的规范词（可能中英混杂、带空格）翻成中文标签。
+  /// 曲库/播放器以前直接 `genres.join(' · ')`，把 `female vocal / vinyl crackle`
+  /// 这类**带空格的模型词**原样甩给用户看（2026-11-27 真机：卡片上写
+  /// `夜晚 · female · vocal · sax…`）。用户不需要读引擎词汇表；查不到的仍原样回显，
+  /// 不许编一个中文词糊上去。
+  List<String> displayTags(List<String> words) {
+    final out = <String>[];
+    for (final w in words) {
+      final z = zhFor(w);
+      if (z.isNotEmpty && !out.any((e) => e.toLowerCase() == z.toLowerCase())) out.add(z);
+    }
+    return out;
+  }
+
   /// 中文或英文都认，返回派单用的规范词
   String? wireFor(String label) {
     final s = label.trim();

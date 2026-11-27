@@ -57,6 +57,24 @@ function toArr(v) {
   }
   return text.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
 }
+// 标签专用：只认逗号族，**绝不按空格切**。
+// 真机现场（2026-11-27）：曲库/播放器把「female vocal」显示成 `female · vocal`、
+// 「vinyl crackle」显示成 `vinyl · crackle` —— 因为通用的 toArr 把 \s 也当分隔符，
+// 而我们的规范词本来就带空格（female vocal / behind the beat / heavy drums / vinyl crackle）。
+// 用户因此看到一串被切碎的英文模型词。toArr 继续服务普通列表，标签走这里。
+function toTagArr(v) {
+  if (v === null || v === undefined || v === '') return [];
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
+  const text = String(v).trim();
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed.map(x => String(x).trim()).filter(Boolean);
+    } catch (e) { /* 非 JSON 数组时按逗号族解析 */ }
+  }
+  return text.split(/[,，、]+/).map(x => x.trim()).filter(Boolean);
+}
+
 function unionArr(a, b, cap) {
   const out = [];
   for (const x of [].concat(a || [], b || [])) {
@@ -133,6 +151,6 @@ function allowRate(key, limit, windowMs) {
 module.exports = {
   ApiError, uid, sha256hex, hash12, randInt, hmacSign, timingSafeEq,
   nowIso, isoAfterMs, isPast, todayLocal, outMonthDir, clamp, jstr, jparse, maskPhone,
-  toArr, unionArr, encodeCursor, decodeCursor, sanitizeEngineNames,
+  toArr, toTagArr, unionArr, encodeCursor, decodeCursor, sanitizeEngineNames,
   parseMultipart, saveToOut, allowRate,
 };
