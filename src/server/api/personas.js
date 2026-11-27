@@ -17,6 +17,12 @@ const UP = config.upload;
 //   'voices/<月>/<名>' → var/voices（本次加固后的新写入，私有）
 //   '<月>/<名>'        → var/out（历史行，向后兼容仍可解析；新代码不再往这里写声纹）
 const VOICE_PREFIX = 'voices/';
+
+// clone_params 的唯一写法：强度取自 config.persona.defaultCoverStrength。
+// 以前这里是两处 `cover_strength: 0.2` 硬编码（加上执行器第三处），改一处漏两处。
+function defaultCloneParams() {
+  return U.jstr({ clone_mode: 'fast', cover_strength: config.persona.defaultCoverStrength });
+}
 function resolveVoiceRef(ref) {
   const r = String(ref || '').trim();
   if (!r) return null;
@@ -96,7 +102,7 @@ function create(ctx) {
   const saved = U.saveToOut(config.paths.voices, file.data, file.filename);
   const id = U.uid('p_');
   store.run('INSERT INTO personas(id,user_id,name,is_public,voice_ref,clone_params,derived_from_work,use_count,created_at) VALUES(?,?,?,0,?,?,NULL,0,?)',
-    id, user.id, name.slice(0, 30), VOICE_PREFIX + saved.rel, U.jstr({ clone_mode: 'fast', cover_strength: 0.2 }), U.nowIso());
+    id, user.id, name.slice(0, 30), VOICE_PREFIX + saved.rel, U.jstr({ clone_mode: 'fast', cover_strength: config.persona.defaultCoverStrength }), U.nowIso());
   store.log('persona.create', { user_id: user.id, persona_id: id, seconds: Math.round(dur) });
   return { status: 200, body: { persona: personaShape(store.get('SELECT * FROM personas WHERE id=?', id)) } };
 }
@@ -171,7 +177,7 @@ function fromWork(ctx) {
   // 任何持 URL 者都能下载他人声纹（v5.2.1 明令禁止的扩散路径）
   const saved = U.saveToOut(config.paths.voices, outBuf, `persona_${id}.wav`);
   store.run('INSERT INTO personas(id,user_id,name,is_public,voice_ref,clone_params,derived_from_work,use_count,created_at) VALUES(?,?,?,0,?,?,?,0,?)',
-    id, user.id, name.slice(0, 30), VOICE_PREFIX + saved.rel, U.jstr({ clone_mode: 'fast', cover_strength: 0.2 }), w.id, U.nowIso());
+    id, user.id, name.slice(0, 30), VOICE_PREFIX + saved.rel, U.jstr({ clone_mode: 'fast', cover_strength: config.persona.defaultCoverStrength }), w.id, U.nowIso());
   store.log('persona.from_work', {
     user_id: user.id, persona_id: id, work_id: w.id,
     start_sec: Math.round(start * 10) / 10, seconds: Math.round(gotDur * 10) / 10, bytes: saved.bytes,

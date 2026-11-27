@@ -138,6 +138,9 @@ class _ShellProState extends ConsumerState<ShellPro> {
         if (!st.instrumental) 'instrumental': false,
         if (st.instrumental) 'tags': [...tagList, '纯音乐'],
         if (st.personaId != null) 'persona_id': st.personaId,
+        // 强度只有选了人格才有意义；不给则服务端按 config.persona 的默认值兜。
+        if (st.personaId != null && st.coverStrength != null)
+          'cover_strength': st.coverStrength,
         // 契约 generate 未定义 seed，透传由服务端兼容（可忽略）
         if (seedNum != null) 'seed': seedNum,
       };
@@ -319,7 +322,10 @@ class _ShellProState extends ConsumerState<ShellPro> {
                         Text(
                           st.instrumental
                               ? '纯音乐：没有人声，上面的选择不会生效'
-                              : '没选人格时，「女声」只是写给模型的描述词，锁不住音色（可能仍出男声）。'                                '要固定音色：去「人格」上传一段参考音频再选。',
+                              : '没选人格时，「女声」只是写给模型的描述词，锁不住音色（可能仍出男声）。'
+                                  '要固定音色：去「人格」录一段 20-40 秒，'
+                                  '或在曲库打开某首歌 → ⋮ →「从本作生成人格」；'
+                                  '选上后把下面的「音色贴近程度」调高。',
                           style: const TextStyle(
                               fontSize: 11, color: CreationPalette.faint),
                         ),
@@ -426,6 +432,72 @@ class _ShellProState extends ConsumerState<ShellPro> {
                           onChanged: (v) => notifier.setPersona(v),
                           decoration: creationFieldDecoration(),
                         ),
+                        // 选了人格就必须能调强度：它是**唯一**能锁住音色/性别的旋钮
+                        // （引擎只吃 tags/lyrics/prompt/bpm，纯文本的「女声」锁不住）。
+                        // 以前它被写死成 0.2 共三处，用户想锁也锁不住。
+                        if (st.personaId != null)
+                          Builder(builder: (context) {
+                            // 默认强度只认**服务端下发的那一个数**（config.persona 是唯一真源）。
+                            // 没取到就如实说"没取到"，绝不在端侧编个 0.6 冒充默认 ——
+                            // 那是第二个真源：服务端一改，界面显示的档位和实际跑出来的就不是一回事。
+                            final srvDefault = ref
+                                .read(remoteConfigProvider)
+                                ?.personaDefaultCoverStrength;
+                            final shown = st.coverStrength ?? srvDefault;
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const SizedBox(height: 10),
+                                const _H('音色贴近程度（选了人格才生效）'),
+                                if (shown == null)
+                                  const Text(
+                                    '还没取到服务端默认强度（配置未就绪）。拖一格即可自己指定；不拖则由服务端按其默认执行。',
+                                    style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: Colors.white60),
+                                  )
+                                else ...[
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Slider(
+                                          min: 0,
+                                          max: 1,
+                                          divisions: 5,
+                                          value: shown.clamp(0.0, 1.0),
+                                          label: '${(shown * 100).round()}%',
+                                          onChanged: (v) =>
+                                              notifier.setCoverStrength(v),
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: 96,
+                                        child: Text(
+                                          st.coverStrength == null
+                                              ? '${(shown * 100).round()}% · 服务端默认'
+                                              : '${(shown * 100).round()}% · 你选的',
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (st.coverStrength != null)
+                                    TextButton.icon(
+                                      onPressed: () =>
+                                          notifier.resetCoverStrength(),
+                                      icon: const Icon(Icons.undo, size: 15),
+                                      label: const Text('交回服务端默认'),
+                                    ),
+                                ],
+                                const Text(
+                                  '0＝只借编排，100%＝完全照这条声线唱。要固定性别/音色就调高；'
+                                  '引擎变声失败时，揭晓页会直说「没有套上」。',
+                                  style: TextStyle(
+                                      fontSize: 11.5, color: Colors.white60),
+                                ),
+                              ],
+                            );
+                          }),
                         const SizedBox(height: 14),
                         const _H('随机种子（可选）'),
                         TextField(

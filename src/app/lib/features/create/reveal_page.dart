@@ -506,6 +506,21 @@ class _RevealPageState extends ConsumerState<RevealPage> {
       body: SafeArea(
         child: Column(
           children: [
+            // 人格没套上必须**当场**说：stage②（cover 变声）是唯一能锁音色/性别的阶段，
+            // 它失败时用户拿到的是默认音色 —— 不说就等于让用户把别人的声音当成自己的声线。
+            if (_cur.personaFailed)
+              Container(
+                width: double.infinity,
+                color: Theme.of(context).colorScheme.errorContainer,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Text(
+                  '「${widget.brief?.personaName ?? '所选人格'}」没有套上：'
+                  '${_cur.personaFailReason}。这首是默认音色，不是你选的声线。',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: Theme.of(context).colorScheme.onErrorContainer),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(

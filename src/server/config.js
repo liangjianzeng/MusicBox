@@ -75,6 +75,17 @@ const config = {
     ffmpegBin: process.env.MB_FFMPEG || 'ffmpeg',
     ttlHours: 72,           // uploads 表 72h TTL
   },
+  // —— 声音人格（音色/性别锁定的唯一旋钮）——
+  persona: {
+    // cover_strength 是**唯一能锁住音色与性别**的参数（引擎 :8190 只吃 tags/lyrics/prompt/bpm，
+    // 「女声」在纯文本里只是描述词，锁不住）。它曾被硬编码成 0.2 共三处
+    // （personas.js 建人格、从作品提声纹、执行器兜底），改一处漏两处，而且 0.2 轻到基本听不出变化。
+    // 现在：服务端唯一写入 + App 深度档可调（0=只借编排，1=完全贴参考声线）。
+    defaultCoverStrength: Number.isFinite(Number(process.env.MB_PERSONA_STRENGTH))
+      ? Math.min(1, Math.max(0, Number(process.env.MB_PERSONA_STRENGTH))) : 0.6,
+    minCoverStrength: 0,
+    maxCoverStrength: 1,
+  },
   // —— MV 二期（架构 §1.3/§5/§8；默认关闭，按灰度开放）——
   mv: {
     enabled: envStr('MB_MV_ENABLED', '0') === '1',               // 二期 MV 总开关，默认 false

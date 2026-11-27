@@ -14,6 +14,7 @@ import '../assistant/assistant_state.dart';
 import '../assistant/assistant_surface.dart';
 import '../create/credit_guard.dart';
 import '../create/music_assistant_sheet.dart';
+import '../create/style_options.dart'; // displayTags：规范词→中文（与曲库卡片/播放器同一真源）
 import '../create/progress_page.dart';
 import '../create/shelf_store.dart';
 import '../mv/mv_wizard_page.dart';
@@ -118,6 +119,16 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
   }
 
   Work? get _work => _detail?.work ?? _cached;
+
+  /// 数据不完整的"空壳作品"：标题、时长、标签、歌词、音频全空。
+  /// 以前这种对象会被当正经作品渲染成「未命名作品 · 0:00 · 仅自己」——
+  /// 用户看到的是"我的歌变成了一首空歌"，比直接报错更让人以为数据丢了。
+  bool _isHusk(Work w) =>
+      w.title.trim().isEmpty &&
+      w.durationSec <= 0 &&
+      w.genres.isEmpty &&
+      (w.lyrics ?? '').trim().isEmpty &&
+      (w.audioUrl ?? '').isEmpty;
 
   String _fmt(double sec) {
     final s = sec.round();
@@ -700,12 +711,12 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
           : null,
       body: _loading && w == null
           ? const Center(child: CircularProgressIndicator())
-          : w == null
+          : w == null || _isHusk(w)
               ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(_error ?? '加载失败',
+                      Text(_error ?? '这条作品的数据不完整',
                           style: const TextStyle(color: Colors.white54)),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
@@ -734,8 +745,12 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
                       const SizedBox(height: 6),
                       Text(
                         [
-                          ...w.genres,
-                          if (w.mood != null) w.mood!,
+                          // 规范词翻回中文给用户看：曲库卡片与播放器早已这样，详情页曾漏掉，
+                          // 于是同一首歌在卡片上是「悲伤 · 微醺」，点进来变成 tipsy vocal · breathy。
+                          ...styleCatalogOf(ref).displayTags([
+                            ...w.genres,
+                            if (w.mood != null) w.mood!,
+                          ]),
                           if (w.bpm != null) 'BPM ${w.bpm}',
                           (_fmt(w.durationSec)),
                           if (w.seed != null) 'Seed ${w.seed}',

@@ -31,6 +31,16 @@
 ### 认证与账户
 ```
 POST /v1/auth/guest {device_key}     → 200 {access_token, refresh_token, first_time, user:{id, nickname, is_guest:true}}
+POST /v1/auth/claim {device_key, recovery_code} → 200 {access_token, refresh_token, first_time:false, recovered:true, user}
+                          # 换机/重装后用**备份码**认领自己的老身份：按 sha256(备份码) 命中 users.recovery_hash 才允许；
+                          # 命中后 guest_key=sha256(device_key)，该用户**旧会话全部作废**。备份码不对 → 401，
+                          # 绝不允许"知道 user_id 就认领"（游客号是匿名身份，别的信息都不构成所有权证明）。
+POST /v1/auth/recovery/rotate (需鉴权) → 200 {recovery_code}
+                          # 重新生成备份码：旧码当场失效。**只回显这一次**，库里只存 sha256，
+                          # 不存在任何读回旧码的接口（要换码只能 rotate）—— 备份码等同账号凭证。
+                          # device_key 必填且 ≥16 字符（客户端 Random.secure 生成的 64 位 hex，只生成一次、永不重生成）；
+                          # 缺失/过短 → 400 BAD_REQUEST，**禁止**静默建号（旧行为：无锚点每次 INSERT 新号返回 200 → 用户作品"全没了"）
+                          # first_time=true 表示本次新建了账号，客户端必须可对用户说明；同一 device_key 复用则 false
                           # device_key 必填且 ≥16 字符（客户端 Random.secure 生成的 64 位 hex，只生成一次、永不重生成）；
                           # 缺失/过短 → 400 BAD_REQUEST，**禁止**静默建号（旧行为：无锚点每次 INSERT 新号返回 200 → 用户作品"全没了"）
                           # first_time=true 表示本次新建了账号，客户端必须可对用户说明；同一 device_key 复用则 false
@@ -923,6 +933,7 @@ POST /v1/assistant/feedback  {message_id,result}
 | # | 判据 | 违反后果 | 验收 |
 |---|---|---|---|
 | v5.3.0 | 游客身份必须有可恢复锚点：`POST /v1/auth/guest` **必须**带 `device_key`（≥16 字符），服务端按 `sha256(device_key)` 复用同一游客号；无锚点一律 400，**禁止** `if (!user) INSERT` 静默建号；响应必须回 `first_time`，客户端在新建账号且本机已有内容时必须向用户明说。客户端清 token（登出/刷新失败）**不得**清除 device_key | 重装/清数据/401 刷新失败即换人：用户全部作品"凭空消失"且界面零提示（2026-11-27 真机 P0，用户原话「重装覆盖不能保存本地内容？？？？？？？？？？」） | V36-①②③④ |
+| v5.6.0 | **克隆不许说谎 + 身份必须可自助恢复**：① `meta.clone.applied=true` 当且仅当 stage②（cover 变声）**成功替换了成品**；失败必须 `applied=false` + `stage2_failed=true`（可另带 `ref_unavailable`/`invalid_strength`），端侧必须把「没有套上」说给用户听 —— 禁止"payload 带了 persona 就宣布已克隆"。② `cover_strength`（唯一能锁音色/性别的旋钮）默认值**唯一真源 = `config.persona.defaultCoverStrength`**，业务代码与执行器一律不得自带默认数；App 深度档必须可调。③ 游客身份必须能被本人恢复：首次建号发一次备份码（只存 sha256），`POST /v1/auth/claim` 认领，rotate 换码 | 真机 2026-11-27：引擎 cover 失败（`stage2_error=MUSIC_HTTP`）时 `applied` 仍为 true，用户以为用的是自己的人格其实拿到默认音色；强度被硬编码 0.2 共三处、用户想锁也锁不住；重装后游客号无从恢复，只能靠运维手工 UPDATE guest_key | V37-①②③④⑤⑥ |
 | v5.2.1 | 用户上传的**声纹样本属敏感个人信息**，必须存私有目录 `var/voices/`（**不在** `/f/*` 公共静态映射内），`personas.voice_ref` 以 `voices/` 前缀标记；经 `GET /v1/personas/:id/voice` 取件，响应必须 `cache-control: private, no-store` | 任何持 URL 者可下载他人声纹（未经同意的声纹扩散） | V30-①② |
 | v5.2.2 | 取件口按身份把关：**属主本人**或持 `X-Executor-Token` 的执行器可取；他人 403、未登录 401；**人格 `is_public=1` 只公开元数据，绝不公开声纹**；列表响应不得带出 `voice_ref` | 公开人格成为声纹泄露面；执行器取不到参考音频 → 声线克隆静默失效 | V30-②③ |
 | v5.2.3 | 历史行（曾误存 `out` 的裸相对路径）必须仍可解析（`resolveVoiceRef` 兼容），加固不得把用户已有数据判死 | 升级即丢声纹，用户需重新录音 | V30-④ |
@@ -989,3 +1000,21 @@ POST /v1/assistant/feedback  {message_id,result}
 | v5.5.15 | 底部 tab 数量保持 **5**；伴创替换「人格」槽位（不破 CONTRACTS.md:718「不新增底部一级页」/:814「不增加第六 tab」）。创建页档位列表改数据驱动，`tier` 整数为持久化身份（0/1/2 不可变，伴创 = 3），显示顺序可变 | 破第六 tab 红线；或 `create_tier` 持久化 int 与显示顺序耦合，升级后用户档位记忆错位 | V35-㉕㉙ |
 | v5.5.16 | 新增服务端 `agent_memory` 表（`scope ∈ {global, intent:<id>, work:<id>}`）与 `memory_set/get/delete`（free，不涉扣费不发票，但审计 `initiated_by:'agent'`）。记忆注入 system 独立段、置于工具/审批纪律之前且**不得覆盖**之；不得存凭据/手机号/声纹；有条数与长度上限；「我的 → 伴创记忆」必须逐条可见可删可清空 | 用户每次创作都要重述同样偏好；或反之，记忆成为绕过白名单的后门、成为无法删除的个人信息 | V35-㉙㉚ |
 | v5.5.17 | **迁移 UI 规范**：从 TongYi-Lite 只搬逻辑层（`lib/agent/{loop,session,skills,tools,llm/adapter,llm/openai_adapter,agent_tier}` 与 `lib/websearch/src/*`），**禁带其 `lib/screens/**`（5109 行）与 `lib/widgets/**`（含 `agent_workflow.dart` 2334 行）**；移植后的逻辑层文件不得 `import 'package:flutter/material.dart'`。伴创 UI 全部用 `CreationPalette`/`CreationBackdrop`/`creationFieldDecoration` 与既有公共件（`PrimaryButton`/`TagChip`/`MoodChips`/`AiBadge`）重建，业务文件不得出现 `Color(0x` 字面量或裸 `InputDecoration(`；不得引入 `pubspec.yaml` 未声明依赖；关键交互件必须有语义节点且**不可点必须带 reason**。用户可见文案不得出现引擎名/模型名/协议黑话 | "遵守总体设计"若只是叮嘱，会退回今天 `assistant_surface.dart` 的样子（8 处硬编色绕过设计系统、`:543` 用 Material 默认 `OutlineInputBorder`）；缺语义节点的按钮对 TalkBack 与自动化**同样点不到**（IA review #10/#14/#15 已实证） | V35-㉛㉜㉝ |
+
+## v5.6 克隆诚实性、强度唯一真源与身份可自助恢复（2026-11-27 追加，append-only）
+
+> 由来：小米13 真机选人格生成，引擎 cover 变声失败（`meta.clone.stage2_error="MUSIC_HTTP"`），
+> 但候选 meta 仍是 `{applied:true, stage2_failed:true}` —— 执行器在发起变声**之前**就把 applied 写死了 true，
+> 失败分支只补 stage2_failed 从不撤销。用户以为拿到自己录的声线，实际拿到默认音色；而这件事界面上一字不提。
+> 同期另外三件事：`cover_strength`（唯一能锁音色/性别的旋钮）被硬编码 `0.2` 共三处且 App 无处可调；
+> 老作品 tags 被按空格切碎（`female,vocal` / `vinyl,crackle`）；游客号换机后无人能恢复，最后靠运维手工
+> `UPDATE users SET guest_key=…` 救号。验收：`test/acceptance/v37_clone_honesty.test.js`（V37-①…⑥，含真跑的功能判词）。
+
+| # | 判据 | 违反后果 | 验收 |
+|---|---|---|---|
+| v5.6.1 | `meta.clone.applied=true` **当且仅当** stage②（cover 变声）成功替换了成品。全文件只允许一处把 applied 置真，且必须位于成品替换（`renameSync(coverAbs…)`）之后；失败必须 `applied=false` + `stage2_failed=true`（可另带 `ref_unavailable`/`invalid_strength`/`stage2_error`） | 用户把默认音色当成自己的声线，且无从知道；人格功能整体失去可信度 | V37-①（源码结构判词：置真位置必须在成品替换之后） |
+| v5.6.2 | 端侧必须把"没套上"说给用户：`Candidate.personaApplied/personaFailed/personaFailReason` 真读 `meta.clone`，揭晓页引用它们。只写进 meta 而界面沉默 = 等于没说 | 同 v5.6.1，且用户连投诉的线索都没有 | V37-③ |
+| v5.6.3 | `cover_strength` 默认值的**唯一真源 = `config.persona.defaultCoverStrength`**：建人格、派单、执行器一律不得自带数字；缺省走 config、给了就 clamp 到 `[min,max]`；默认值经 `/v1/app/config` 下发（必须进 `config_version` 的 sig），端侧取不到要如实显示"未取到"，**不许**自带 `?? 0.6` | 运营改默认后 App 显示的档位和实际跑出来的不是一回事；用户想锁音色锁不住 | V37-② |
+| v5.6.4 | 「谁来唱」三档一致：简约/标准/深度都必须能单选性别，且中文标签→规范词必须走词典真源（`styleCatalog.wireOf`） | 最省事的那一档恰恰锁不住性别；端侧词表各说各话 | V37-④ |
+| v5.6.5 | 游客身份必须能被**本人**恢复：首次建号发一次备份码（库里只存 sha256，之后任何接口都不得吐回），`POST /v1/auth/claim` 按备份码命中才认领（命中后换锚点 + 该用户旧会话全部作废），`POST /v1/auth/recovery/rotate` 换码即作废旧码。认领失败**绝不许**顺手建号；无 `device_key` 认领一律 400 | 重装/换机即永久丢号（今天的现实是运维手工 UPDATE）；或恢复通道变成任何人可冒充的接管入口 | V37-⑥（旧 token 认领后必须 401、rotate 后旧码必须 401、乱码必须 401 且不建号） |
+| v5.6.6 | 批量修用户数据的脚本必须：词表只从 `prompts/dictionary` 读（代码里不得出现规范词字面量）、默认干跑（显式 `--apply` 才写库）、幂等（二次运行 0 改动）、按原存储格式写回、落审计 `tags.repair` | 第二个词表真源开始漏修；一次误跑把用户数据改没且无从追溯 | V37-⑤ |

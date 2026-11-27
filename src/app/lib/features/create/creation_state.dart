@@ -18,6 +18,7 @@ class CreationState {
     this.bpm = 100,
     this.count = 3,
     this.personaId,
+    this.coverStrength,
     this.seed,
     this.intentId,
   });
@@ -36,6 +37,10 @@ class CreationState {
   final int bpm; // 60-180
   final int count; // 1-4
   final String? personaId;
+  /// 音色贴近程度（0=只借编排，1=完全贴这条声线）。选人格时才生效。
+  /// 这是唯一能锁住音色/性别的旋钮（引擎只吃 tags/lyrics/prompt/bpm，「女声」在纯文本里锁不住），
+  /// 所以必须让用户调，而不是由代码里写死的 0.2 说了算。null=跟随服务端默认。
+  final double? coverStrength;
   final int? seed;
   final String? intentId;
 
@@ -52,6 +57,7 @@ class CreationState {
     int? bpm,
     int? count,
     Object? personaId = _keep,
+    Object? coverStrength = _keep,
     Object? seed = _keep,
     String? intentId,
   }) =>
@@ -70,6 +76,9 @@ class CreationState {
         personaId: identical(personaId, _keep)
             ? this.personaId
             : personaId as String?,
+        coverStrength: identical(coverStrength, _keep)
+            ? this.coverStrength
+            : coverStrength as double?, // 声明了就必须转发：analyze 看不见没用的参数
         seed: identical(seed, _keep) ? this.seed : seed as int?,
         intentId: intentId ?? this.intentId,
       );
@@ -79,7 +88,12 @@ class CreationState {
 
 class CreationNotifier extends StateNotifier<CreationState> {
   CreationNotifier(this._prefs)
-      : super(CreationState(tier: _prefs.createTier));
+      : super(CreationState(
+            tier: _prefs.createTier,
+            // 「设为默认」必须真的有用。以前 defaultPersonaProvider 定义了却没有任何人读，
+            // 用户在人格页点了「设为默认」，创建页照样出默认音色 —— 等于一个骗人的按钮。
+            personaId: _prefs.defaultPersonaId,
+          ));
 
   final Prefs _prefs;
 
@@ -99,6 +113,9 @@ class CreationNotifier extends StateNotifier<CreationState> {
   void setBpm(int v) => state = state.copyWith(bpm: v);
   void setCount(int v) => state = state.copyWith(count: v);
   void setPersona(String? v) => state = state.copyWith(personaId: v);
+  void setCoverStrength(double v) => state = state.copyWith(coverStrength: v);
+  /// 交回服务端说了算（null=不传 cover_strength，由 config.persona 兜底）
+  void resetCoverStrength() => state = state.copyWith(coverStrength: null);
   void setSeed(int? v) => state = state.copyWith(seed: v);
   void setIntent(String? v) => state = state.copyWith(intentId: v);
 }

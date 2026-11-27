@@ -8,8 +8,10 @@ import 'creation_state.dart';
 import 'creation_ui.dart';
 import 'credit_guard.dart';
 import 'intent_flow_page.dart';
+import '../../shared/widgets/mood_chips.dart';
 import 'progress_page.dart';
 import 'shelf_store.dart';
+import 'style_options.dart';
 import 'style_picker.dart';
 import 'transcript_confirm_page.dart';
 import 'voice_capture.dart';
@@ -26,6 +28,9 @@ class ShellEasy extends ConsumerStatefulWidget {
 
 class _ShellEasyState extends ConsumerState<ShellEasy> {
   bool _busy = false;
+  /// 简约档也要能回答「谁来唱」：性别是这首歌最贵的选择，不该只有标准/深度档才配决定。
+  /// 三档一致是产品底线（同一个用户在三档之间来回，不该发现某档锁不住性别）。
+  String? _voice;
   final TextEditingController _text = TextEditingController();
 
   @override
@@ -109,10 +114,14 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
           action: '一键出歌')) {
         return;
       }
+      final cat = styleCatalogOf(ref);
       final body = <String, dynamic>{
         'mode': 'simple',
         'prompt': prompt,
         'count': 3,
+        // 谁来唱：简约档也必须能锁性别。走 tags 的规范词（中文标签→服务端词典的 wire 词），
+        // 与标准/深度档同一真源，绝不在端侧另立一套词表。
+        if (_voice != null) 'tags': [cat.wireOf(_voice!)],
       };
       final model = ref.read(musicModelProvider);
       final r = await ref.read(apiClientProvider).generate(body, model: model);
@@ -246,6 +255,39 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                           onPick: (v) {
                             if (!_busy) _setText(v);
                           },
+                        ),
+                      // 谁来唱：三档一致。以前只有标准/深度档能选性别，
+                      // 于是"最省事的那一档"恰恰是锁不住音色的那一档。
+                      if (!shortScreen) const SizedBox(height: 18),
+                      if (!shortScreen)
+                        const Text(
+                          '谁来唱',
+                          style: TextStyle(
+                            color: CreationPalette.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      if (!shortScreen) const SizedBox(height: 2),
+                      if (!shortScreen)
+                        const Text(
+                          '选一个就能定性别（这是"人"，不是风格）',
+                          style: TextStyle(
+                            color: CreationPalette.faint,
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      if (!shortScreen) const SizedBox(height: 8),
+                      if (!shortScreen)
+                        MoodChips(
+                          options: styleCatalogOf(ref)
+                              .genders
+                              .map((e) => e.zh)
+                              .toList(growable: false),
+                          selected: _voice == null ? const [] : [_voice!],
+                          single: true,
+                          onChanged: (v) => setState(
+                              () => _voice = v.isEmpty ? null : v.first),
                         ),
                     ],
                   ),

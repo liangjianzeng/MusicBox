@@ -73,7 +73,14 @@ function guest(ctx) {
   // 审计必须能区分"新建身份"和"复用身份"：出事时这是唯一的现场证据
   store.log('auth.guest', { user_id: user.id, first_time: firstTime });
   const tokens = issueSession(user.id);
-  return { status: 200, body: { ...tokens, first_time: firstTime, user: { id: user.id, nickname: user.nickname, is_guest: true } } };
+  const out = {
+    ...tokens,
+    first_time: firstTime,
+    user: { id: user.id, nickname: user.nickname, is_guest: true },
+  };
+  // 新建身份当场发一次备份码（只此一次）：没有它，游客号就是"重装即丢"的一次性身份。
+  if (firstTime) out.recovery_code = issueRecoveryCode(user.id);
+  return { status: 200, body: out };
 }
 
 // POST /v1/auth/phone/request-code
@@ -142,10 +149,69 @@ function me(ctx) {
   return { status: 200, body: { user: userShape(user), credits: c, prefs: store.allPrefs(user.id) } };
 }
 
+// —— 身份备份 / 恢复（契约 v5.6.0）——
+// 备份码等同账号凭证：只在**生成那一刻**回显一次，库里只存 sha256，
+// 之后任何接口都不再吐出旧码（要换就重新生成，旧码当场作废）。
+// 为什么需要它：老客户端从不送 device_key，账号锚点是随机 gk_xxx，用户换机/重装后
+// 结构上无法自证身份（2026-11-27 那次是运维手工 UPDATE guest_key 救回来的 —— 那不该是产品机制）。
+const RECOVERY_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉 O0I1 等易混字符：用户要手抄或拍照
+function newRecoveryCode() {
+  const bytes = require('node:crypto').randomBytes(12);
+  const s = Array.from(bytes, (b) => RECOVERY_ABC[b % RECOVERY_ABC.length]).join('');
+  return s.match(/.{1,4}/g).join('-');
+}
+function issueRecoveryCode(userId) {
+  const code = newRecoveryCode();
+  store.run('UPDATE users SET recovery_hash=? WHERE id=?', U.sha256hex(code), userId);
+  return code;
+}
+function normalizeRecoveryCode(v) {
+  return String(v || '').toUpperCase().replace(/\s+/g, '');
+}
+
+// POST /v1/auth/claim {device_key, recovery_code} —— 换机/重装后用备份码认领自己的老身份
+function claim(ctx) {
+  const body = ctx.body || {};
+  const deviceKey = String(body.device_key || '').trim();
+  if (deviceKey.length < 16) {
+    throw new U.ApiError('BAD_REQUEST', '缺少设备标识（device_key），无法认领身份');
+  }
+  const code = normalizeRecoveryCode(body.recovery_code);
+  if (code.length < 12) {
+    throw new U.ApiError('BAD_REQUEST', '备份码格式不对（12 位，可带连字符）');
+  }
+  const user = store.get('SELECT * FROM users WHERE recovery_hash=?', U.sha256hex(code));
+  if (!user) throw new U.ApiError('UNAUTHORIZED', '备份码不对，没能认出这个身份；请核对后重试');
+  // 认领＝把这台设备的锚点绑到该身份上；旧设备令牌全部作废（丢掉的那台不该继续能调）
+  store.run('UPDATE users SET guest_key=? WHERE id=?', U.sha256hex(deviceKey), user.id);
+  store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+  store.log('auth.claim', { user_id: user.id, had_previous_key: !!user.guest_key });
+  const tokens = issueSession(user.id);
+  return {
+    status: 200,
+    body: {
+      ...tokens,
+      first_time: false,
+      recovered: true,
+      user: { id: user.id, nickname: user.nickname, is_guest: true },
+    },
+  };
+}
+
+// POST /v1/auth/recovery/rotate —— 重新生成备份码：旧码立即失效，且任何接口都读不回旧码
+function rotateRecovery(ctx) {
+  const user = requireUser(ctx);
+  const code = issueRecoveryCode(user.id);
+  store.log('auth.recovery_rotate', { user_id: user.id });
+  return { status: 200, body: { recovery_code: code } };
+}
+
 module.exports = {
   userFromRequest, requireUser, userShape, issueSession,
   routes: [
     { m: 'POST', p: '/v1/auth/guest', h: guest },
+    { m: 'POST', p: '/v1/auth/claim', h: claim },
+    { m: 'POST', p: '/v1/auth/recovery/rotate', h: rotateRecovery },
     { m: 'POST', p: '/v1/auth/phone/request-code', h: requestCode },
     { m: 'POST', p: '/v1/auth/phone/verify', h: verifyCode },
     { m: 'POST', p: '/v1/auth/refresh', h: refresh },

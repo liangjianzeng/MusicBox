@@ -5,6 +5,7 @@ const store = require('../core/store');
 const M = require('../core/modelnodes');
 const AC = require('../core/appconfig');
 const U = require('../core/util');
+const config = require('../config');
 const dict = require('../prompts/dictionary');
 
 // 可选模型列表（APK 自选用）：未锁定的 kind 才下发；标签中性化，不暴露引擎名（用户面纪律）
@@ -41,7 +42,16 @@ function getAppConfig(ctx) {
   const announcement = blob.announcement;
   const moderation = { enabled: blob.moderation_enabled !== false };
   // config_version：内容寻址，任何运营改动都会变（APK 据此决定是否刷新）
-  const sig = U.jstr({ routing, model_options, credits, features, version_policy, announcement, moderation, style_options, v: 3 });
+  // 人格克隆参数下发（契约 v5.6.0）：cover_strength 是**唯一**能锁住音色/性别的旋钮，
+  // 它的默认值只允许有一个真源 = config.persona。端侧一旦自带 `?? 0.6` 就是第二个真源，
+  // 服务端一改默认，App 显示的档位就和实际跑出来的不一致（用户看到的和听到的对不上）。
+  // 进 sig：运营改默认强度时 config_version 必须变，APK 才会重新拉取。
+  const persona = {
+    default_cover_strength: config.persona.defaultCoverStrength,
+    min_cover_strength: config.persona.minCoverStrength,
+    max_cover_strength: config.persona.maxCoverStrength,
+  };
+  const sig = U.jstr({ routing, model_options, credits, features, version_policy, announcement, moderation, style_options, persona, v: 4 });
   const config_version = U.sha256hex(sig).slice(0, 8);
   return {
     status: 200,
@@ -55,6 +65,7 @@ function getAppConfig(ctx) {
       announcement,
       moderation,
       style_options,
+      persona,
     },
   };
 }

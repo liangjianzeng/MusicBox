@@ -69,6 +69,17 @@ class RemoteConfig {
   RemoteConfig(this.data);
   final Map data;
 
+  /// 人格克隆强度默认值：**只能由服务端下发**（唯一真源 = 服务端 config.persona）。
+  /// 取不到就返回 null —— UI 必须如实显示"没拿到"，绝不在端侧编一个数当默认，
+  /// 否则就有了第二个真源：服务端改默认，App 显示的档位和实际跑出来的就不是一回事。
+  double? get personaDefaultCoverStrength {
+    final v = (data['persona'] as Map?)?['default_cover_strength'];
+    if (v == null) return null;
+    final d = double.tryParse('$v');
+    if (d == null || !d.isFinite || d < 0 || d > 1) return null;
+    return d;
+  }
+
   Map get _music => (data['routing']?['music'] as Map?) ?? const {};
   bool get musicLocked => _music['locked'] == true;
   String get musicDefaultEngine => '${_music['engine'] ?? ''}';

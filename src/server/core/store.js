@@ -334,6 +334,13 @@ ALTER TABLE mv_characters ADD COLUMN cast_method TEXT DEFAULT 'i2v_first_frame';
 ALTER TABLE admins ADD COLUMN token_expire_at TEXT;
 `,
   },
+  {
+    // v21 · 契约 v5.6.0「身份可恢复」：游客身份必须能被**本人**恢复，而不是靠运维手工 UPDATE guest_key
+    // （2026-11-27 真机就是这么救回来的：老客户端从不送 device_key，账号锚点是随机 gk_xxx，结构上不可恢复）。
+    // 只存哈希：备份码等同"能接管这个账号"的凭证，库里存明文等于把恢复通道做成泄漏面。
+    version: 21,
+    sql: `ALTER TABLE users ADD COLUMN recovery_hash TEXT;`,
+  },
 ];
 
 // 迁移容忍执行（抢救计划 P1-5「幂等 ALTER」）：历史库/半成品库升级到最新时，表或列常常**已经存在**

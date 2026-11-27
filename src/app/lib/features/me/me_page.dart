@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../persona/persona_page.dart';
 
+import '../../core/api_client.dart';
 import '../../core/server_url_editor.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/consent.dart';
@@ -80,6 +82,9 @@ class MePage extends ConsumerWidget {
                 ),
               ),
             ),
+          // 身份备份 / 恢复（契约 v5.6.0）：游客号必须能被**本人**恢复，
+          // 而不是重装后靠运维手工 UPDATE guest_key（2026-11-27 真机就是这么救回来的）。
+          const _IdentityBackupCard(),
           // 用户卡片
           Card(
             margin: EdgeInsets.zero,
@@ -233,6 +238,18 @@ class MePage extends ConsumerWidget {
                   onTap: () => _editServer(context, ref),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.record_voice_over_outlined),
+                  title: const Text('声音与人格'),
+                  subtitle: const Text('我的声音人格与试听，翻唱用的声线在这里管理',
+                      style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right),
+                  // 伴创灰度命中时底部第 4 槽位由「人格」换成「伴创」（D-3，恒 5 tab）。
+                  // 人格必须在这里留一个入口 —— 只换 tab 不在这里补入口，人格页就成了进不去的孤儿页。
+                  // 这两处必须同批发布。
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const PersonaPage())),
+                ),
+                ListTile(
                   leading: const Icon(Icons.memory_outlined),
                   title: const Text('创作模型'),
                   subtitle: Text(_musicModelLabel(ref),
@@ -373,5 +390,131 @@ class MePage extends ConsumerWidget {
     if (sel == null) return;
     await ref.read(prefsProvider).setMusicModelId(sel.isEmpty ? null : sel);
     ref.read(musicModelProvider.notifier).state = sel.isEmpty ? null : sel;
+  }
+}
+
+/// 身份备份 / 恢复（契约 v5.6.0）。
+///
+/// 为什么要有这张卡：游客号是匿名身份，重装/换机后用户没有任何自助办法证明"那些歌是我的"
+/// —— 2026-11-27 那次是运维手工 `UPDATE users SET guest_key=…` 救回来的，那不该是产品机制。
+/// 备份码等同账号凭证：**只在生成那一刻显示一次**，端侧绝不落盘（存进 prefs 等于把账号写进明文文件）。
+class _IdentityBackupCard extends ConsumerStatefulWidget {
+  const _IdentityBackupCard();
+
+  @override
+  ConsumerState<_IdentityBackupCard> createState() => _IdentityBackupCardState();
+}
+
+class _IdentityBackupCardState extends ConsumerState<_IdentityBackupCard> {
+  final _codeCtl = TextEditingController();
+  String? _issued; // 只活在本次页面会话里，离开即随 widget 销毁
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _codeCtl.dispose();
+    super.dispose();
+  }
+
+  void _toast(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+
+  Future<void> _rotate() async {
+    setState(() => _busy = true);
+    try {
+      final code = await ref.read(apiClientProvider).rotateRecoveryCode();
+      if (!mounted) return;
+      setState(() => _issued = code);
+      _toast('备份码已生成，请立刻抄下来：它只显示这一次');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _claim() async {
+    final code = _codeCtl.text.trim();
+    if (code.isEmpty) {
+      _toast('先输入备份码');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      // 认领只改服务端绑定；会话仍走既有的 guestLogin（同一 device_key）——
+      // 复用已验证过的登录路径，比在端侧另起一套"塞 token"的实现安全。
+      await ref.read(apiClientProvider).claimIdentity(code);
+      if (!mounted) return;
+      await ref.read(sessionProvider.notifier).guestLogin();
+      if (!mounted) return;
+      _codeCtl.clear();
+      _toast('身份已恢复：这台设备重新认回原来的账号了');
+    } on ApiException catch (e) {
+      _toast(e.zh);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.shield_outlined, size: 18),
+                SizedBox(width: 6),
+                Text('备份身份',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '游客号只有这一条恢复通道：生成备份码抄下来，换机或重装后输入它就能找回自己的歌。'
+              '备份码等同账号凭证，只显示这一次；重新生成会让旧码当场作废。',
+              style: TextStyle(fontSize: 12, color: Colors.white60, height: 1.5),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _rotate,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: Text(_issued == null ? '生成备份码' : '重新生成（旧码作废）'),
+            ),
+            if (_issued != null) ...[
+              const SizedBox(height: 10),
+              SelectableText(
+                _issued!,
+                style: const TextStyle(
+                    fontFamily: 'monospace', fontSize: 20, letterSpacing: 1.5),
+              ),
+            ],
+            const SizedBox(height: 14),
+            TextField(
+              controller: _codeCtl,
+              enabled: !_busy,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: '我有备份码，恢复身份',
+                hintText: '例如 ABCD-EFGH-JKLM',
+              ),
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              onPressed: _busy ? null : _claim,
+              icon: const Icon(Icons.login, size: 16),
+              label: const Text('用备份码恢复'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

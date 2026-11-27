@@ -50,7 +50,11 @@ function buildMusicPayload(params, actor) {
     persona = {
       id: p.id, // 执行器据此经鉴权取件口取声纹（跨机时绝对路径必然不可读）
       ref_abs_path: p.voice_ref ? (require('./personas').resolveVoiceRef(p.voice_ref) || null) : null,
-      cover_strength: params.cover_strength == null ? 0.2 : U.clamp(params.cover_strength, 0, 1),
+      // 强度：App 深度档可调；未给则用服务端唯一默认值（config.persona）。
+      // 这是唯一能锁住音色/性别的旋钮，默认数绝不允许散落在业务代码里。
+      cover_strength: params.cover_strength == null
+        ? config.persona.defaultCoverStrength
+        : U.clamp(Number(params.cover_strength), config.persona.minCoverStrength, config.persona.maxCoverStrength),
       clone_mode: params.clone_mode === 'full' ? 'full' : 'fast',
     };
   }

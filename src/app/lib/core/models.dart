@@ -125,6 +125,33 @@ class Candidate {
   final String? waveformUrl;
   final Map meta;
 
+  /// 人格是否**真的**套到了这条成品上。
+  /// 引擎的音色/性别锁定只发生在 stage②（cover 变声，ref_audio+cover_strength）；
+  /// 那一步失败时执行器诚实标 stage2_failed 且 applied 必为 false。
+  /// 端侧必须把它说出来：不能让用户把默认音色当成自己的声线（v5.2.6 禁止"以为克隆生效"）。
+  bool get personaApplied {
+    final c = meta['clone'];
+    return c is Map && c['applied'] == true;
+  }
+
+  /// 选了人格但这条其实没套上（变声失败 / 声纹取不到 / 强度非法）。
+  bool get personaFailed {
+    final c = meta['clone'];
+    if (c is! Map) return false;
+    return c['stage2_failed'] == true ||
+        c['ref_unavailable'] == true ||
+        c['invalid_strength'] == true;
+  }
+
+  String get personaFailReason {
+    final c = meta['clone'];
+    if (c is! Map) return '未套用';
+    if (c['ref_unavailable'] == true) return '声纹取不到';
+    if (c['invalid_strength'] == true) return '强度非法';
+    final e = c['stage2_error'];
+    return e == null ? '变声失败' : '变声失败（$e）';
+  }
+
   factory Candidate.fromMap(Map m) => Candidate(
         id: '${m['id'] ?? ''}',
         seq: _asInt(m['seq']),

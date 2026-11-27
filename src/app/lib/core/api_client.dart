@@ -204,6 +204,21 @@ class ApiClient {
     return await _do(() => _dio.post('/v1/auth/guest', data: {'device_key': key})) as Map;
   }
 
+  /// 换机/重装后用备份码认领自己的老身份（契约 v5.6.0）。
+  /// 成功后本机的 device_key 就成为该身份的锚点，服务端会作废旧设备的全部会话。
+  Future<Map> claimIdentity(String recoveryCode) async {
+    final key = await prefs.ensureDeviceKey(); // 同 guestLogin：锚点必须在进 _do 之前取好
+    return await _do(() => _dio.post('/v1/auth/claim',
+        data: {'device_key': key, 'recovery_code': recoveryCode})) as Map;
+  }
+
+  /// 重新生成备份码（旧码当场失效）。服务端只回显这一次，库里只存 sha256，
+  /// 所以端侧**绝不许把这个码存进 prefs** —— 让用户当场抄下来/截图。
+  Future<String> rotateRecoveryCode() async {
+    final r = await _do(() => _dio.post('/v1/auth/recovery/rotate')) as Map;
+    return '${r['recovery_code'] ?? ''}';
+  }
+
   Future<void> requestCode(String phone) async {
     await _do(() => _dio.post('/v1/auth/phone/request-code',
         data: {'phone': phone}));

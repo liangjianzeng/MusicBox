@@ -184,33 +184,44 @@ async function runMusic(job, ctx) {
 
     // ② persona：cover 变声（ref_audio + cover_strength）；失败诚实降级交 ①
     if (persona) {
+      // cover_strength 由**服务端唯一写入**（works.js 归一化），执行器不再自己兜一个默认值：
+      // 0.2 曾在 personas.js 两处 + 这里共三处硬编码，改一处漏两处，而且它恰恰是"能不能锁住音色/性别"的唯一旋钮。
+      const cs = Number(persona.cover_strength);
       const refAbs = await resolvePersonaRef(persona, cfg, ctx.log);
       if (!refAbs) {
         // 诚实降级：拿不到声纹就**不假装克隆过**（applied=false），并保留 ① 的完整歌，用户仍有可交付产物。
         meta.clone = { applied: false, stage2_failed: false, ref_unavailable: true, mode: persona.clone_mode || 'full' };
+      } else if (!Number.isFinite(cs)) {
+        // 强度缺失＝请求本身不合法：宁可不套也不许猜一个数当"已克隆"。
+        ctx.log('候选' + seq + ' 人格缺少 cover_strength（服务端未归一化），跳过变声阶段');
+        meta.clone = { applied: false, stage2_failed: false, invalid_strength: true, mode: persona.clone_mode || 'full' };
       } else {
-      meta.clone = { applied: true, stage2_failed: false, mode: persona.clone_mode || 'full', cover_strength: Number(persona.cover_strength) || 0.2 };
-      try {
-        const body2 = Object.assign({}, baseBody, {
-          src_audio: finalAbs,                       // ① 的完整歌
-          ref_audio: refAbs,                         // 人格声纹参考（本机直读或经鉴权取件口回捞，必须真实可读）
-          cover_strength: Number(persona.cover_strength) || 0.2,
-          instrumental: false,
-        });
-        // 必须与 ① 同一个 musicUrl：写死 cfg.musicUrl 会让"guide 走 payload.music_endpoint、变声走本机默认"，
-        // 跨机拓扑下等于向另一台机器要 cover（要么不可达要么风格不一致）。
-        const r2 = await callMusic(musicUrl, body2, ctx.log);
-        const coverAbs = path.join(ctx.workDir, 'cand_' + seq + '.cover.wav');
-        await ingestArtifact(r2, coverAbs, ctx.log, musicUrl);
-        fs.renameSync(coverAbs, finalAbs);
-        finalSeconds = Number(r2.seconds) || finalSeconds;
-        meta.clone.gen_seconds = r2.gen_seconds;
-        cloneAppliedAny = true;
-      } catch (e) {
-        ctx.log('候选' + seq + ' 变声阶段失败，降级使用初版：' + (e.failMessage || e.message));
-        meta.clone.stage2_failed = true;
-        meta.clone.stage2_error = e.failCode || 'INTERNAL';
-      }
+        // **先按"没克隆"记账**：applied 只有在 ② 跑完并把成品换成变声版之后才置 true。
+        // 历史 bug：这里曾直接写 applied:true，失败分支只补 stage2_failed，于是出现
+        // `applied:true + stage2_failed:true` —— 用户以为用了他的人格，其实拿到的是默认音色。
+        meta.clone = { applied: false, attempted: true, stage2_failed: false, mode: persona.clone_mode || 'full', cover_strength: cs };
+        try {
+          const body2 = Object.assign({}, baseBody, {
+            src_audio: finalAbs,                       // ① 的完整歌
+            ref_audio: refAbs,                         // 人格声纹参考（本机直读或经鉴权取件口回捞，必须真实可读）
+            cover_strength: cs,
+            instrumental: false,
+          });
+          // 必须与 ① 同一个 musicUrl：写死 cfg.musicUrl 会让"guide 走 payload.music_endpoint、变声走本机默认"，
+          // 跨机拓扑下等于向另一台机器要 cover（要么不可达要么风格不一致）。
+          const r2 = await callMusic(musicUrl, body2, ctx.log);
+          const coverAbs = path.join(ctx.workDir, 'cand_' + seq + '.cover.wav');
+          await ingestArtifact(r2, coverAbs, ctx.log, musicUrl);
+          fs.renameSync(coverAbs, finalAbs);
+          finalSeconds = Number(r2.seconds) || finalSeconds;
+          meta.clone.gen_seconds = r2.gen_seconds;
+          meta.clone.applied = true;   // ← 唯一允许置真的位置：成品已被变声版替换
+          cloneAppliedAny = true;
+        } catch (e) {
+          ctx.log('候选' + seq + ' 变声阶段失败，降级使用初版：' + (e.failMessage || e.message));
+          meta.clone.stage2_failed = true;
+          meta.clone.stage2_error = e.failCode || 'INTERNAL';
+        }
       }
     }
 
