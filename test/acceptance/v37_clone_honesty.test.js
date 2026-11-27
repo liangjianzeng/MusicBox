@@ -282,4 +282,122 @@ describe('V37 克隆诚实性 / 强度唯一真源 / 身份可恢复（v5.6.0）
     assert.ok(S.db.all('SELECT id FROM works WHERE user_id=?', fresh.json.user.id).length >= 1,
       'V37-⑧ 拒绝的同时本机内容一行都不许少');
   });
+
+  // ---------- ⑨ 用户选的强度必须抵达引擎 ----------
+  // V37-② 只钉住"默认值只有一个真源"，却漏了另一半：用户**改了**的值必须真的走到引擎。
+  // 真机 2026-11-27 21:35：滑杆显示 100%，job payload 里却是 0.6 ——
+  // /v1/works/generate 的字段白名单没放 cover_strength，用户的选择被静默丢掉（V31-③ 同一类缺陷）。
+  it('V37-⑨ 深度档选的音色贴近程度必须抵达引擎 payload（不许被白名单静默丢掉）', async () => {
+    const config = require('../../src/server/config');
+    const me = await mint({ device_key: 'e3'.repeat(16) });
+    assert.strictEqual(me.status, 200, '建测试身份应 200：' + me.text.slice(0, 160));
+    const uid = me.json.user.id;
+    const tok = me.json.access_token;
+    // 测试充值走 helpers 的账本种子（维持 balance_after 链，别手改 balance）。
+    // 必须先 GET /v1/credits 触发 ensureDaily：否则第一次派单时 daily_free 重置会把这里发的分
+    // 当成"昨天的余额"清零重发，判词会莫名其妙卡在 CREDITS_NOT_ENOUGH。
+    await S.api('GET', '/v1/credits', { token: tok });
+    if (typeof S.seedLedger === 'function') S.seedLedger(uid, 600);
+    const db = new DatabaseSync(S.dbPath);
+    db.prepare('INSERT INTO personas(id,user_id,name,is_public,voice_ref,clone_params,created_at)'
+      + ' VALUES(?,?,?,?,?,?,?)')
+      .run('p_v37_strength', uid, '判词声线', 0, '2026-11/v37.wav', '{}', new Date().toISOString());
+    db.close();
+
+    const payloadOf = (jobId) => {
+      const row = S.db.all('SELECT payload FROM jobs WHERE id=?', jobId)[0];
+      assert.ok(row, '派单必须留下 job：' + jobId);
+      return JSON.parse(row.payload);
+    };
+    const gen = async (extra, key) => {
+      const r = await S.api('POST', '/v1/works/generate', {
+        token: tok,
+        json: Object.assign({ mode: 'simple', prompt: '判词', mood: '平静', count: 1, sec: 15,
+          persona_id: 'p_v37_strength', idem_key: key }, extra || {}),
+      });
+      // 派单成功是 202（Accepted，异步任务），不是 200 —— 判词别把自己的期望写死成 200
+      assert.ok(r.status === 200 || r.status === 202,
+        '本人带人格派单应 200/202，实际 ' + r.status + ' ' + r.text.slice(0, 200));
+      assert.ok(r.json && r.json.job_id, '派单必须返回 job_id：' + r.text.slice(0, 200));
+      // 只改强度也必须是一单新的活：幂等键漏了 cover_strength 时，拖完滑杆按生成会被旧 job 吃掉
+      assert.notStrictEqual(r.json.idempotent, true,
+        'V37-⑨ 改变强度/clone_mode 不得命中幂等旧单（否则滑杆等于没拖）：' + r.text.slice(0, 200));
+      const p = payloadOf(r.json.job_id);
+      assert.ok(p.persona, 'payload 必须带 persona：' + JSON.stringify(p).slice(0, 200));
+      return p.persona;
+    };
+
+    const dflt = await gen({}, 'v37-st-default');
+    assert.strictEqual(dflt.cover_strength, config.persona.defaultCoverStrength,
+      'V37-⑨ 未选强度时必须等于 config.persona.defaultCoverStrength（唯一真源，判词不写死数字）');
+
+    const max = await gen({ cover_strength: 1 }, 'v37-st-max');
+    assert.strictEqual(max.cover_strength, 1,
+      'V37-⑨ 用户把滑杆拉到 100% 时，payload 必须是 1 —— 真机在这里被静默丢成默认值');
+
+    const mid = await gen({ cover_strength: 0.35 }, 'v37-st-mid');
+    assert.strictEqual(mid.cover_strength, 0.35,
+      'V37-⑨ 中间值也必须原样抵达，否则滑杆只是装饰');
+
+    const over = await gen({ cover_strength: 9 }, 'v37-st-over');
+    assert.strictEqual(over.cover_strength, config.persona.maxCoverStrength,
+      'V37-⑨ 越界值必须被夹到 config.persona.maxCoverStrength（夹紧可以，丢弃不行）');
+
+    const full = await gen({ clone_mode: 'full' }, 'v37-st-full');
+    assert.strictEqual(full.clone_mode, 'full',
+      'V37-⑨ clone_mode 同样必须过白名单，否则永远只能 fast');
+  });
+
+  // ---------- ⑩ 克隆诚实性的公开路径只有一个：meta.clone ----------
+  // 真机 2026-11-27 21:36：数据是诚实的（raw.meta.clone.stage2_failed=true），但揭晓页什么都不显示 ——
+  // 执行器把引擎回执整包塞在 raw.meta，端侧读的是 meta.clone，读不到就等于说谎。
+  // V37-③ 只查了 reveal_page "引用了 personaFailed"，是条假判词：这里换成真的走一遍 API。
+  it('V37-⑩ 揭晓页要读的 meta.clone 必须在 API 返回的根上（不许埋在 raw.meta 里）', async () => {
+    const me = await mint({ device_key: 'f2'.repeat(16) });
+    const uid = me.json.user.id;
+    const tok = me.json.access_token;
+    await S.api('GET', '/v1/credits', { token: tok });
+    if (typeof S.seedLedger === 'function') S.seedLedger(uid, 300);
+    const r = await S.api('POST', '/v1/works/generate', {
+      token: tok,
+      json: { mode: 'simple', prompt: '判词⑩', mood: '平静', count: 1, sec: 15, idem_key: 'v37-honesty-path' },
+    });
+    assert.ok(r.status === 200 || r.status === 202, '派单应 200/202，实际 ' + r.status + ' ' + r.text.slice(0, 200));
+    const jobId = r.json.job_id;
+
+    // 灌入真机实测的那条形 meta：clone 只在 raw.meta 下面
+    const lying = {
+      seed: 152053, gen: null,
+      raw: { seq: 1, seed: 152053, meta: { clone: { applied: false, attempted: true, stage2_failed: true, stage2_error: 'MUSIC_HTTP', cover_strength: 1, mode: 'fast' } } },
+    };
+    const db = new DatabaseSync(S.dbPath);
+    let rows = db.prepare('SELECT id FROM candidates WHERE job_id=?').all(jobId);
+    if (rows.length === 0) {
+      // 本用例跑的是 noFakeExecutor：没有执行器落候选，就自己补一行（判词不依赖执行器在不在）
+      db.prepare('INSERT INTO candidates(id,job_id,seq,title,duration_sec,format,meta,adopted,created_at)'
+        + ' VALUES(?,?,?,?,?,?,?,?,?)')
+        .run('c_v37_path', jobId, 1, '', 45, 'wav', '{}', 0, new Date().toISOString());
+      rows = [{ id: 'c_v37_path' }];
+    }
+    db.close();
+    const w2 = new DatabaseSync(S.dbPath);
+    for (const row of rows) {
+      w2.prepare('UPDATE candidates SET meta=? WHERE id=?').run(JSON.stringify(lying), row.id);
+    }
+    w2.close();
+
+    const job = await S.api('GET', '/v1/jobs/' + jobId, { token: tok });
+    assert.strictEqual(job.status, 200, '查任务应 200，实际 ' + job.status + ' ' + job.text.slice(0, 200));
+    const cands = (job.json.candidates || []);
+    assert.ok(cands.length >= 1, 'API 必须返回候选列表');
+    for (const c of cands) {
+      const clone = (c.meta || {}).clone;
+      assert.ok(clone,
+        'V37-⑩ 候选 meta 根上必须有 clone（端侧只认这一个路径；埋在 raw.meta 里 = 揭晓页永远不显示"没有套上"）');
+      assert.strictEqual(clone.stage2_failed, true,
+        'V37-⑩ 阶段②失败必须原样抵达端侧，实际 ' + JSON.stringify(clone));
+      assert.strictEqual(clone.applied, false, 'V37-⑩ 没套上就必须说没套上，不许留空让端侧猜');
+      assert.strictEqual(clone.cover_strength, 1, 'V37-⑩ 强度回执必须一并抵达（用户要能核对滑杆是不是白拖）');
+    }
+  });
 });

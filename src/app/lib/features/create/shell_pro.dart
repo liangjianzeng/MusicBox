@@ -147,6 +147,17 @@ class _ShellProState extends ConsumerState<ShellPro> {
       final model = ref.read(musicModelProvider);
       final r = await ref.read(apiClientProvider).generate(body, model: model);
       if (!mounted) return;
+      // 揭晓页的「没有套上」横幅要报得出**是哪条声线**没套上；写死"已选人格"等于把最关键的
+      // 那条信息又糊掉了（真机 2026-11-27：用户看到的是「已选人格」，不知道失败的是自己挑的哪条）。
+      String? pickedPersonaName;
+      if (st.personaId != null) {
+        for (final p in ref.read(personasProvider)) {
+          if (p.id == st.personaId) {
+            pickedPersonaName = p.name;
+            break;
+          }
+        }
+      }
       ProgressPage.push(
         context,
         '${r['job_id']}',
@@ -156,7 +167,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
           lyrics: lyrics,
           tags: st.instrumental ? [...tagList, '纯音乐'] : tagList,
           seed: seedNum,
-          personaName: st.personaId == null ? null : '已选人格',
+          personaName: st.personaId == null ? null : (pickedPersonaName ?? '已选人格'),
         ).copyLike(sourceLabel: '全参数工作台'),
         plannedCount: st.count,
         onRetry: () async {

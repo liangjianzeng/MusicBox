@@ -221,6 +221,11 @@ async function runMusic(job, ctx) {
           ctx.log('候选' + seq + ' 变声阶段失败，降级使用初版：' + (e.failMessage || e.message));
           meta.clone.stage2_failed = true;
           meta.clone.stage2_error = e.failCode || 'INTERNAL';
+          // 面包屑：跨机拓扑下的 MUSIC_HTTP 绝大多数是"引擎那台机器读不到这个路径"
+          // （2026-11-27 真机就是靠 executor 日志里的 ref_audio not found 才定位到，查了 20 分钟）。
+          // 把引擎被要求读的路径和引擎地址一起落到 meta 里，下次一眼可见。
+          meta.clone.ref_path = refAbs;
+          try { meta.clone.engine = new URL(musicUrl).host; } catch (err) { /* 地址不合法就不记，不影响降级 */ }
         }
       }
     }

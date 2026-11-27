@@ -78,6 +78,10 @@ function normalizeForIdem(user, kind, params) {
     // seed/instrumental 必须进幂等键：否则改 seed 重试会被旧 job 吃掉（10 分钟窗口）
     p.seed_base == null ? '' : p.seed_base,
     p.instrumental == null ? '' : (p.instrumental ? '1' : '0'),
+    // 同理：只拖「音色贴近程度」/只切 clone_mode 再按生成，也必须是一单新的活。
+    // 真机 2026-11-27 21:35 之后才查到的第二层坑 —— 白名单修好后，改强度仍会命中旧 job。
+    p.cover_strength == null ? '' : String(p.cover_strength),
+    p.clone_mode == null ? '' : String(p.clone_mode),
     U.jstr(p.params || null), U.jstr(p.delta || null),
   ].join(''));
 }
@@ -166,6 +170,9 @@ function generate(ctx) {
   return dispatchMusic(user, 'generate', {
     prompt, lyrics, tags: U.toTagArr(body.tags), mood: body.mood, bpm: body.bpm,
     sec: body.sec, count: body.count, persona_id: body.persona_id, model: body.model,
+    // 音色贴近程度必须**过白名单**：这里没写，深度档滑杆拖到 100% 也永远是 config 默认 0.6
+    // —— 真机 2026-11-27 21:35 发现的"选了却被静默丢"（与 V31-③ 同一类缺陷，换了个位置）。
+    cover_strength: body.cover_strength, clone_mode: body.clone_mode,
     ...(seedBase === undefined ? {} : { seed_base: seedBase }),
     ...(instrumental === undefined ? {} : { instrumental }),
   }, { reason: 'gen' });

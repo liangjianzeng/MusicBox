@@ -578,6 +578,11 @@ function workOf(r) {
 function candidateOf(r) {
   if (!r) return null;
   const meta = U.jparse(r.meta, {});
+  // 克隆诚实性只有一个公开路径：meta.clone。执行器把引擎回执整包塞在 raw.meta 里，
+  // 端侧（和以后任何消费者）不该去猜那层嵌套 —— 2026-11-27 真机：揭晓页因此根本不显示
+  // 「没有套上」横幅（数据是诚实的，读的人读不到，等于说谎）。这里做一次归位。
+  const cloneAt = (meta && meta.clone) || (meta && meta.raw && meta.raw.meta && meta.raw.meta.clone) || null;
+  if (cloneAt && !meta.clone) meta.clone = cloneAt;
   return {
     id: r.id, seq: r.seq, title: r.title || '',
     audio_url: r.audio_playback ? publicUrl(r.audio_playback) : (r.audio_master ? publicUrl(r.audio_master) : null),
