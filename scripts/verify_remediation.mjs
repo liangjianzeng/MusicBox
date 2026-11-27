@@ -93,6 +93,8 @@ const SUITES = [
   ['v5.2 声纹私有化（不入公共 /f/*、身份门、历史行兼容）', 'v30_persona_privacy', 5, '契约 v5.2.1–v5.2.4'],
   ['v5.2 人格归属与跨机声纹回捞（他人声纹不可克隆）', 'v31_persona_crosshost', 4, '契约 v5.2.5–v5.2.6'],
   ['v5.1 MV 加固回归（审核 fail-closed / scriptHash / toArr）', 'v20_mv_hardening', 3, '契约 v5.1'],
+  ['助手诚实兜底（无上下文不背清单、积分不编数、上下文门只认核验 refs）', 'v33_assistant_honest', 5, '契约 v5.4 · 真机体感故障'],
+  ['声纹/字段真源之外的账本不变量复核（助手回合不扣费）', 'v1_credits', 5, '契约 §4 回归基线'],
 ];
 for (const [item, suite, minCases, judge] of SUITES) {
   const file = path.join('test', 'acceptance', suite + '.test.js');
@@ -269,11 +271,35 @@ record('G 合规', 'P1-6 C2 真人像走 facegate 预检与 consent', '需 GeekP
   'BLOCKED', '本机 :8395/:8390/:8188 未运行且 MB_MV_ENABLED=0；按判据记 BLOCKED 不记 ✅');
 
 // ═══ 组 H：真机音乐链（默认不跑，需 GeekPro）═══
+// 引擎可达性这一条**每次必打**（就一个 /health，2 秒）—— 它是"跨机音乐链"最容易被悄悄断掉的一环：
+// ACE-Step 的 server.py 硬绑 127.0.0.1，必须用 uvicorn CLI 绑到 Tailscale 网卡才能被 DGX 直连（见 runbook §6 ①）。
+const ENGINE = (process.env.MB_MUSIC_URL || envKey('MB_MUSIC_URL') || 'http://100.100.140.75:8190').replace(/\/+$/, '');
+try {
+  const h = await fetchJson(ENGINE + '/health', { timeoutMs: 12000 });
+  const j = h.status === 200 ? JSON.parse(h.text) : null;
+  record('H 真机音乐', 'ACE-Step 经 Tailscale 直连可达（无 SSH 隧道）', `GET ${ENGINE}/health → 200 且 service=w-m-acestep`,
+    ok(h.status === 200 && j && j.service === 'w-m-acestep'),
+    j ? `status=${h.status} gpu=${(j.vram || {}).gpu || '?'} 显存 ${(j.vram || {}).vram_total_mb || '?'}MB handler_ready=${j.handler_ready}` : `status=${h.status}`);
+} catch (e) {
+  record('H 真机音乐', 'ACE-Step 经 Tailscale 直连可达', `GET ${ENGINE}/health`, 'FAIL', `${ENGINE} 不可达：${e.message}（起法见 runbook §6 ①）`);
+}
 if (MUSIC) {
-  const r = run('node', ['scripts/verify_real_music.mjs', '--sec', '30', '--count', '1'], { timeoutMs: 2400000 });
+  const srv = process.env.MB_SERVER || 'http://127.0.0.1:7900';
+  let up = null; try { up = await fetchJson(srv + '/healthz', { timeoutMs: 8000 }); } catch (e) { up = null; }
+  if (!up || up.status !== 200) {
+    record('H 真机音乐', '真机音乐链（30 判据全跑）', '需要一个活着的 server 供验证（默认 ' + srv + '）',
+      'BLOCKED', srv + ' 无响应 —— 先起栈：bash tmp/dev_up.sh 7900（或指定 MB_SERVER=…），再 --music 复跑');
+  } else {
+  const r = run('node', ['scripts/verify_real_music.mjs', '--sec', '30', '--count', '1'], {
+    timeoutMs: 2400000,
+    env: Object.assign({}, (function(){ const o={}; const t=fs.readFileSync(path.join(ROOT,'etc/spark.env'),'utf8'); for(const m of t.matchAll(/^([A-Z_]+)=(.*)$/gm)) o[m[1]]=m[2].replace(/^["']|["']$/g,''); return o; })(), {
+      MB_SERVER: srv, MB_DB: process.env.MB_DB || '/tmp/mb-dev/db/musicbox.sqlite', MB_BUDGET_MS: '1500000',
+    }),
+  });
   const m = r.out.match(/(\d+)\/(\d+) 判据通过/) || r.out.match(/通过\s*(\d+)\s*\/\s*(\d+)/);
   record('H 真机音乐', '真机音乐链（server 在 DGX + ACE-Step 在 GeekPro）', 'verify_real_music.mjs 判据全通过',
     ok(m && m[1] === m[2] && r.code === 0), m ? `${m[1]}/${m[2]}；退出码=${r.code}` : (r.out.slice(-200) || '无输出'));
+  }
 } else {
   record('H 真机音乐', '真机音乐链（跨机出歌 + 取件口回捞 + Σdelta==余额）', '需 GeekPro ACE-Step(:8190) + SSH 隧道',
     'BLOCKED', '本次未跑（--music 打开）；上次实跑 29/30 判据通过，证据 var/evidence/music-2026-11-26T18-54-14-673Z/report.json');

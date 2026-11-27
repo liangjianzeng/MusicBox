@@ -174,11 +174,16 @@ check('A10', `候选数量 == ${COUNT}`, cands.length === COUNT, `body.candidate
 // URL 落到默认 :7900，手机按这个地址取音频必然取不到（真机「候选能生成不能播」的一类成因）。
 for (const c of cands) {
   const u = String(c.audio_url || '');
-  const same = u && (u.startsWith(SERVER) || u.startsWith('http://' + SERVER.replace(/^http:\/\//, '').split(':')[0] + ':') === false);
   if (cands.length) {
-    check('A10b', '候选 audio_url 指向本次 server（不是默认 :7900）',
-      !!u && u.includes(new URL(SERVER).host),
-      u ? `${u}${u.includes(new URL(SERVER).host) ? '' : ' ≠ ' + SERVER + ' → 设 MB_PUBLIC_BASE_URL'}` : '候选没有 audio_url');
+    // 判据的真实意图是"别落到那个没人配的陈旧默认 :7900"，**不是**"必须是回环"。
+    // 允许的对外基址 = 本次测试 server ∪ 显式声明的 MB_PUBLIC_BASE_URL（真机自测要填手机可达的 Tailscale 地址，
+    // 上一版把它判红是这条判据写窄了，不是产品错）。真正说了算的是 A11：照客户端那样把绝对 URL 真下下来。
+    const PUB = (process.env.MB_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+    const hosts = [...new Set([SERVER, PUB].filter(Boolean)
+      .map((x) => { try { return new URL(x).host; } catch (e) { return ''; } }))].filter(Boolean);
+    const hostOk = !!u && hosts.some((h) => u.includes(h));
+    check('A10b', '候选 audio_url 指向本次 server 或已声明的对外基址（不得是陈旧默认）',
+      hostOk, u ? `${u}${hostOk ? '' : ' ≠ ' + hosts.join('/') + ' → 设 MB_PUBLIC_BASE_URL'}` : '候选没有 audio_url');
     break;
   }
 }
@@ -194,7 +199,14 @@ for (const w of works) {
   const src = w.audio_master || w.audio_playback || (w.files && (w.files.audio_master || w.files.audio_playback));
   if (!src) { check('A11', `作品 ${w.id} 有音频地址`, false, JSON.stringify(Object.keys(w)).slice(0, 160)); continue; }
   const url = /^https?:/.test(src) ? src : SERVER + (src.startsWith('/') ? '' : '/f/') + src;
-  const dl = await req('GET', url.replace(SERVER, ''), { token, raw: true }).catch((e) => ({ status: 0, buf: Buffer.alloc(0), text: String(e.message) }));
+  // 必须**照客户端那样打绝对 URL**（手机拿到的就是这个串）。上一版写成 url.replace(SERVER,'') 再交给 req()
+  // 前缀拼回 —— public base 与测试基址不同源时前缀剥不掉，拼出畸形路径 → HTTP 0，把产品冤枉成"取不到音频"。
+  const dl = await (async () => {
+    try {
+      const r = await fetch(url, { headers: token ? { authorization: 'Bearer ' + token } : {}, signal: AbortSignal.timeout(60000) });
+      return { status: r.status, buf: Buffer.from(await r.arrayBuffer()) };
+    } catch (e) { return { status: 0, buf: Buffer.alloc(0), text: String((e && e.message) || e) }; }
+  })();
   const size = dl.buf ? dl.buf.length : 0;
   const okDl = dl.status === 200 && size > 50 * 1024;
   check('A11', `作品 ${w.id} 音频可下载且非空壳`, okDl, `HTTP ${dl.status} ${size}B ${url}`);
@@ -266,12 +278,22 @@ if (!has('skip-assistant')) {
 //   music.cover / music.query_status / library.search / assistant.task_query / assistant.ticket_query /
 //   assistant.context / assistant.task / assistant.message / assistant.event）
 // 期望写错工具名会把好行为判成失败，这不是严格，是假故障。
+// —— 助手用例要"真实存在的作品"：规则层只认服务端核验过的 context.refs（**候选不是作品** ——
+//    上一条探针就把候选 id 直接塞进 refs，结果解析不到、诚实回了 need_context，那是正确行为不是 bug）。
+//    App 里用户能说"把这首的标题改成…"的前提是这首歌已采纳进曲库，所以这里先采纳一条候选。
+let adoptWid = '';
+if (jobId && cands.length) {
+  const ad = await req('POST', `/v1/works/${encodeURIComponent(jobId)}/adopt`, { token, body: { candidate_id: cands[0].id } });
+  adoptWid = String(((ad.json || {}).work || {}).id || '');
+  console.log(`  ℹ 已采纳候选用于助手上下文 work=${adoptWid || '（采纳失败，作品级用例将不带 refs）'}`);
+}
+// 第 3 元素 = 需要作品上下文（App 真实路径：打开那首歌再说）
 const cases = [
   ['查询任务进度', ['assistant.task_query', 'music.query_status']],
   ['这首音乐进度如何', ['music.query_status', 'assistant.task_query']],
   ['搜索星河', ['library.search']],
-  ['把这首歌改得更明亮一点', ['music.adjust_params']],
-  ['把标题改成《星河》', ['music.set_title']],
+  ['把这首歌改得更明亮一点', ['music.adjust_params'], true],
+  ['把标题改成《星河》', ['music.set_title'], true],
   ['刚才那张确认票还在吗', ['assistant.ticket_query']],
 ];
 // 单独一条「无能力时必须诚实」：助手工具面里**没有**积分/余额读工具（grep 实证：credits 只出现在价格估算），
@@ -289,13 +311,25 @@ const SELF_INTRO = /我在。可以|我可以帮你|作为.*(助手|AI)|可以�
 }
     const balA = balOf(await req('GET', '/v1/credits', { token }));
     let hit = 0; const bad = [];
-    for (const [text, wantAny] of cases) {
-      const r = await req('POST', '/v1/assistant/messages', { token, body: { text, client_msg_id: 'verify-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10) } });
+    const READ_TOOLS = ['library.search', 'assistant.task_query', 'assistant.ticket_query', 'assistant.context', 'music.query_status'];
+    for (const [text, wantAny, needWork] of cases) {
+      const body = { text, client_msg_id: 'verify-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10) };
+      // 作品级用例带上 App 真实会带的上下文；没采纳成功就不带 —— 那样应命中诚实的 need_context，而不是被当成工具失灵
+      if (needWork && adoptWid) body.context = { surface: 'library', refs: [{ type: 'work', id: adoptWid }] };
+      const r = await req('POST', '/v1/assistant/messages', { token, body });
       const j = r.json || {}; const meta = j.meta || {};
       const tool = String(meta.tool || '');
       const okTool = r.status === 200 && wantAny.some((w) => tool.startsWith(w));
-      if (okTool) hit++; else bad.push(`「${text}」→ tool=${tool || '-'} status=${r.status} mode=${meta.mode || '-'} ${String(j.text || '').slice(0, 60)}`);
-      if (j.ticket) bad.push(`「${text}」免费/读类工具不该发票却发了票`);
+      if (okTool) hit++; else bad.push(`「${text}」→ tool=${tool || '-'} intent=${meta.intent || '-'} status=${r.status} mode=${meta.mode || '-'} ${String(j.reply || '').slice(0, 56)}`);
+      // 票的判据必须按**读/写分档**：契约 v1 §"免费写仍走确认票" —— set_title/set_card 这类免费**写****必须**发票，
+      // 上一版无条件"发票即报"会把契约要求的正确行为报成故障（好在只进诊断文本没影响合格率，属于埋着的误导）。
+      const hasTicket = !!(j.ticket || j.ticket_id || (j.data && j.data.ticket));
+      const isRead = READ_TOOLS.some((x) => tool.startsWith(x));
+      if (tool && isRead && hasTicket) bad.push(`「${text}」读类工具 ${tool} 不该发票却发了票`);
+      // 付费动作闸门 assistant_actions **默认关**（appconfig fail-closed）→ 工具命中但诚实告知未开放，本就不该发票。
+      // 闸门状态不落客户端字段（只在 reply 文案里），所以这里按文案放行 —— 顺手记一笔：gated 位没进响应体是个可观测性缺口。
+      const gated = /未开放|尚未|还没有|暂不|不支持/.test(String(j.reply || ''));
+      if (tool && !isRead && !hasTicket && !gated) bad.push(`「${text}」写类工具 ${tool} 按契约必须先出确认票，却没发`);
     }
     const balB = balOf(await req('GET', '/v1/credits', { token }));
     check('A21', `意图解析合格率 ≥ 5/6`, hit >= 5, `${hit}/${cases.length}${bad.length ? ' | ' + bad.join(' | ') : ''}`);

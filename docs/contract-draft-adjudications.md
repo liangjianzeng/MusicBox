@@ -24,3 +24,31 @@
 - `/healthz.online` 的 `online` 是 **App WSS 连接数**，不是执行器个数（真机排障时把它当执行器数，误判过"执行器没起来"）。
 - 执行器死活看 `executors.last_seen`（300s 窗口），不看 `online`。
 - ACE-Step 引擎返回的 `file` 是**异机绝对路径**，必须走 `GET /music/{id}/file` 取件口回捞（已在 `lanes/music.js` 实现并留审计）。
+
+## 2026-11-27 真机/跨机链复核追加裁定（4 条）
+
+**9. 「手机连不上 `100.81.83.59:7900`」不是产品缺陷，是我的验证脚本写错。**
+初判是"本机防火墙挡住 LAN/Tailscale 面"，实测（server 活着时对三个面各打一次）：
+`127.0.0.1:7900` / `192.168.1.10:7900` / `100.81.83.59:7900` **全部 HTTP 200**。真因在
+`scripts/verify_real_music.mjs` A11：它把 `audio_url` 用 `url.replace(SERVER,'')` 剥前缀后交给 `req()`，
+而 `req()` 会再把 SERVER 拼回去 —— public base 与测试基址不同源时前缀剥不掉，拼出畸形路径 → `HTTP 0 0B`。
+**裁定：改判据，不改产品。** A11 必须照客户端那样**直打绝对 URL**（那才是手机真正拿到的串）。
+连带把 A10b 从"必须等于测试基址"放宽为"等于测试基址 ∪ 显式声明的 `MB_PUBLIC_BASE_URL`"：
+它的真实意图是"别落到那个没人配的陈旧默认 :7900"，而不是"必须是回环"。修后 30/30 判据全绿。
+
+**10. 「带 `context.refs` 却没解析出作品」是正确行为 —— 候选不是作品。**
+探针把候选 id（`c_…`）当作品塞进 refs，得到 `need_context`。`resolveRefs` 只查
+`SELECT * FROM works WHERE id=? AND user_id=?`，而候选要经 `POST /v1/works/:id/adopt` 才成为 `works` 行（`w_…`）。
+**裁定：验证器/用例必须先采纳再带 refs**（真机验证器已补 adopt；V33-③⑤ 直接锁死这条），
+产品侧不动 —— 把候选当作品会让"改标题"永远静默失败。
+
+**11. 付费闸门 `assistant_actions` 默认关（fail-closed）时的"命中工具但没发票"不是缺陷。**
+`src/server/core/appconfig.js:105` 显式把 `assistant_actions` 置 `on=0, gray=0`；命中 `music.adjust_params` 后
+走 `{reply:'统一助手的付费动作尚未开放…', data:null, gated:true}`，本就不该有票。
+**裁定：验证判据按"闸门诚实告知"放行**（文案 /未开放|尚未|还没有|暂不|不支持/），
+但见第 12 条 —— 这个放行是被迫的，根子在 `gated` 位没进响应体。
+
+**12. 观测缺口（登记，未修）：`gated` 只活在中文文案里。**
+`finishResponse` 的 body 只有 `{session_id,message,reply,meta}`，`run.gated` 被丢掉。客户端要区分
+"被闸门挡住 / 没听懂 / 缺上下文"只能读中文文案，验证脚本也只能按文案放行（契约 v5.4.5）。
+**待产品定**：建议 `meta.gated=true` + `meta.intent='gated'`，属响应体加字段（向后兼容，非破坏性）。

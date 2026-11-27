@@ -195,7 +195,7 @@ EXECUTOR_MOCK=1 node src/executor/index.js \
 node scripts/verify_remediation.mjs              # 约 2.5 分钟，35 项一张表
 node scripts/verify_remediation.mjs --quick      # 只跑静态+从零链路+LLM 三面（约 1 分钟）
 node scripts/verify_remediation.mjs --ticket     # 追加 P1-1 门票 verify.sh --repeat 20（约 30 分钟）
-node scripts/verify_remediation.mjs --music      # 追加真机音乐链（需 GeekPro ACE-Step + SSH 隧道先起）
+node scripts/verify_remediation.mjs --music      # 追加真机音乐链（需 GeekPro ACE-Step 已按 §6 ① 绑 Tailscale 起好）
 ```
 
 输出是「整改项 → 判据 → 实测数字 → 结论」的表，退出码即判据。它和三件套（`verify.sh` / 验收 / 冒烟）的关系是**编排而不是替代**：
@@ -332,8 +332,10 @@ curl -s http://127.0.0.1:7900/healthz | head -c 120     # 有 mv_metrics 段 = �
 
 ```bash
 cd ~/MusicBox
-grep -n '^MB_PUBLIC_BASE_URL=' etc/spark.env      # 实值：http://192.168.1.10:7900（LAN，手机同 /24 可达）✓
-# 手机走 Tailscale 时改成 Tailscale IP：http://100.81.83.59:7900（改完重启 api，见 §3.1）
+grep -n '^MB_PUBLIC_BASE_URL=' etc/spark.env      # 实值：http://100.81.83.59:7900（DGX 的 Tailscale 地址）✓
+# 手机与本机不在同一 LAN 时只能走 Tailscale；同 /24 且防火墙放行时可换 http://192.168.1.10:7900
+# ⚠️ 手机侧 Tailscale 没连上时，App 顶部会显示「服务器未连接，当前可使用本地功能」——这是正确的降级
+#    （明示、不崩、不装死）。先在手机上 curl 基址定性，再决定是修网络还是动代码（见下条决定性判据）。
 ```
 
 改完**在手机上验**（不是在本机 curl）：
@@ -484,12 +486,27 @@ bash bin/start_workers.sh asr1               # 127.0.0.1:8191，懒加载
 | 助手 LLM | DGX `http://127.0.0.1:8090/v1` | `/v1/models` → `id=qwen38-fp4` |
 | 语音识别 | DGX `127.0.0.1:8191`（见 §6.5） | `model_loaded:true` |
 
-因为引擎只绑 `127.0.0.1`，**不要为了连它去改别人的服务监听地址** —— 用 SSH 隧道把它反打到本机：
+因为引擎只绑 `127.0.0.1`（`server.py:348` 是 `uvicorn.run(app, host="127.0.0.1", port=8190)`），
+**不要为了连它去改别人仓库的源码**。两条路，**默认走 ①**：
+
+**① 绑 Tailscale 网卡直连（推荐，不用隧道）** —— 用 uvicorn CLI 绕开它的 `__main__`，只监听 Tailscale 那张网卡：
 
 ```bash
-python3 tmp/gp.py     -t 10800 'E:\Work\X-Theater\runtime\acestep\venv\Scripts\python.exe E:\Work\X-Theater\runtime\acestep\server.py'   # 引擎（前台会话，日志直出）
-python3 tmp/gp_tunnel.py 8190 127.0.0.1 8190                                        # 隧道：本机 8190 → GeekPro 127.0.0.1:8190
-MB_SEC=30 MB_COUNT=1 bash tmp/real_music_run.sh                                     # server+执行器+验收一次跑完
+# 从 DGX 经 SSH 拉起（HF_HUB_OFFLINE=1：模型已在本地，别去联网找）
+GP_PASS=… python3 tmp/gp.py -t 10800 'set HF_HUB_OFFLINE=1&& cd /d E:\Work\X-Theater\runtime\acestep&& E:\Work\X-Theater\runtime\acestep\venv\Scripts\python.exe -m uvicorn server:app --host 100.100.140.75 --port 8190 --log-level warning'
+curl -s -m 8 http://100.100.140.75:8190/health | head -c 200    # 本机验：RTX 5060 Ti / handler_ready 惰性加载
+# etc/spark.env 的 MB_MUSIC_URL 就是它：MB_MUSIC_URL=http://100.100.140.75:8190
+MB_SEC=30 MB_COUNT=1 bash tmp/real_music_run.sh                  # server+执行器+验收一次跑完
+```
+
+> 只绑 `100.100.140.75` 而**不是** `0.0.0.0`：那台是家用游戏机，别把生乐端口顺手开放给整个局域网。
+> 实测跨机链 30/30 判据全绿；产物经 `GET /music/{id}/file` 回捞（执行器在 DGX，异机 `E:\…\out\*.wav` 直接读不到）。
+
+**② 备用：SSH 隧道反打**（Tailscale 面出问题时才用；此时 `MB_MUSIC_URL` 改回 `http://127.0.0.1:8190`）
+
+```bash
+python3 tmp/gp.py       -t 10800 '<同上的 python.exe server.py 起法>'
+python3 tmp/gp_tunnel.py 8190 127.0.0.1 8190                     # 本机 8190 → GeekPro 127.0.0.1:8190
 ```
 
 四个**必然踩到**的坑（本轮全部实测复现过，别再靠猜排障）：
