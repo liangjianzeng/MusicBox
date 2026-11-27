@@ -4,6 +4,7 @@
 // 同一份编曲可以女声唱也可以男声唱，可以清醒唱也可以微醺唱。于是"谁来唱"跟装饰词抢同一份
 // tags 配额（cap 6），还能被挤掉。这里把分类钉死，防止哪天又被塞回去。
 import 'package:flutter_test/flutter_test.dart';
+import 'package:musicbox/features/create/shelf_store.dart';
 import 'package:musicbox/features/create/style_options.dart';
 
 void main() {
@@ -52,6 +53,32 @@ void main() {
           reason: '目录外的词原样回显，不许编中文');
       expect(cat.displayTags(['女声', 'female vocal']), <String>['女声'],
           reason: '中英同义重复出现时只留一个，别把同一件事说两遍');
+    });
+
+    test('要素面板也必须按维度分行：性别/唱法不许再混进「风格」', () {
+      // 真机截图：「本次是按这些要素生成的」里写着 `风格 微醺 / 气声 / 流行 / 古典 / 女声`。
+      // 用户在生成端纠正过的同一件事（歌声≠曲声），这个面板当时漏了 —— 分类必须在**所有**
+      // 露出的地方一致，只在生成页做对等于没做。
+      const brief = TaskBrief(
+        action: '生成',
+        tags: ['female vocal', 'tipsy vocal', 'breathy', 'pop', 'classical', 'strings',
+              'orchestral', '方言说唱'],
+        vocal: '人声演唱',
+      );
+      final rows = {for (final r in brief.toRows()) r.label: r.value};
+      expect(rows.containsKey('风格'), isFalse,
+          reason: '维度混排的老行名不许再出现');
+      expect(rows['谁在唱'], allOf(contains('女声'), contains('人声演唱')));
+      expect(rows['怎么唱'], allOf(contains('微醺'), contains('气声')));
+      expect(rows['曲风'], allOf(contains('流行'), contains('古典')));
+      expect(rows['质感'], contains('弦乐铺底'));
+      // 漂移现场：服务端词典里 orchestral=弦乐铺底，App 本地兜底目录却只写了 strings。
+      // 兜底目录查不到的词**必须原样进「其他说法」**而不是被悄悄丢掉（否则用户看到的选择
+      // 比实际派单少，等于界面在撒谎）；这条同时把"两个真源"的债留在测试里 visible。
+      expect(rows['其他说法'], allOf(contains('orchestral'), contains('方言说唱')));
+      expect(rows['谁在唱'], isNot(contains('微醺')), reason: '唱法不是性别');
+      expect(rows['曲风'], isNot(contains('女声')), reason: '性别不是曲风');
+
     });
 
     test('中文标签换算成派单词；查不到的原样交出，不自造英文词', () {

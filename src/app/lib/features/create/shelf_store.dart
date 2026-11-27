@@ -66,14 +66,13 @@ class TaskBrief {
           TaskFact('歌词', lyrics!.trim().replaceAll(RegExp(r'\s+'), ' '),
               multiline: true),
         if (mood.isNotEmpty) TaskFact('心情', mood.join(' / ')),
-        // 深度档选择项发的是英文规范词（guofeng/synth…，模型要吃的形态）；
-        // 要素卡是给人看的，必须翻回中文——用户在 chips 上点的是「国风」「合成器」，
-        // 这里不能让他看到另一个世界的词。目录外的自由补充原样显示，不编造翻译。
-        if (tags.isNotEmpty)
-          TaskFact('风格',
-              tags.map((t) => StyleCatalog.fallback.zhFor(t)).join(' / ')),
+        // 深度档选择项发的是英文规范词（guofeng/synth…，模型要吃的形态）；要素卡是给人看的，
+        // 必须翻回中文。以前这些词**全塞在「风格」一行**里：
+        // `风格 微醺 / 气声 / 流行 / 古典 / 女声` —— 唱法、曲风、性别混成一锅，正是
+        // 2026-11-27 用户在生成端纠正过的同一件事（歌声≠曲声），这个面板当时漏了。
+        // 现在按四个维度分行，与 03/04/05 卡片同一口径；目录外的自由补充单独一行原样显示，不编造翻译。
+        ..._dimensionRows(),
         if (genre != null && genre!.isNotEmpty) TaskFact('流派', genre!),
-        if (vocal != null && vocal!.isNotEmpty) TaskFact('人声', vocal!),
         if (bpm != null) TaskFact('速度 BPM', '$bpm'),
         if (sec != null) TaskFact('目标时长', '${sec}s'),
         if (count != null) TaskFact('候选数量', '$count 首'),
@@ -84,6 +83,38 @@ class TaskBrief {
           TaskFact('生成模型', modelLabel!),
         ...extra.entries.map((e) => TaskFact(e.key, e.value)),
       ];
+
+  /// 把 tags 按「曲风 / 质感 / 谁在唱 / 怎么唱」分行（与生成端 03/04/05 同一口径）。
+  /// 判据只有一个真源：StyleCatalog 里每个词的 dim。查不到的算"其他说法"，原样显示。
+  List<TaskFact> _dimensionRows() {
+    const cat = StyleCatalog.fallback;
+    final wire = {for (final t in tags) t: (cat.wireFor(t) ?? t).toLowerCase()};
+    final zh = {for (final t in tags) t: cat.zhFor(t)};
+    bool inSet(Iterable<StyleOption> opts, String t) =>
+        opts.any((o) => o.wire.toLowerCase() == wire[t]);
+    List<String> pick(Iterable<StyleOption> opts) =>
+        tags.where((t) => inSet(opts, t)).toList();
+    String j(List<String> xs) => xs.map((t) => zh[t]!).join(' / ');
+    final who = pick(cat.voice.where((o) => o.dim == 'gender'));
+    final how = pick(cat.voice.where((o) => o.dim == 'delivery'));
+    final style = pick(cat.genres);
+    final craft = pick(cat.styleWords);
+    final rest = tags
+        .where((t) =>
+            !who.contains(t) && !how.contains(t) && !style.contains(t) && !craft.contains(t))
+        .toList();
+    return [
+      if ((vocal != null && vocal!.isNotEmpty) || who.isNotEmpty)
+        TaskFact('谁在唱', <String>[
+          if (vocal != null && vocal!.isNotEmpty) vocal!,
+          ...who.map((t) => zh[t]!),
+        ].join(' / ')),
+      if (how.isNotEmpty) TaskFact('怎么唱', j(how)),
+      if (style.isNotEmpty) TaskFact('曲风', j(style)),
+      if (craft.isNotEmpty) TaskFact('质感', j(craft)),
+      if (rest.isNotEmpty) TaskFact('其他说法', j(rest)),
+    ];
+  }
 
   /// 一行摘要：深度 · 3 首 · 60s · 速度 100
   String get headline => [
