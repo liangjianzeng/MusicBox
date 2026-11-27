@@ -432,27 +432,45 @@ class _WorkCard extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Expanded(
-              child: WaveformCanvas(
-                peaks: pseudoPeaks(work.id, n: 40),
-                height: 44,
-                barWidth: 2.5,
-                gap: 2,
-              ),
-            ),
-            Row(
-              children: [
-                Text(_fmt(work.durationSec),
-                    style:
-                        const TextStyle(fontSize: 11, color: Colors.white54)),
-                const Spacer(),
-                IconButton(
-                  onPressed: onPlay,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 20),
+            if (work.isHusk)
+              // 空壳不许打扮成正经歌。真机 2026-11-27 现场：一条 title/时长/标签/歌词/音频全空的
+              // 骨架，卡片上照样画着波形、写着 0:00、还挂一颗 AI 生成角标和一颗**点了没反应**的
+              // 播放键 —— 用户的解读是"我存好的歌变成了一首空歌"，比直接说数据不完整更吓人。
+              // 判定走 Work.isHusk（与作品详情页同一个真源），别在这儿再抄一份。
+              Expanded(
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline_rounded,
+                        size: 16, color: Colors.white.withValues(alpha: .38)),
+                    const SizedBox(width: 6),
+                    const Text('数据不完整 · 点开可重试',
+                        style: TextStyle(fontSize: 11, color: Colors.white38)),
+                  ],
                 ),
-              ],
-            ),
+              )
+            else ...[
+              Expanded(
+                child: WaveformCanvas(
+                  peaks: pseudoPeaks(work.id, n: 40),
+                  height: 44,
+                  barWidth: 2.5,
+                  gap: 2,
+                ),
+              ),
+              Row(
+                children: [
+                  Text(_fmt(work.durationSec),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white54)),
+                  const Spacer(),
+                  IconButton(
+                    onPressed: onPlay,
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                  ),
+                ],
+              ),
+            ],
             Text(work.title.isEmpty ? '未命名作品' : work.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

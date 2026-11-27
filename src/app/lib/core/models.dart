@@ -233,6 +233,22 @@ class Work {
   final String? waveformUrl;
   final int createdAt;
 
+  /// 数据不完整的"空壳作品"：标题、时长、标签、歌词、音频**全空**。
+  /// 判定放在这儿是因为它是**一个判断**，不是页面的私有细节：真机现场是这种对象被当正经作品
+  /// 渲染成「未命名作品 · 0:00 · 仅自己」，用户以为"我的歌变成了一首空歌"，比直接报错更吓人。
+  /// 端侧任何地方要区分"作品"与"骨架"，都必须走这里，别各写一份（写了就一定会飘）。
+  bool get isHusk {
+    // fromMap 会把 null 标题补成「未命名作品」显示用；空壳判定必须把这个占位符当"没有标题"，
+    // 否则服务端给 null 标题时，骨架就混过了检查（只有五个字段全空才会走到这里，不会误伤
+    // 一首真叫「未命名作品」且有音频的正常歌）。
+    final t = title.trim();
+    return (t.isEmpty || t == '未命名作品') &&
+        durationSec <= 0 &&
+        genres.isEmpty &&
+        (lyrics ?? '').trim().isEmpty &&
+        (audioUrl ?? '').isEmpty;
+  }
+
   factory Work.fromMap(Map m) {
     final gen = (m['gen'] as Map?) ?? const {};
     final lineage = (m['lineage'] as Map?) ?? const {};

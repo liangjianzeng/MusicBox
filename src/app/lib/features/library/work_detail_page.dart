@@ -120,16 +120,6 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
 
   Work? get _work => _detail?.work ?? _cached;
 
-  /// 数据不完整的"空壳作品"：标题、时长、标签、歌词、音频全空。
-  /// 以前这种对象会被当正经作品渲染成「未命名作品 · 0:00 · 仅自己」——
-  /// 用户看到的是"我的歌变成了一首空歌"，比直接报错更让人以为数据丢了。
-  bool _isHusk(Work w) =>
-      w.title.trim().isEmpty &&
-      w.durationSec <= 0 &&
-      w.genres.isEmpty &&
-      (w.lyrics ?? '').trim().isEmpty &&
-      (w.audioUrl ?? '').isEmpty;
-
   String _fmt(double sec) {
     final s = sec.round();
     return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
@@ -711,7 +701,7 @@ class _WorkDetailPageState extends ConsumerState<WorkDetailPage> {
           : null,
       body: _loading && w == null
           ? const Center(child: CircularProgressIndicator())
-          : w == null || _isHusk(w)
+          : w == null || w.isHusk
               ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,

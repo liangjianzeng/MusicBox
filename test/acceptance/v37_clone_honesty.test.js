@@ -406,4 +406,56 @@ describe('V37 克隆诚实性 / 强度唯一真源 / 身份可恢复（v5.6.0）
       assert.strictEqual(clone.cover_strength, 1, 'V37-⑩ 强度回执必须一并抵达（用户要能核对滑杆是不是白拖）');
     }
   });
+
+  // ---------- ⑪ 空壳作品必须被认出来（六项里的「work_detail 空壳 Work 渲染诚实化」） ----------
+  // 真机现场：一条 title/duration/genres/lyrics/audio 全空的骨架被当正经作品渲染成
+  // 「未命名作品 · 0:00 · 仅自己」+ 可点的播放键 —— 用户以为"我的歌变成了空歌"。
+  // 端侧判定本体由 src/app/test/work_husk_honesty_test.dart 钉；这里钉两件事：
+  //   a) 服务端**确实**会把这种行当正常作品发出去（所以端侧那道判断是承重的，不是装饰）；
+  //   b) 页面必须走 Work.isHusk 这一个真源，不许把判断抄回页面里（抄回去的一定会飘）。
+  it('V37-⑪ 空壳作品：服务端会原样发出去，端侧必须走 Work.isHusk 唯一真源', async () => {
+    const me = await mint({ device_key: 'd4'.repeat(16) });
+    const uid = me.json.user.id;
+    const tok = me.json.access_token;
+    const db = new DatabaseSync(S.dbPath);
+    db.prepare('INSERT INTO works(id,user_id,title,status,duration_sec,genres,lyrics,audio_master,audio_playback,created_at)'
+      + ' VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run('w_v37_husk', uid, '', 'done', 0, '', '', null, null, new Date().toISOString());
+    db.close();
+
+    const d = await S.api('GET', '/v1/works/w_v37_husk', { token: tok });
+    assert.strictEqual(d.status, 200,
+      '空壳作品必须查得到（不能 500/404 让用户以为整首没了）：' + d.status + ' ' + d.text.slice(0, 200));
+    const w = d.json.work || d.json;
+    const emptyish = (v) => v == null || String(v).trim() === '';
+    assert.ok(emptyish(w.title), 'V37-⑪ 服务端确实会发空标题，端侧那道判断因此是承重的：' + JSON.stringify(w).slice(0, 200));
+    assert.ok(!Number(w.duration_sec), 'V37-⑪ 时长必须是 0/空');
+    assert.ok(!w.genres || (Array.isArray(w.genres) ? w.genres.length === 0 : emptyish(w.genres)),
+      'V37-⑪ 标签必须为空');
+    assert.ok(emptyish(w.audio_url), 'V37-⑪ 没有可播音频');
+
+    const page = code('src/app/lib/features/library/work_detail_page.dart');
+    assert.ok(/\.isHusk\b/.test(page),
+      'V37-⑪ 详情页必须走 Work.isHusk（唯一真源），不许把判定抄回页面里');
+    assert.ok(!/bool\s+_isHusk\s*\(/.test(page),
+      'V37-⑪ 页面里不许再私有复刻一份 _isHusk —— 两份判定一定会飘，端侧判词也就形同虚设');
+    assert.ok(/数据不完整|不完整/.test(page),
+      'V37-⑪ 空壳必须有一句人话（不许悄悄渲染成「未命名作品 · 0:00 · 仅自己」糊弄人）');
+
+    // 真机 2026-11-27 补：详情页修好了，**曲库卡片**照样把骨架打扮成正经歌 —— 伪波形 + 0:00 +
+    // 一颗点了没反应的播放键。列表才是用户第一眼看到的地方，只修详情等于没修。
+    const card = code('src/app/lib/features/library/library_page.dart');
+    assert.ok(/\.isHusk\b/.test(card),
+      'V37-⑪ 曲库卡片也必须走 Work.isHusk；只修详情页 = 用户第一眼看到的还是假歌');
+    assert.ok(!/bool\s+_isHusk\s*\(/.test(card),
+      'V37-⑪ 卡片里不许私有复刻一份 _isHusk（同一个判断只许有一份）');
+    assert.ok(/数据不完整/.test(card),
+      'V37-⑪ 卡片上要有诚实说明，不能只剩 0:00 + 播放键');
+    // 空壳分支里不许留播放键：抽 `if (work.isHusk) ... else` 这一段单独看（恒真断言等于没判词）
+    const huskBranch = (card.match(/if\s*\(\s*work\.isHusk\s*\)[\s\S]*?\belse\b/) || [''])[0];
+    assert.ok(huskBranch.length > 20,
+      'V37-⑪ 卡片必须有 isHusk 专用分支（把骨架和正经歌走同一套渲染 = 用户第一眼就是假歌）');
+    assert.ok(!/onPlay|play_arrow/.test(huskBranch),
+      'V37-⑪ 空壳分支里不许留播放键/播放图标 —— 点了没反应，用户只能反复点然后来报 bug');
+  });
 });
