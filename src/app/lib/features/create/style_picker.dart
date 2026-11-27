@@ -18,7 +18,10 @@ class StylePicker extends ConsumerWidget {
     required this.selected,
     required this.onChanged,
     this.maxGenres = 3,
-    this.maxStyleWords = 6,
+    // 3 + 3 = 6，必须等于服务端 generate 的 tags 上限（works.js unionArr cap）。
+    // 以前是 3 + 6 = 9：App 让你选 9 个，服务端只留 6 个，剩下 3 个无声消失 ——
+    // 用户勾了「女声」却出男声，就是被这样丢掉的（2026-11-27 真机验收）。
+    this.maxStyleWords = 3,
   });
 
   /// 已选规范词（wire 值，含用户自由补充的词）

@@ -16,3 +16,7 @@ gradlew text eol=lf
 *.ttf binary
 *.apk binary
 *.aab binary
+
+# 引擎入口收编件：必须逐字节保真（Windows CRLF），不许 git 归一化
+vendor/acestep/*.py -text
+vendor/acestep/*.orig -text

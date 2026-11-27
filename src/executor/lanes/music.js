@@ -159,10 +159,12 @@ async function runMusic(job, ctx) {
     const c = candidates[i];
     const seq = Number(c.seq) || (i + 1);
     const seed = seedBase + (Number(c.seed_delta) || 0);
-    // :8190 严格 schema（2026-11-23 实测 422 教训）：tags=逗号串（非数组）；bpm=null 或 30-300（0 非法）；seconds≤180 引擎硬限
+    // :8190 严格 schema（2026-11-23 实测 422 教训）：tags=逗号串（非数组）；bpm=null 或 30-300（0 非法）；
+    // seconds 上限历史上是 180（引擎入口自设），2026-11-27 收编进 vendor/acestep 后放到 600（模型自身能力）。
+    // 注意：**对外 API 仍是 sec 15-240**（contract sec_max），这里放宽只是不再让引擎入口二次砍用户的时长。
     const baseBody = {
       mood: p.mood || '温暖',
-      seconds: Math.max(15, Math.min(180, sec)),
+      seconds: Math.max(15, Math.min(600, sec)),
       seed,
       tags: tags.join(','),
       lyrics: p.lyrics || '',

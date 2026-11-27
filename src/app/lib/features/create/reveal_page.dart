@@ -70,7 +70,11 @@ class _RevealPageState extends ConsumerState<RevealPage> {
   int _idx = 0;
   late final Map<String, String> _adopted = Map.of(widget.adopted);
   late final ShelfNotifier _shelf = ref.read(shelfProvider.notifier);
-  late final ScaffoldMessengerState _messenger = ScaffoldMessenger.of(context);
+  /// 必须在 initState 里抓，不能 `late` 惰性求值：`ScaffoldMessenger.of(context)` 会被拖到
+  /// 第一次用到的时候才执行，而第一次用到恰好是 dispose() 里弹「已存暂存架」—— 那时 context 已卸载，
+  /// 内部空断言直接抛异常；崩在卸载中途会把之后打开的页面污染成 ErrorWidget
+  /// （2026-11-27 真机：曲库卡片标题变红字+黄下划线、底部导航整条消失，logcat 见 ScaffoldMessenger.of 栈）。
+  ScaffoldMessengerState? _messenger;
   bool _quietExit = false; // 内部跳转（再来一批/去曲库）不弹「已存暂存架」
   final Map<String, List<double>> _peaks = {}; // candidateId -> 真 peaks
   bool _busy = false;
@@ -91,6 +95,7 @@ class _RevealPageState extends ConsumerState<RevealPage> {
   @override
   void initState() {
     super.initState();
+    _messenger = ScaffoldMessenger.of(context); // 趁 context 还活着抓走；dispose 里只用这个缓存
     _loadPeaks(_cur);
     // 真·播放进度：订阅全局播放器位置/时长，绝不用写死的 0.5 假装在播
     _posSub = _player.positionStream.listen((v) {
@@ -112,7 +117,7 @@ class _RevealPageState extends ConsumerState<RevealPage> {
     // 这是「很容易点出去就不见了」的根治点
     _saveShelf();
     if (!_quietExit) {
-      _messenger.showSnackBar(
+      _messenger?.showSnackBar(
           const SnackBar(content: Text('这几首已存进「曲库 · 暂存」，回来点它就能接着听')));
     }
     super.dispose();

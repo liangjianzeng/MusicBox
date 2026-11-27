@@ -290,7 +290,9 @@ class _ShellProState extends ConsumerState<ShellPro> {
                       children: [
                         const _H('心情（可多选）'),
                         MoodChips(
-                            options: kMoodOptions,
+                            // 吃服务端下发的目录（style_options），别用编译期 kMoodOptions：
+                            // 否则服务端加一档心情（如「微醺」）永远到不了这一档界面。
+                            options: cat.moods.map((e) => e.zh).toList(growable: false),
                             selected: st.mood,
                             onChanged: (v) {
                               notifier.setMood(v);

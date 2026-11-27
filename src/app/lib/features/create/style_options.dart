@@ -33,6 +33,7 @@ const kMoodCatalog = <StyleOption>[
   StyleOption('助眠', bpm: 62),
   StyleOption('悲伤', bpm: 72),
   StyleOption('忧郁', bpm: 76),
+  StyleOption('微醺', bpm: 84),
   StyleOption('浪漫', bpm: 96),
   StyleOption('甜蜜', bpm: 108),
   StyleOption('热血', bpm: 140),

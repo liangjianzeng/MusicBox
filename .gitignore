@@ -96,3 +96,6 @@ services/acestep/venv
 services/acestep/models
 services/acestep/acestep-repo
 services/acestep/.cache/
+
+# 真机验收交付物（音频/截图，单文件可达 10MB，不入仓）
+deliver/

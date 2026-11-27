@@ -22,7 +22,10 @@ function buildMusicPayload(params, actor) {
   const textForScan = [params.prompt, (params.tags || []).join(' '), params.mood, (params.lyrics || '').slice(0, 300)].join('\n');
   const scan = dict.scan(textForScan);
   const mood = String(params.mood || scan.moods[0] || '中性').slice(0, FL.mood);
-  const tags = U.unionArr(scan.tags, U.toArr(params.tags), 6);
+  // 用户手选必须压过扫描猜测：以前 scan.tags 排在前面，6 个配额被"从文案里猜的词"占满，
+  // 用户明确勾的「女声」被静默丢弃 —— 2026-11-27 真机复现：要女声，结果出一首男声，
+  // 且界面没有任何地方说"你的选择被丢了"。猜测只能是补充，不能挤掉用户的明确意图。
+  const tags = U.unionArr(U.toArr(params.tags), scan.tags, 6);
   const sec = params.sec == null ? G.sec_default : U.clamp(Math.round(Number(params.sec)), G.sec_min, G.sec_max);
   const count = params.count == null ? G.count_default : U.clamp(Math.round(Number(params.count)), G.count_min, G.count_max);
   const bpm = params.bpm == null ? (scan.bpm || 100) : U.clamp(Math.round(Number(params.bpm)), 40, 200);

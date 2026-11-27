@@ -10,6 +10,9 @@ const ENTRIES = [
   { key: '助眠', type: 'mood', aliases: ['助眠', '睡觉', '失眠', '催眠'], mood: '助眠', tags: ['ambient', 'sleep'], bpm: 62, instrumental: true },
   { key: '悲伤', type: 'mood', aliases: ['悲伤', '难过', '伤心', '失恋', '想哭'], mood: '悲伤', tags: ['sad', 'melancholy'], bpm: 72 },
   { key: '忧郁', type: 'mood', aliases: ['忧郁', 'emo', '低落', '致郁'], mood: '忧郁', tags: ['melancholic'], bpm: 76 },
+  // 微醺：真实需求（「来点微醺感的歌」）在 24 档心情里无处可选，用户只能退选 忧郁/夜晚，
+  // 出来是苦情骨架 —— 2026-11-27 真机验收用户当场反馈「这旋律风格不喜欢」。补一档慵懒微醺。
+  { key: '微醺', type: 'mood', aliases: ['微醺', '醺', '醉', '喝一点', '喝了一点', '半醉', '上头', '慵懒', 'tipsy', 'drunk'], mood: '微醺', tags: ['tipsy', 'chill', 'laid-back'], bpm: 84 },
   { key: '浪漫', type: 'mood', aliases: ['浪漫', '告白', '表白', '恋爱'], mood: '浪漫', tags: ['romantic', 'love'], bpm: 96 },
   { key: '甜蜜', type: 'mood', aliases: ['甜蜜', '甜', '甜甜的', '撒糖'], mood: '甜蜜', tags: ['sweet', 'cute'], bpm: 108 },
   { key: '热血', type: 'mood', aliases: ['热血', '燃', '劲爆', '燃爆', '带感'], mood: '热血', tags: ['epic', 'power'], bpm: 140 },
