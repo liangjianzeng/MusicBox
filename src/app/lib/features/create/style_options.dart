@@ -200,7 +200,23 @@ class StyleCatalog {
     for (final o in _all) {
       if (o.wire.toLowerCase() == s.toLowerCase() || o.zh == s) return o.zh;
     }
-    return s;
+    // 别名兜底。真源在服务端词典：`微醺` 的规范 en 是 `tipsy vocal`，`tipsy` 只在 aliases 里；
+    // 而作品表里存的就是 `tipsy`（生成时按别名扫进去的），于是详情页一直显示英文 ——
+    // 用户不需要读引擎词汇表（2026-11-27 真机：`calm · relax · tipsy`）。
+    // 客户端目录是服务端的 const 镜像、不带 aliases，所以退一步按**词头整词**再认一次。
+    // 只在**唯一命中**时认，多个条目共享同一词头就不猜；查不到仍原样回显，绝不编一个中文上去。
+    final lower = s.toLowerCase();
+    String? found;
+    var hits = 0;
+    for (final o in _all) {
+      final w = o.wire.toLowerCase();
+      if (!w.contains(' ')) continue;
+      if (w.split(RegExp(r'\s+')).first == lower) {
+        found = o.zh;
+        hits++;
+      }
+    }
+    return (hits == 1 && found != null) ? found : s;
   }
 
   /// 展示用：把作品上存的规范词（可能中英混杂、带空格）翻成中文标签。
