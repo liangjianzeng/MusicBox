@@ -296,9 +296,18 @@ if (MUSIC) {
       MB_SERVER: srv, MB_DB: process.env.MB_DB || '/tmp/mb-dev/db/musicbox.sqlite', MB_BUDGET_MS: '1500000',
     }),
   });
-  const m = r.out.match(/(\d+)\/(\d+) 判据通过/) || r.out.match(/通过\s*(\d+)\s*\/\s*(\d+)/);
-  record('H 真机音乐', '真机音乐链（server 在 DGX + ACE-Step 在 GeekPro）', 'verify_real_music.mjs 判据全通过',
-    ok(m && m[1] === m[2] && r.code === 0), m ? `${m[1]}/${m[2]}；退出码=${r.code}` : (r.out.slice(-200) || '无输出'));
+  // 判据就照脚本自己打的结论行来：它成功时打「✓ 音乐线真机验收通过」，失败时打「✗ …未通过：N 项失败（共 M 项判据）」。
+  // （上一版在这里找一个**不存在的** "N/M 判据通过" 格式 → 无论跑成什么样都判红，还只能拿输出尾巴当"实测"糊弄过去。
+  //   教训：判据必须对着被测脚本的真实输出写，不能凭记忆编格式。）
+  const passLine = /音乐线真机验收通过/.test(r.out);
+  const failLine = (r.out.match(/未通过：(\d+) 项失败（共 (\d+) 项判据）/) || []);
+  const green = (r.out.match(/^\s*✓/gm) || []).length;
+  const red = (r.out.match(/^\s*✗/gm) || []).length;
+  record('H 真机音乐', '真机音乐链（server 在 DGX + ACE-Step 在 GeekPro，跨机出歌+取件回捞+账本自洽）',
+    'verify_real_music.mjs 结论行=通过 且 无 ✗ 行 且 退出码 0',
+    ok(passLine && red === 0 && r.code === 0),
+    passLine ? `✓${green} 条判据 全绿；退出码=${r.code}`
+      : `退出码=${r.code}；✓${green} ✗${red}${failLine.length ? `；失败 ${failLine[1]}/${failLine[2]} 项` : '；未见结论行'}；${(r.out.match(/✗ [^\n]{0,90}/g) || []).slice(0, 2).join(' / ')}`);
   }
 } else {
   record('H 真机音乐', '真机音乐链（跨机出歌 + 取件口回捞 + Σdelta==余额）', '需 GeekPro ACE-Step(:8190) + SSH 隧道',
