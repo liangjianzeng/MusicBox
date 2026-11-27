@@ -223,4 +223,63 @@ describe('V37 克隆诚实性 / 强度唯一真源 / 身份可恢复（v5.6.0）
     assert.ok(S.db.all("SELECT * FROM audit WHERE kind='auth.claim'").length >= 1,
       'V37-⑥ 认领必须留审计：这是"谁在什么时候改走了账号"的唯一现场证据');
   });
+
+  // ---------- ⑦⑧ 重装的真实顺序（判词曾经漏掉这条，被真机当场打脸） ----------
+  // V37-⑥ 用的是两个"干净"的 device_key，于是永远撞不上真实场景：
+  // 真机重装后 App 会**先**自动建一个临时游客号，用户这才想起输备份码 —— 本机锚点已被占用。
+  it('V37-⑦ 本机已自动建号后，仍必须能用备份码认回老身份（曾经 500 撞 UNIQUE）', async () => {
+    const oldDev = 'a9'.repeat(16);
+    const old0 = await mint({ device_key: oldDev });
+    assert.strictEqual(old0.status, 200, '建老身份应 200：' + old0.text.slice(0, 200));
+    const code = String(old0.json.recovery_code || '');
+    const oldId = old0.json.user.id;
+    const w = new DatabaseSync(S.dbPath);
+    w.prepare('INSERT INTO works(id,user_id,title,status,created_at) VALUES(?,?,?,?,?)')
+      .run('w_v37_keep', oldId, '要保住的歌', 'done', new Date().toISOString());
+    w.close();
+
+    const newDev = 'b8'.repeat(16);
+    const fresh = await mint({ device_key: newDev });
+    assert.strictEqual(fresh.json.first_time, true, '重装首启应当新建临时身份');
+
+    const c = await S.api('POST', '/v1/auth/claim',
+      { json: { device_key: newDev, recovery_code: code } });
+    assert.strictEqual(c.status, 200,
+      'V37-⑦ 本机已有临时号时必须仍能认领。真机 2026-11-27 在这里 500' +
+      '（UNIQUE users.guest_key）——恢复通道在最需要它的那一刻失灵：' + c.text.slice(0, 200));
+    assert.strictEqual(c.json.user.id, oldId, 'V37-⑦ 必须认回原身份');
+
+    const kept = S.db.all('SELECT id FROM works WHERE user_id=?', oldId).map((r) => r.id);
+    assert.ok(kept.includes('w_v37_keep'), 'V37-⑦ 认领不许动用户内容：作品必须还在');
+
+    const back = await mint({ device_key: newDev });
+    assert.strictEqual(back.json.user.id, oldId,
+      'V37-⑦ 认领后同一 device_key 只能认得这一个身份（临时号必须被摘锚）');
+    assert.ok(S.db.all("SELECT * FROM audit WHERE kind='auth.claim_retire_placeholder'").length >= 1,
+      'V37-⑦ 摘掉临时号锚点必须留审计');
+    // 摘锚用"改键"而不是删行：积分流水等外键还指着那一行，删了会留孤儿账
+    const retired = S.db.all("SELECT * FROM users WHERE guest_key LIKE 'retired-%'");
+    assert.ok(retired.length >= 1, 'V37-⑦ 临时号应被摘锚退役（保留行，不毁账）');
+  });
+
+  it('V37-⑧ 本机临时号已经有作品时必须 403 停下，而不是静默毁掉内容', async () => {
+    const oldDev = 'c7'.repeat(16);
+    const old0 = await mint({ device_key: oldDev });
+    const code = String(old0.json.recovery_code || '');
+    const newDev = 'd6'.repeat(16);
+    const fresh = await mint({ device_key: newDev });
+    const w = new DatabaseSync(S.dbPath);
+    w.prepare('INSERT INTO works(id,user_id,title,status,created_at) VALUES(?,?,?,?,?)')
+      .run('w_v37_local', fresh.json.user.id, '本机已经写出来的歌', 'done', new Date().toISOString());
+    w.close();
+
+    const c = await S.api('POST', '/v1/auth/claim',
+      { json: { device_key: newDev, recovery_code: code } });
+    assert.strictEqual(c.status, 403,
+      'V37-⑧ 本机号里有东西时必须拒绝顶替（毁数据换便利是不可接受的）：' + c.status + ' ' + c.text.slice(0, 200));
+    assert.ok(/作品|绑定手机/.test(String((c.json || {}).message || '')),
+      'V37-⑧ 拒绝必须说清原因和下一步，实际 ' + c.text.slice(0, 200));
+    assert.ok(S.db.all('SELECT id FROM works WHERE user_id=?', fresh.json.user.id).length >= 1,
+      'V37-⑧ 拒绝的同时本机内容一行都不许少');
+  });
 });

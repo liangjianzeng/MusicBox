@@ -182,6 +182,25 @@ function claim(ctx) {
   }
   const user = store.get('SELECT * FROM users WHERE recovery_hash=?', U.sha256hex(code));
   if (!user) throw new U.ApiError('UNAUTHORIZED', '备份码不对，没能认出这个身份；请核对后重试');
+  // 换机/重装的真实顺序是：本机首启**先**自动建了一个临时游客号，用户这才想起用备份码认回老身份。
+  // 于是本机锚点 sha256(device_key) 已被那个临时号占着，直接 UPDATE 会撞 UNIQUE(users.guest_key)
+  // —— 真机 2026-11-27 就是在这里 500「服务开小差了」，恢复通道在最需要它的那一刻失灵。
+  const holder = store.get('SELECT * FROM users WHERE guest_key=?', U.sha256hex(deviceKey));
+  if (holder && holder.id !== user.id) {
+    const owned = store.get('SELECT COUNT(*) AS n FROM works WHERE user_id=?', holder.id);
+    if (Number(owned && owned.n) > 0) {
+      // 本机这个号有东西：绝不能为了认领把别人的作品静默毁掉，必须停下来让人决定
+      throw new U.ApiError('FORBIDDEN',
+        '这台设备当前账号里已经有作品，不能直接顶替；请先给它绑定手机，或用它的备份码恢复');
+    }
+    // 空壳临时号：把它的锚点摘掉（不删行 —— 积分流水等外键还指着它，删行会留孤儿账）。
+    // 摘掉后它再也无法凭 device_key 登录，等价于退役，且不动任何用户内容。
+    store.run('UPDATE users SET guest_key=? WHERE id=?', 'retired-' + holder.id, holder.id);
+    store.run('DELETE FROM sessions WHERE user_id=?', holder.id);
+    store.log('auth.claim_retire_placeholder', {
+      placeholder_id: holder.id, claimed_user_id: user.id,
+    });
+  }
   // 认领＝把这台设备的锚点绑到该身份上；旧设备令牌全部作废（丢掉的那台不该继续能调）
   store.run('UPDATE users SET guest_key=? WHERE id=?', U.sha256hex(deviceKey), user.id);
   store.run('DELETE FROM sessions WHERE user_id=?', user.id);

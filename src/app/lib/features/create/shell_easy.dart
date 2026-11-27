@@ -256,39 +256,6 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                             if (!_busy) _setText(v);
                           },
                         ),
-                      // 谁来唱：三档一致。以前只有标准/深度档能选性别，
-                      // 于是"最省事的那一档"恰恰是锁不住音色的那一档。
-                      if (!shortScreen) const SizedBox(height: 18),
-                      if (!shortScreen)
-                        const Text(
-                          '谁来唱',
-                          style: TextStyle(
-                            color: CreationPalette.text,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      if (!shortScreen) const SizedBox(height: 2),
-                      if (!shortScreen)
-                        const Text(
-                          '选一个就能定性别（这是"人"，不是风格）',
-                          style: TextStyle(
-                            color: CreationPalette.faint,
-                            fontSize: 10.5,
-                          ),
-                        ),
-                      if (!shortScreen) const SizedBox(height: 8),
-                      if (!shortScreen)
-                        MoodChips(
-                          options: styleCatalogOf(ref)
-                              .genders
-                              .map((e) => e.zh)
-                              .toList(growable: false),
-                          selected: _voice == null ? const [] : [_voice!],
-                          single: true,
-                          onChanged: (v) => setState(
-                              () => _voice = v.isEmpty ? null : v.first),
-                        ),
                     ],
                   ),
                 ),
@@ -318,6 +285,41 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                 ),
               ),
               if (!keyboardOpen) ...[
+                // 谁来唱：三档一致。以前只有标准/深度档能选性别，于是"最省事的那一档"
+                // 恰恰是锁不住音色的那一档。必须放在 sticky dock 里 —— hero 区不滚动，
+                // 放上去会被输入卡片整个盖住（2026-11-27 真机第一次就踩了这个）。
+                const SizedBox(height: 10),
+                const Row(
+                  children: [
+                    Text(
+                      '谁来唱',
+                      style: TextStyle(
+                        color: CreationPalette.text,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '单选 · 这是"人"，不是风格',
+                        style: TextStyle(
+                            fontSize: 10.5, color: CreationPalette.faint),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                MoodChips(
+                  options: styleCatalogOf(ref)
+                      .genders
+                      .map((e) => e.zh)
+                      .toList(growable: false),
+                  selected: _voice == null ? const [] : [_voice!],
+                  single: true,
+                  onChanged: (v) =>
+                      setState(() => _voice = v.isEmpty ? null : v.first),
+                ),
                 SizedBox(height: shortScreen ? 9 : 12),
                 CreationInputActions(
                   compact: shortScreen,
