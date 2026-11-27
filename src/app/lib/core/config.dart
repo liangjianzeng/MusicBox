@@ -53,6 +53,11 @@ class Prefs {
 
   Future<void> saveBaseUrl(String v) => _sp.setString(_kBaseUrl, v);
 
+  /// 清掉「应用内改过服务器地址」这份持久化覆盖，让打包期 dart-define 重新生效。
+  /// 没有这条路的话，install -r 保留了旧数据 → 残留地址静默压过新包的默认基址，
+  /// 现场表现就是「服务器未连接」但没人知道它在连哪个地址（2026-11-27 真机踩过 40 分钟）。
+  Future<void> clearBaseUrl() => _sp.remove(_kBaseUrl);
+
   String? get accessToken => _sp.getString(_kAccess);
   String? get refreshToken => _sp.getString(_kRefresh);
 

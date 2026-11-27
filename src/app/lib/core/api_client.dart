@@ -60,6 +60,18 @@ class ApiClient {
   /// token 刷新失败时回调（由 session 处理：清 token 回游客）
   Future<void> Function()? onAuthExpired;
 
+  /// 可达性回调（由 connectivityProvider 接线）：**任何**一次真实流量的结果都算数。
+  /// 只有"连不上/超时"这类才算离线信号；4xx/5xx 说明服务器活着，不该拉红条。
+  void Function()? onNetworkError;
+  void Function()? onCallSuccess;
+
+  /// 与 [_toApiException] 同一口径：哪些算"根本没连上"
+  static bool isUnreachable(DioException e) =>
+      e.type == DioExceptionType.connectionTimeout ||
+      e.type == DioExceptionType.receiveTimeout ||
+      e.type == DioExceptionType.sendTimeout ||
+      e.type == DioExceptionType.connectionError;
+
   late final Dio _dio = _build();
   final Dio _raw = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 10),
@@ -77,6 +89,10 @@ class ApiClient {
       validateStatus: (s) => s != null && s < 400,
     ));
     d.interceptors.add(InterceptorsWrapper(
+      onResponse: (r, i) {
+        onCallSuccess?.call(); // 有响应 = 服务器活着
+        i.next(r);
+      },
       onRequest: (o, i) {
         final t = prefs.accessToken;
         if (t != null && t.isNotEmpty) {
@@ -85,6 +101,7 @@ class ApiClient {
         i.next(o);
       },
       onError: (e, i) async {
+        if (isUnreachable(e)) onNetworkError?.call(); // 连不上 → 让横幅该出来就出来
         final opts = e.requestOptions;
         final isAuthPath = opts.path.contains('/auth/');
         if (e.response?.statusCode == 401 &&

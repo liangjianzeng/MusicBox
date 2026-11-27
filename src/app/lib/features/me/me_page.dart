@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/server_url_editor.dart';
 import '../../core/state.dart';
 import '../../shared/widgets/consent.dart';
 import '../assistant/assistant_models.dart';
@@ -273,44 +274,8 @@ class MePage extends ConsumerWidget {
     }
   }
 
-  Future<void> _editServer(BuildContext context, WidgetRef ref) async {
-    final cfg = ref.read(configProvider);
-    final c = TextEditingController(text: cfg.baseUrl);
-    final url = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('服务器地址'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: c,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                hintText: 'http://10.0.2.2:7900',
-                helperText: '模拟器访问宿主机用 10.0.2.2；真机填局域网 IP',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, c.text.trim()),
-              child: const Text('保存')),
-        ],
-      ),
-    );
-    if (url != null && url.isNotEmpty) {
-      await ref.read(configProvider.notifier).setBaseUrl(url);
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('服务器地址已更新')));
-      // 服务器变更后刷新远程配置（可选模型/默认走向随之更新）
-      ref.read(remoteConfigProvider.notifier).refresh();
-    }
-  }
+  Future<void> _editServer(BuildContext context, WidgetRef ref) =>
+      editServerUrl(context, ref);
 
   String _musicModelLabel(WidgetRef ref) {
     final sel = ref.watch(musicModelProvider);

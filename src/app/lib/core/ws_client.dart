@@ -114,7 +114,17 @@ class WsClient {
         cancelOnError: true,
       );
       _attempt = 0;
-      _setStatus(WsStatus.connected);
+      // **握手真成了才许报 connected。** 原来这里是同步置 connected，而
+      // WebSocketChannel.connect 是懒握手：服务器已经停了它也会先"连上"一次，等
+      // onError 才掉下去 —— 于是每轮重连都发一遍 connected，把上层的离线判定
+      // （带宽限定时器）反复冲掉，结果服务器停了横幅也出不来（真机实测到的假象）。
+      unawaited(ch.ready.then((_) {
+        if (_closed || !identical(_channel, ch)) return; // 已被重连/关闭取代，别乱报状态
+        _setStatus(WsStatus.connected);
+      }).catchError((Object _) {
+        if (_closed || !identical(_channel, ch)) return;
+        _scheduleReconnect();
+      }));
     } catch (_) {
       _scheduleReconnect();
     }

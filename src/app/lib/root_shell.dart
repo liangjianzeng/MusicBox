@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'core/config.dart';
+import 'core/connectivity.dart';
+import 'core/server_url_editor.dart';
 import 'core/state.dart';
 import 'features/create/create_page.dart';
 import 'features/assistant/assistant_models.dart';
@@ -84,12 +86,14 @@ class _RootShellState extends ConsumerState<RootShell> {
     final tab = ref.watch(_tabProvider);
     final rc = ref.watch(remoteConfigProvider);
     final session = ref.watch(sessionProvider);
+    // 离线横幅 = 启动没连上 **或** 现在这条真实链路不通（流量/WSS 说话，见 connectivity.dart）
+    final netUp = session.netOnline && ref.watch(connectivityProvider);
     final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybePromptUpdate());
     return Scaffold(
       body: Column(
         children: [
-          if (!session.netOnline) const _OfflineBanner(),
+          if (!netUp) const _OfflineBanner(),
           if (rc != null &&
               rc.announcementVisible &&
               rc.announcementText.isNotEmpty)
@@ -124,24 +128,43 @@ class _RootShellState extends ConsumerState<RootShell> {
   }
 }
 
-/// 离线兜底提示：启动连网超时进入首页时展示，恢复在线后自动消失
-class _OfflineBanner extends StatelessWidget {
+/// 离线兜底提示：游客登录连续失败时展示（每 10s 自动重试，恢复在线后自动消失）。
+///
+/// 这条横幅**必须把正在连的地址打出来**：现场排障第一个问题永远是「它到底在连哪儿」——
+/// SharedPreferences 里的地址覆盖会静默压过打包期的 `--dart-define`，不写出来就只能靠猜。
+/// 同时就地给「改地址 / 重试」两个入口，别逼人去 `pm clear`。
+class _OfflineBanner extends ConsumerWidget {
   const _OfflineBanner();
 
   @override
-  Widget build(BuildContext context) {
-    return const Material(
-      color: Color(0xFF402028),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final url = ref.watch(configProvider).baseUrl;
+    return Material(
+      color: const Color(0xFF402028),
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           child: Row(
             children: [
-              Icon(Icons.wifi_off, size: 16, color: Color(0xFFFFC1CC)),
-              SizedBox(width: 8),
+              const Icon(Icons.wifi_off, size: 16, color: Color(0xFFFFC1CC)),
+              const SizedBox(width: 8),
               Expanded(
-                child: Text('服务器未连接，当前可使用本地功能',
+                child: Text('连不上服务器 $url，当前可使用本地功能',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, color: Color(0xFFFFC1CC))),
+              ),
+              TextButton(
+                onPressed: () => editServerUrl(context, ref),
+                child: const Text('改地址',
+                    style: TextStyle(fontSize: 12, color: Color(0xFFFFC1CC))),
+              ),
+              TextButton(
+                onPressed: () =>
+                    ref.read(sessionProvider.notifier).retryNow(),
+                child: const Text('重试',
                     style: TextStyle(fontSize: 12, color: Color(0xFFFFC1CC))),
               ),
             ],

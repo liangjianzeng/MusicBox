@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api_client.dart';
 import 'config.dart';
+import 'connectivity.dart';
 import 'db.dart';
 import 'models.dart';
 import 'ws_client.dart';
@@ -24,9 +25,20 @@ class ConfigNotifier extends StateNotifier<AppConfig> {
     if (!u.startsWith('http://') && !u.startsWith('https://')) {
       u = 'http://$u';
     }
+    final changed = u != state.baseUrl;
     state = AppConfig(baseUrl: u);
     await _prefs.saveBaseUrl(u);
+    // 换地址**必须**连带清掉旧服务器的令牌：令牌与地址不同源时，离线条的恢复探测
+    // （_api.me）会一直 401 被吞掉，横幅永远下不来 —— 明明服务器可达也救不回来。
+    if (changed) await _prefs.clearTokens();
     // wsClientProvider watch 了 configProvider，地址变更会自动重建并重连
+  }
+
+  /// 恢复打包期注入的默认基址（并清掉地址覆盖与令牌）。
+  Future<void> resetBaseUrl() async {
+    await _prefs.clearBaseUrl();
+    await _prefs.clearTokens();
+    state = AppConfig(baseUrl: AppConfig.defaultBaseUrl);
   }
 }
 
@@ -39,6 +51,9 @@ final configProvider = StateNotifierProvider<ConfigNotifier, AppConfig>((ref) {
 final apiClientProvider = Provider<ApiClient>((ref) {
   final cfg = ref.watch(configProvider);
   final client = ApiClient(api: cfg, prefs: ref.watch(prefsProvider));
+  final conn = ref.read(connectivityProvider.notifier);
+  client.onCallSuccess = conn.markOnline;
+  client.onNetworkError = () => conn.markOffline();
   client.onAuthExpired = () async {
     await ref.read(prefsProvider).clearTokens();
     await ref.read(sessionProvider.notifier).guestLogin();
@@ -289,34 +304,55 @@ class SessionNotifier extends StateNotifier<SessionState> {
         _offlineRetry = null;
         return;
       }
-      try {
-        if (_prefs.accessToken != null) {
-          final me = await _withTimeout(_api.me);
-          state = state.copyWith(
-              status: SessionStatus.ready,
-              user: me.user,
-              credits: me.credits,
-              netOnline: true);
-        } else {
-          final r = await _withTimeout(_api.guestLogin);
-          await _prefs.saveTokens(
-              '${r['access_token']}', '${r['refresh_token']}');
-          final u = AppUser.fromMap((r['user'] as Map?) ?? const {});
-          Credits? credits;
-          try {
-            credits = (await _withTimeout(_api.me)).credits;
-          } catch (_) {}
-          state = state.copyWith(
-              status: SessionStatus.ready,
-              user: u,
-              credits: credits,
-              netOnline: true);
-          _connectWs();
-        }
+      if (await _recoverOnce()) {
         _offlineRetry?.cancel();
         _offlineRetry = null;
-      } catch (_) {}
+      }
     });
+  }
+
+  /// 离线恢复探测一次，成功返回 true。
+  ///
+  /// 这里**故意把所有异常吞掉**（服务器可能只是暂时不通，不该弹错误页）。代价是：
+  /// 令牌与服务器地址**必须同源**，否则会静默地永远重试不上来 —— 所以
+  /// [ConfigNotifier.setBaseUrl] 在地址变化时连带清令牌，别把这条不变量改回去。
+  Future<bool> _recoverOnce() async {
+    try {
+      if (_prefs.accessToken != null) {
+        final me = await _withTimeout(_api.me);
+        state = state.copyWith(
+            status: SessionStatus.ready,
+            user: me.user,
+            credits: me.credits,
+            netOnline: true);
+      } else {
+        final r = await _withTimeout(_api.guestLogin);
+        await _prefs.saveTokens(
+            '${r['access_token']}', '${r['refresh_token']}');
+        final u = AppUser.fromMap((r['user'] as Map?) ?? const {});
+        Credits? credits;
+        try {
+          credits = (await _withTimeout(_api.me)).credits;
+        } catch (_) {}
+        state = state.copyWith(
+            status: SessionStatus.ready,
+            user: u,
+            credits: credits,
+            netOnline: true);
+        _connectWs();
+      }
+      _ref.read(connectivityProvider.notifier).markOnline();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 离线横幅上的「重试」：立刻探一次，不用等 10s 定时器；失败则继续后台重试。
+  Future<void> retryNow() async {
+    if (state.netOnline) return;
+    if (await _recoverOnce()) return;
+    _enterOffline();
   }
 
   /// 登录成功后的公共收尾：取积分（尽力而为）、置 ready、连 WSS
@@ -406,6 +442,15 @@ final wsClientProvider = Provider<WsClient>((ref) {
   final prefs = ref.watch(prefsProvider);
   final client =
       WsClient(wsUrl: cfg.wsUrl, tokenProvider: () => prefs.accessToken);
+  client.statusStream.listen((s) {
+    final conn = ref.read(connectivityProvider.notifier);
+    if (s == WsStatus.connected) {
+      conn.markOnline();
+    } else if (s == WsStatus.disconnected) {
+      // 常驻连接会自己重连，给足宽限再判离线（别一断就闪红条）
+      conn.markOffline(grace: const Duration(seconds: 12));
+    }
+  });
   client.events.listen((e) {
     if (e is CreditDeltaEvent) {
       ref
