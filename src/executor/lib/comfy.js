@@ -141,6 +141,17 @@ async function getSystemStats(cfg) {
   return httpJson(comfyBase(cfg), '/system_stats', null, 'GET', 8000, 'COMFY');
 }
 
+// 引擎里装了哪些扩散主模型：真源是引擎自己的 /object_info/UNETLoader（只取单节点，
+// 别拉全量 object_info——那是几 MB）。车道据此挑权重，而不是把文件名写死在模板里：
+// 换机器/换量化档时不该改代码。取不到就让调用方回落，绝不拿空列表当"没有"。
+async function listUnetFiles(cfg) {
+  const j = await httpJson(comfyBase(cfg), '/object_info/UNETLoader', null, 'GET', 8000, 'COMFY');
+  const raw = ((((j || {}).UNETLoader || {}).input || {}).required || {}).unet_name;
+  const arr = Array.isArray(raw) ? (Array.isArray(raw[0]) ? raw[0] : raw) : [];
+  if (!arr.length) throw err('COMFY_NO_UNET_LIST', 'UNETLoader 未上报可用权重');
+  return arr.map(String);
+}
+
 // ram_free 观测（GB）——领单前水位判定只观测不干预（架构 §1.2）；返回 {ram_free_gb, ram_total_gb} | null
 async function observeRamFree(cfg) {
   try {
@@ -272,6 +283,7 @@ module.exports = {
   comfyBase,
   uploadAsset,
   getSystemStats,
+  listUnetFiles,
   observeRamFree,
   observeQueue,
 };

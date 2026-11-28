@@ -14,6 +14,35 @@ const { spawn } = require('node:child_process');
 const net = require('../lib/net.js');
 const { resolveSrc, resolvePublic } = require('../lib/paths.js');
 const comfy = require('../lib/comfy.js');
+
+// ── 视频主模型挑选（2026-11-28 实测决定）────────────────────────────────
+// ComfyUI 加载 19.53 GB 的 fl2va int8 时日志原话是 `prepared for dynamic VRAM loading.
+// 19999MB Staged`——15.93 GB 的 5060 Ti 装不下，只能从内存逐层往显存流，5 秒片子跑了
+// 450 秒。NVFP4 档 10.86 GB 能整只常驻，所以优先级排 NVFP4 > int8。
+// 但**不写死文件名**：候选表拿去问引擎自己的文件列表，谁在用谁；探测失败一律回落
+// int8（＝本改动之前的行为），绝不因为"问不到"就把定妆视频这条路判死。
+const DEFAULT_VIDEO_UNET = 'minimax_h3_fl2va_pruned_int8_convrot.safetensors';
+const UNET_PREFS = [/fl2va.*nvfp4/i, /nvfp4.*fl2va/i, /fl2va.*pruned.*int8/i, /fl2va.*int8/i, /fl2va/i];
+const _unetCache = new Map(); // comfyBase → { name, at }
+
+async function pickVideoUnet(cfg, opts) {
+  const o = opts || {};
+  const base = comfy.comfyBase(cfg);
+  const hit = _unetCache.get(base);
+  if (hit && Date.now() - hit.at < (o.ttlMs || 10 * 60 * 1000)) return hit.name;
+  let name = DEFAULT_VIDEO_UNET, why = 'default';
+  try {
+    const names = await (o.lister || comfy.listUnetFiles)(cfg);
+    for (const re of UNET_PREFS) {
+      const m = (names || []).find((n) => re.test(String(n)));
+      if (m) { name = String(m); why = 'engine'; break; }
+    }
+    if (why !== 'engine') why = 'engine_list_no_match';
+  } catch (e) { why = 'probe_failed:' + String((e && (e.code || e.message)) || e).slice(0, 80); }
+  _unetCache.set(base, { name, at: Date.now() });
+  if (o.log) { try { o.log('视频主模型=' + name + '（' + why + '）'); } catch (e) { /* ignore */ } }
+  return name;
+}
 const { probe } = require('./ffmpeg.js');
 
 // ---------- 常量（架构 §3.2 lane 超时基线） ----------
@@ -744,9 +773,11 @@ async function castI2VCore(firstSrcAbs, refSrc, job, ctx, motionPrompt) {
   const size = engineSize(p, ctx.cfg, CAST_VID);
   const first = await comfy.uploadAsset(ctx.cfg, fs.readFileSync(firstSrcAbs), path.basename(firstSrcAbs));
   await ctx.progress(15, '定妆视频生成中（引擎）');
+  const unetName = await pickVideoUnet(ctx.cfg, { log: ctx.log });
   const r = await comfySubmit(ctx.cfg, ctx, 'h3-fl2va', {
     FIRST_FRAME: first, PROMPT: String(motionPrompt || 'natural head turn, subtle expression').slice(0, 900),
     WIDTH: size.w, HEIGHT: size.h, LENGTH: 124, STEPS: 4, SEED: seedFor(p, ctx.cfg, 0),
+    UNET: unetName,
   }, TMO.vidspark);
   const vidAbs = path.join(ctx.workDir, 'cast_video' + r.ext);
   fs.writeFileSync(vidAbs, r.bytes);
@@ -879,6 +910,7 @@ async function realShot(job, ctx) {
   const r = await comfySubmit(ctx.cfg, ctx, 'h3-fl2va', {
     FIRST_FRAME: first, PROMPT: prompt, WIDTH: size.w, HEIGHT: size.h,
     LENGTH: Math.min(362, Math.round(sec * 24)), STEPS: 4, SEED: seedFor(p, ctx.cfg, 0),
+    UNET: await pickVideoUnet(ctx.cfg, { log: ctx.log }),
   }, TMO.vidspark);
   const abs = path.join(ctx.workDir, 'clip_' + shotId + r.ext);
   fs.writeFileSync(abs, r.bytes);
@@ -1316,6 +1348,8 @@ async function runMvJob(job, ctx, helpers) {
 
 module.exports = {
   runMvJob, BRANCH,
+  // 视频主模型挑选：导出给判词复用（真引擎在跑哪档权重，端上/日志必须能说清）
+  pickVideoUnet, DEFAULT_VIDEO_UNET, UNET_PREFS,
   // 导出字节桩供测试/自检复用
   synthPngBuf, synthMp4Buf, mockPng, mockMp4, extractFrames,
   normVf, gradeVf, dtText, dtPath, buildBadgeDrawtext, buildSubtitleDrawtext, buildTitleDrawtext, buildBrandDrawtext, buildTitleCardArgs,
