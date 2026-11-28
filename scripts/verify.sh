@@ -134,10 +134,19 @@ if [ "${1:-}" = "--full" ] || [ "${1:-}" = "--repeat" ]; then
   for i in $(seq 1 "$REPS"); do
     log="$VARROOT/acceptance-$i.log"
     if node --test --test-concurrency=1 "test/acceptance/*.test.js" >"$log" 2>&1; then
-      pass=$(grep -oP '(?<=^ℹ pass )\d+' "$log" | tail -1); skip=$(grep -oP '(?<=^ℹ skipped )\d+' "$log" | tail -1)
-      ok "第 $i 轮全绿（pass=$pass skip=$skip）"
+      # node 的摘要行前常有 \r 进度帧，^ℹ 会匹配不到 → 计数取空。
+      # **读不到计数的"全绿"等于没跑**：2026-11-28 真出现过 pass= 空仍打印全绿的现场，
+      # 无证据的绿比红更危险（它会让人以为 217 条判词跑过了）。所以取空即判红。
+      pass=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^ℹ pass )\d+' | tail -1)
+      skip=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^ℹ skipped )\d+' | tail -1)
+      if [ -z "$pass" ]; then
+        bad "第 $i 轮读不到判词计数（node 退出码 0 但摘要没落地）—— 无证据的绿不算绿，判红"
+        echo "      完整日志：$log"
+      else
+        ok "第 $i 轮全绿（pass=$pass skip=$skip）"
+      fi
     else
-      fail=$(grep -oP '(?<=^ℹ fail )\d+' "$log" | tail -1)
+      fail=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^ℹ fail )\d+' | tail -1)
       bad "第 $i 轮红（fail=$fail）—— 失败用例："
       sed -n '/failing tests:/,$p' "$log" | grep -E '^✖ ' | head -10 | sed 's/^/      /'
       echo "      完整日志：$log"
