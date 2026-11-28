@@ -320,15 +320,20 @@ class FakeExecutor {
     if (!r.ok) this.errors.push('mv complete 失败 ' + job.type + ' ' + job.id + ' → ' + r.status + ' ' + r.text.slice(0, 200));
   }
   // mv_cast_image：3 张有效 PNG（H3-Image ×3 候选 mock）+ face_scores
+  // 注意 face_scores 恒为 null 且 meta.facegate.ran=false：mock 里没有 facegate 在跑，
+  // 过去这里凭空发 0.90/0.83/0.76，等于脚手架自己造了一份"验过脸"的假证据（V43-④ 钉死）。
   async _mvCastImage(job) {
     const files = []; const logical = {}; const scores = [];
     for (let i = 1; i <= 3; i++) {
       const field = 'f_ci' + i;
       files.push({ field, filename: 'cast_image_' + i + '.png', data: makePng(), contentType: 'image/png' });
       logical['cast_image_' + i] = field;
-      scores.push(Math.round((0.9 - (i - 1) * 0.07) * 100) / 100);
+      scores.push(null);
     }
-    await this._mvComplete(job, { files: logical, face_scores: scores, mock: 'mv_cast_image' }, files);
+    await this._mvComplete(job, {
+      files: logical, face_scores: scores, mock: 'mv_cast_image',
+      meta: { comfy: false, facegate: { attempted: 3, scored: 0, ran: false, reason: 'mock_executor' } },
+    }, files);
   }
   // mv_cast_video：stub mp4 + 13 帧有效 PNG（facegate 逐帧评分 mock）
   async _mvCastVideo(job) {

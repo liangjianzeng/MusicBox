@@ -439,7 +439,10 @@ function workerHeaders(cfg) {
   return h;
 }
 
-// ---------- facegate 客户端（真 mode，观测失败不致命） ----------
+// ---------- facegate 客户端（真 mode，观测失败不致命，但**必须如实带出失败原因**） ----------
+// 返回 {score,pass,yaw,pitch,reason}；reason：null=真跑成了 / 'unreachable' / 'http_<status>'。
+// 为什么要把 reason 抬出来：以前不可达只写一行 log + 评分缺省，job 照样 done，
+// 于是"定妆三张都过了身份门控"是假的（用户挑的脸根本没对照过）。失败可以，装成没事不行。
 async function facegateScore(cfg, ctx, imgAbs, refFile) {
   const url = String(cfg.facegateUrl || 'http://127.0.0.1:8395').replace(/\/+$/, '');
   try {
@@ -450,12 +453,13 @@ async function facegateScore(cfg, ctx, imgAbs, refFile) {
       timeoutMs: 15000,
     });
     const j = res.json();
-    if (res.status === 200 && j && Number.isFinite(Number(j.score))) return { score: Number(j.score), pass: !!j.pass, yaw: j.yaw, pitch: j.pitch };
+    if (res.status === 200 && j && Number.isFinite(Number(j.score))) return { score: Number(j.score), pass: !!j.pass, yaw: j.yaw, pitch: j.pitch, reason: null };
     ctx.log('facegate /score 返回 ' + res.status + '（评分缺省）');
+    return { score: null, pass: false, reason: 'http_' + res.status };
   } catch (e) {
     ctx.log('facegate 不可达（评分缺省，不致命）：' + e.message);
+    return { score: null, pass: false, reason: 'unreachable' };
   }
-  return { score: null, pass: false };
 }
 // inswapper 换脸兜底（mv-plan §4.7.1：分镜低分 → /swap ×2，非致命；不可达 → 透传）
 // 返回 {bytes, score} | {unreachable:true} | null（协议级失败）
@@ -658,7 +662,7 @@ async function realCastImage(job, ctx) {
   if (!portraitAbs) throw laneErr('COMFY_REFERENCE_REQUIRED', '真路径定妆需要真实人像；mock 才允许无参考图');
   const refImage = await comfy.uploadAsset(ctx.cfg, fs.readFileSync(portraitAbs), path.basename(portraitAbs));
   const desc = String(p.desc || (p.gender === 'm' ? 'young man, studio portrait' : 'young woman, studio portrait')).slice(0, 900);
-  const files = [], faceScores = [];
+  const files = [], faceScores = [], gateReasons = [];
   for (let i = 1; i <= CAST_IMG.n; i++) {
     await ctx.progress(Math.round((i / CAST_IMG.n) * 85), '定妆候选 ' + i + '/' + CAST_IMG.n + '（引擎）');
     const r = await comfySubmit(ctx.cfg, ctx, 'h3-image-cast', {
@@ -668,11 +672,24 @@ async function realCastImage(job, ctx) {
     const abs = path.join(ctx.workDir, 'cast_image_' + i + r.ext);
     fs.writeFileSync(abs, r.bytes);
     files.push({ field: 'cast_image_' + i, filename: 'cast_image_' + i + r.ext, abs });
-    if (portraitAbs) { const s = await facegateScore(ctx.cfg, ctx, abs, p.portrait_path); faceScores.push(s.score); } else faceScores.push(null);
+    if (portraitAbs) {
+      const s = await facegateScore(ctx.cfg, ctx, abs, p.portrait_path);
+      faceScores.push(s.score);
+      if (s.reason) gateReasons.push(s.reason);
+    } else faceScores.push(null);
   }
   await ctx.progress(95, '定妆完成');
   const map = {}; for (let i = 1; i <= CAST_IMG.n; i++) map['cast_image_' + i] = 'cast_image_' + i;
-  return { result: { files: map, seed_base: seedBase, face_scores: faceScores, meta: { comfy: true } }, files };
+  // 身份门控到底跑没跑，随结果一起交付（不再只是 executor 日志里一行字）：
+  // 三张图是真出的，但没 gate 就是没验脸 —— 端上必须能据此告诉用户"这几张没验过"，
+  // 判词 V43 也才有东西可断（缺它=静默降级）。
+  const scored = faceScores.filter((x) => x !== null && Number.isFinite(Number(x))).length;
+  const gate = {
+    attempted: CAST_IMG.n, scored, ran: scored > 0,
+    reason: scored > 0 ? null : (portraitAbs ? (gateReasons[0] || 'no_score') : 'no_reference_portrait'),
+  };
+  if (!gate.ran) ctx.log('身份门控未跑成（' + gate.reason + '）：定妆候选照常交付，但标注为未验脸');
+  return { result: { files: map, seed_base: seedBase, face_scores: faceScores, meta: { comfy: true, facegate: gate } }, files };
 }
 
 // 定妆 I2V 核心（方案一 / 遗留分支共用）：首帧源 → h3-fl2va I2V → ffmpeg 抽 ~13 帧 → facegate 逐帧对照
@@ -697,13 +714,24 @@ async function castI2VCore(firstSrcAbs, refSrc, job, ctx, motionPrompt) {
   const frames = [];
   // 参考脸须为 var 下真实文件（facegate ROOTS 白名单）；URL 解析不到 var 时回退原值（仍会 403，但不崩）
   const refCast = resolvePublic(refSrc, ctx.cfg) || refSrc;
+  const frameGateReasons = [];
   for (let i = 0; i < framePaths.length; i++) {
     files.push({ field: 'frame_' + (i + 1), filename: path.basename(framePaths[i]), abs: framePaths[i] });
     const s = await facegateScore(ctx.cfg, ctx, framePaths[i], refCast);
     frames.push({ file: 'frame_' + (i + 1), score: s.score, pass: s.pass, yaw: s.yaw, pitch: s.pitch });
+    if (s.reason) frameGateReasons.push(s.reason);
   }
   await ctx.progress(95, '定妆视频完成');
-  return { result: { files: { cast_video: 'cast_video' }, duration_sec: CAST_VID.sec, frames, meta: { comfy: true } }, files };
+  // 逐帧评分就是 viewrefs 的来源：facegate 不可达 → 帧分全 null → pass 全 false →
+  // 服务端回填的 viewrefs 直接空掉，后续角色镜/拍摄拿不到参考脸却看不出为什么。
+  // 所以这里同样把"跑没跑成"抬进 meta，别让它变成一处静默的空数组。
+  const frameScored = frames.filter((f) => f.score !== null && Number.isFinite(Number(f.score))).length;
+  const frameGate = {
+    attempted: frames.length, scored: frameScored, ran: frameScored > 0,
+    reason: frameScored > 0 ? null : (frameGateReasons[0] || 'no_score'),
+  };
+  if (!frameGate.ran) ctx.log('逐帧身份门控未跑成（' + frameGate.reason + '）：帧分置空并标注，viewrefs 将为空');
+  return { result: { files: { cast_video: 'cast_video' }, duration_sec: CAST_VID.sec, frames, meta: { comfy: true, facegate_frames: frameGate } }, files };
 }
 
 // mv_cast（方案一默认）：女主原图 I2V 首帧直出定妆视频 + 抽帧 + 逐帧 facegate（SP6 方案一，首帧锁脸）

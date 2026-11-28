@@ -145,6 +145,20 @@ Inkling-2-Mini 上 `:8090`（E4，宿主排期）不阻塞任何 N0/N1 施工—
 - V14/V15 前置探针：`MB_SPARK_COMFY` 可达 + `/healthz` lipsync 权重在位 + ffmpeg 能力探测；任一缺失→显式 `skip`（消息写明缺哪项），**fail 方向恒执行**；断言清单在 skipped 状态也保持登记。
 - `MB_TEST_FORCE_NO_FFMPEG=1` 增加 compose 失败方向演练：成片 job failed + 全镜已扣积分按契约退款路径核对。
 
+#### 6.3.1 定妆/选角判词的**主角像**（钉死资产，2026-11-28 登记）
+
+| 项 | 值 |
+|---|---|
+| env 名 | `MB_TEST_CAST_PORTRAIT`（缺省即仓库内这份，不填也能跑） |
+| 缺省路径 | `test/acceptance/fixtures/mv_lead_portrait.jpg` |
+| 像素 / 字节 | 1280×2783（竖幅）/ 318,739 B |
+| **sha256** | `e8bf45a872773e66c4c26fdd15c9895b3bd71111d09e6789f5b294562f1b7c2d` |
+| 来源 | 2026-11-28 用户指定为主角（原话「给你主角，写入测试计划，别跑着忘了」） |
+
+- **为什么必须钉死**：`cast_image` ×3 与 `cast_video` 13 帧的 `face_score` 是**与这张参考脸对照**得出的（facegate ArcFace 余弦）。参考脸一换，"3 候选至少一张 ≥0.6 过门"和"帧间身份不漂移"两条断言就失去基准 —— 变成"跟谁像？"的玄学。所以判词启动即校验 sha256，**换脸必须同时改这里**（登记=可追溯，禁止判词内部私自生成人脸）。
+- **不许用生成脸充当参考脸**：让 ComfyUI 现生成一张脸再拿它当参考去 gate 自己，是恒真式（引擎自己复刻自己，分数必然高）。参考脸必须是仓外来源、入库固化的真人像。
+- 落盘位置：判词 boot 后把它复制进本次 `var-test/<runId>/uploads/`，以 `portrait_path` 传参（facegate 侧还要落在其 `ROOTS` 白名单内，见 `mv.js` 的 `resolveSrc`/`facegateScore`）。
+
 ---
 
 ## 7. 施工风险登记（区别于 mv-plan §10 产品风险，这里只管「建不起来」）

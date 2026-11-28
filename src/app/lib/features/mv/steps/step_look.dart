@@ -110,6 +110,10 @@ class _StepLookState extends ConsumerState<StepLook> {
     final pickedUrl = _pickedCast != null && _pickedCast! < castImages.length
         ? castImages[_pickedCast!]
         : (character?.castImageUrl ?? '');
+    final cands = character?.castCandidates ?? const <MvCastCandidate>[];
+    // 身份门控的真相（呈现见下方 gateWarning，契约 v5.6.16）
+    final gateRan = character?.castGateRan;
+    final bestScore = character?.castBestScore;
     final castVideo = character?.castVideoUrl ?? '';
     // 帧格：机检回传帧按分排序（高分在前），上限 13 格；pass 帧默认勾选
     final frames = [...?character?.frames]
@@ -132,17 +136,32 @@ class _StepLookState extends ConsumerState<StepLook> {
         defaultSelected;
     final confirmed = character?.confirmed == true || wizard.lookConfirmed;
     final visibleError = mvUserVisibleText(detailState.error);
+    // 门控没跑成时，这条横幅优先说这个（契约 v5.6.16）。过去 facegate 不可达只是执行侧
+    // 一行日志 + 评分缺省，这里照样显示「定妆照已回传，点选一张」，让用户以为三张都是
+    // 和主角脸对照过才发回来的 —— 把自己的失败藏进用户的损失里，正是这轮反复在猎的东西。
+    // `gateRan == null`（老数据未标注）也不许读成"验过了"，同按未验呈现。
+    final String? gateWarning = (castImages.isEmpty || confirmed)
+        ? null
+        : gateRan != true
+            ? '身份门控没跑成（${character?.castGateReason ?? '未上报原因'}）：'
+                '这 ${castImages.length} 张候选都没和主角脸对照过，挑之前请知悉。'
+            : (bestScore != null && bestScore < kMvCastGateLine)
+                ? '这 ${castImages.length} 张都没过身份门控：最像的一张相似度 ${(bestScore * 100).round()}%，'
+                    '低于 ${(kMvCastGateLine * 100).round()}% 通过线。可以硬挑，但我们没验到像。'
+                : null;
     final lookMessage = visibleError.trim().isNotEmpty
         ? visibleError
-        : (confirmed
-            ? '定妆已拍板固化，身份参考以服务端回执为准。'
-            : frameReady
-                ? '定妆视频与角度帧已就绪，勾选后拍板固化。'
-                : castVideo.isNotEmpty
-                    ? '定妆视频已回传，角度帧机检结果生成中。'
-                    : castImages.isNotEmpty
-                        ? '定妆照已回传，点选一张后拍摄定妆视频。'
-                        : wizard.jobNote ?? '定妆照任务已提交，等待剧组出图（约 15 秒/张 ×3）。');
+        : (gateWarning ??
+            (confirmed
+                ? '定妆已拍板固化，身份参考以服务端回执为准。'
+                : frameReady
+                    ? '定妆视频与角度帧已就绪，勾选后拍板固化。'
+                    : castVideo.isNotEmpty
+                        ? '定妆视频已回传，角度帧机检结果生成中。'
+                        : castImages.isNotEmpty
+                            ? '定妆照已回传，点选一张后拍摄定妆视频。'
+                            : wizard.jobNote ??
+                                '定妆照任务已提交，等待剧组出图（约 15 秒/张 ×3）。'));
     final lookBusy = detailState.error == null &&
         !confirmed &&
         (castImages.isEmpty || (castVideo.isNotEmpty && !frameReady));
@@ -167,6 +186,7 @@ class _StepLookState extends ConsumerState<StepLook> {
                   child: _CandidateTile(
                     index: i,
                     url: i < castImages.length ? castImages[i] : null,
+                    score: i < cands.length ? cands[i].score : null,
                     selected: castImages.isNotEmpty &&
                         ((pickedUrl.isNotEmpty &&
                                 i < castImages.length &&
@@ -373,16 +393,51 @@ class _WaitBanner extends StatelessWidget {
 }
 
 /// 单个候选位：有 url 渲染图（可点选），否则等待占位
+/// 定妆候选的身份相似度通过线（SP-MV-3 量化口径，与判词 V14-① 的 `≥0.6` 同源）。
+/// 改这里必须同时改 `test/acceptance/v14_mv_instrumental.test.js` 的过门线 —— 否则界面说
+/// "过门"而判词说"没过"，两边各说各话，等于没有这条线。
+const double kMvCastGateLine = 0.6;
+
+/// 候选格子上的相似度角标：过线绿、未过线黄、**没打分写「未验」**（灰）。
+class _ScoreBadge extends StatelessWidget {
+  const _ScoreBadge({this.score});
+  final double? score;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = score;
+    final passed = s != null && s >= kMvCastGateLine;
+    final color = s == null
+        ? context.mvTextMuted
+        : (passed ? context.mvSuccess : context.mvWarning);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        s == null ? '未验' : '${(s * 100).round()}',
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: color),
+      ),
+    );
+  }
+}
+
 class _CandidateTile extends StatelessWidget {
   const _CandidateTile(
       {required this.index,
       required this.url,
       required this.selected,
+      this.score,
       this.onTap,
       this.onPreview});
   final int index;
   final String? url;
   final bool selected;
+
+  /// facegate 与主角脸对照出的相似度（0~1）；null = 本轮没打分（未验脸）
+  final double? score;
   final VoidCallback? onTap;
   final VoidCallback? onPreview;
 
@@ -392,7 +447,9 @@ class _CandidateTile extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      label: '定妆照候选 ${index + 1}${selected ? '，已选中' : ''}',
+      label: '定妆照候选 ${index + 1}'
+      '${score == null ? '，未验脸' : '，相似度 ${(score! * 100).round()}%'}'
+      '${selected ? '，已选中' : ''}',
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
@@ -418,6 +475,14 @@ class _CandidateTile extends StatelessWidget {
                         cacheWidth: 260,
                         semanticLabel: '定妆照候选 ${index + 1}')
                     : _waiting(context, first: index == 0 && !has),
+                if (has)
+                  Positioned(
+                    left: 4,
+                    top: 4,
+                    // 相似度角标：让用户挑「最像主角的那张」而不是凭眼缘猜。
+                    // 没打分必须明写「未验」——留白会被读成 0 分或被无视，那还是藏信息。
+                    child: _ScoreBadge(score: score),
+                  ),
                 if (selected)
                   Positioned(
                     top: 4,

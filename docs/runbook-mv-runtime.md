@@ -53,3 +53,48 @@ curl -s http://100.100.140.75:8188/system_stats | head -c 200   # 200 且有 com
 curl -s http://100.100.140.75:8195/health                        # 200 且有 status/ref_loaded
 curl -s http://127.0.0.1:8090/v1/models                          # vLLM 活着
 ```
+
+## 四、选角 / 定妆这一腿（2026-11-28 补，lipsync 挂起期间先做这个）
+
+### 实测到的事实
+
+| 项 | 实测值（当天） |
+|---|---|
+| facegate | `http://100.100.140.75:8195/health` → 200 `{"status":"ok","ref_loaded":false,"ref_file":"liangchen.png","gate":0.6}`（**跑在 GeekPro**，借 `E:\ComfyUI\venv` 起 uvicorn，未改剧场代码） |
+| ComfyUI | `http://100.100.140.75:8188/system_stats` → 200，RTX 5060 Ti，`vram_free ≈ 15.9 GB` |
+| **端口口径分裂（现场必须显式覆盖）** | 我方 `src/executor/lanes/mv.js` 默认 `http://127.0.0.1:8395`、`deploy/spark/mv-facegate.service` 也登记 8395；剧场实跑在 **8195**。真机跑之前必须 `MB_FACEGATE_URL=http://100.100.140.75:8195` 显式指，**别信默认值** |
+| Spark 内存（2026-11-28 13:0x） | `MemTotal 127.5 GB / MemAvailable 1.30 GB`，swap 已用 6.9 GB。`mv-lipsync.service` 自己登记 `MemoryMax=16G` → **这台起不动 lipsync**（`dsh-web` 全部 1.44 GB、zcode 全家 2.50 GB，全腾也不够）；`mv-asr`/`mv-facegate` 各 4G/3G |
+
+### 判词资产：主角像（用户 2026-11-28 指定）
+
+`test/acceptance/fixtures/mv_lead_portrait.jpg`，1280×2783，318,739 B，
+sha256 `e8bf45a872773e66c4c26fdd15c9895b3bd71111d09e6789f5b294562f1b7c2d`。
+env 名 `MB_TEST_CAST_PORTRAIT`，规则登记在施工计划 §6.3.1：**换脸必须同时改登记**，
+且**不许拿引擎自己生成的脸当参考脸去 gate 引擎自己**（恒真式）。
+
+### 怎么跑这两条判词
+
+```bash
+node --test test/acceptance/v43_cast_gate.test.js              # 服务端落库腿，4 条，秒级、无外部依赖
+cd src/app && flutter test test/cast_gate_honesty_test.dart    # 端侧呈现腿，7 条
+```
+
+### 破坏验证记录（2026-11-28，跑在 `/tmp/mbgate` 被推送提交上）
+
+| 控制 | 结果 |
+|---|---|
+| `step_look.dart` 门控横幅永远置 null | 端侧 **3 红** |
+| 角标没打分时不再写「未验」 | 端侧 **2 红** |
+| 模型退回 `'$e'` 拼字符串（服务端扩形状后端上变垃圾） | 端侧 **1 红** |
+| `engine.js` 落库退回裸 URL 数组（事故前的样子） | V43 **3 红** |
+| 脚手架恢复凭空发 0.90/0.83/0.76 | V43-④ **1 红** |
+| 全部恢复 | 端侧 7/7、V43 4/4、全量 `pass=224 fail=0 skip=44` |
+
+### 还没解决的（别当成已完成）
+
+- **V14 真机的定妆段仍然进不去**：`test/acceptance/v14_mv_instrumental.test.js:55` 的 `realGate()` 只看
+  `PRE.ok`，而 `PRE` 的探针（同文件 :30-54）把 lipsync（`MB_TEST_LIPSYNC_URL` → `/healthz` + `weights_loaded`）
+  捆成**整条链**的前置；定妆其实只依赖 ComfyUI + facegate。lipsync 挂起期间 V14-① 定妆真机判词
+  会一直 skip —— 这是门装错了，不是定妆没问题。**解法必须是"按用例拆前置门"，不许为了变绿删断言。**
+- facegate `ref_loaded:false`：参考脸懒加载，真机第一次 `/score` 才会真加载；定妆真机判词要点名验证它。
+- lipsync：按用户指令挂起（权重、runtime、`MB_LIPSYNC_COMMAND`、跨机文件传输都还没做）。

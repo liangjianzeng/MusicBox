@@ -332,8 +332,20 @@ function completeMvCastImage(job, result, savedMap) {
   finishDone(job, result);
   const payload = U.jparse(job.payload, {}) || {};
   if (payload.character_id && store.get('SELECT id FROM mv_characters WHERE id=?', payload.character_id)) {
-    const urls = [1, 2, 3].map((i) => result['cast_image_' + i + '_url']).filter(Boolean);
-    store.run('UPDATE mv_characters SET cast_images_json=? WHERE id=?', U.jstr(urls), payload.character_id);
+    // 候选连同**身份门控状态**一起落库：只存 URL 的话，"这三张到底验没验过脸"在交付后
+    // 就成了悬案 —— 端上只能摆图，用户分不清"没过门"和"根本没门控"。
+    // 形状 [{url,score,gate}]；老数据是裸 URL 字符串，端上一并兼容（mv_models.dart）。
+    const gate = (result.meta && result.meta.facegate) || null;
+    const fscores = Array.isArray(result.face_scores) ? result.face_scores : [];
+    const cands = [1, 2, 3]
+      .map((i) => {
+        const url = result['cast_image_' + i + '_url'];
+        if (!url) return null;
+        const s = fscores[i - 1];
+        return { url, score: s === null || s === undefined || !Number.isFinite(Number(s)) ? null : Number(s), gate };
+      })
+      .filter(Boolean);
+    if (cands.length) store.run('UPDATE mv_characters SET cast_images_json=? WHERE id=?', U.jstr(cands), payload.character_id);
   }
   store.log('job.mv.cast_image', { job_id: job.id, character_id: payload.character_id || null });
   if (payload.project_id) broadcastMvProgress(payload.project_id, '定妆照已出，请挑选');

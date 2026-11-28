@@ -368,6 +368,53 @@ class MvFrame {
 }
 
 /// mv_characters：source upload|ai|reuse；viewRefs 由拍板固化
+/// 定妆候选 + 它的**身份门控状态**。
+///
+/// 为什么要把 gate 带下来：facegate 不可达时，执行侧过去只写一行日志、评分留空、job 照样
+/// done（"评分缺省，不致命"）。于是界面摆出三张图让用户挑主演，而这三个候选**一张都没对照过
+/// 主角脸** —— 用户完全看不见这个缺口，挑错了要等到成片才后悔。现在服务端把
+/// `meta.facegate` 落到角色上，界面必须据此说清"验过没有"（契约 v5.6.16）。
+///
+/// `gateRan == null` 表示老数据/未知 —— 界面**不许猜**，按"未标注"呈现。
+class MvCastCandidate {
+  MvCastCandidate({required this.url, this.score, this.gateRan, this.gateReason});
+
+  final String url;
+
+  /// 与参考脸的 ArcFace 余弦（0~1）；null = 没打分（未验或引擎失败）
+  final double? score;
+
+  /// 门控这一轮是否真跑成了（有任意一张拿到分数）
+  final bool? gateRan;
+
+  /// 未跑成的原因：unreachable / http_5xx / no_reference_portrait …
+  final String? gateReason;
+
+  static List<MvCastCandidate> parseList(Object? raw) {
+    if (raw is! List) return const <MvCastCandidate>[];
+    final out = <MvCastCandidate>[];
+    for (final e in raw) {
+      if (e is Map) {
+        final url = '${e['url'] ?? ''}';
+        if (url.isEmpty) continue;
+        final g = e['gate'] is Map ? e['gate'] as Map : null;
+        final s = e['score'];
+        out.add(MvCastCandidate(
+          url: url,
+          score: s is num ? s.toDouble() : double.tryParse('$s'),
+          gateRan: g == null ? null : g['ran'] == true,
+          gateReason: g == null ? null : g['reason']?.toString(),
+        ));
+      } else {
+        // 老数据：裸 URL 字符串，没有门控信息 —— 保持可读，但状态为"未标注"
+        final url = '$e';
+        if (url.isNotEmpty) out.add(MvCastCandidate(url: url));
+      }
+    }
+    return out;
+  }
+}
+
 class MvCharacter {
   MvCharacter({
     required this.id,
@@ -379,6 +426,7 @@ class MvCharacter {
     this.castImageUrl,
     this.castVideoUrl,
     this.castImages = const [],
+    this.castCandidates = const [],
     this.frames = const [],
     this.confirmedAt,
   });
@@ -392,31 +440,55 @@ class MvCharacter {
   final String? castImageUrl;
   final String? castVideoUrl;
   final List<String> castImages; // 定妆 3 候选（cast_images_json，机检写入）
+
+  /// 同一份数据的带门控状态版（`castImages` 保留是为了少动渲染代码，两者顺序一致）
+  final List<MvCastCandidate> castCandidates;
   final List<MvFrame> frames; // 定妆视频抽帧评分（frames_json，机检写入）
   final String? confirmedAt;
 
   bool get confirmed => (confirmedAt ?? '').isNotEmpty;
 
-  factory MvCharacter.fromMap(Map m) => MvCharacter(
-        id: '${m['id'] ?? ''}',
-        projectId: '${m['project_id'] ?? ''}',
-        gender: '${m['gender'] ?? 'f'}',
-        name: m['name']?.toString(),
-        source: '${m['source'] ?? 'ai'}',
-        portraitUpload: m['portrait_upload']?.toString(),
-        castImageUrl: m['cast_image_url']?.toString(),
-        castVideoUrl: m['cast_video_url']?.toString(),
-        castImages: (m['cast_images'] as List? ?? const [])
-            .map((e) => '$e')
-            .where((e) => e.isNotEmpty)
-            .toList(),
-        frames: (m['frames'] as List? ?? const [])
-            .whereType<Map>()
-            .map(MvFrame.fromMap)
-            .where((f) => f.url.isNotEmpty)
-            .toList(),
-        confirmedAt: m['confirmed_at']?.toString(),
-      );
+  /// 本轮定妆的身份门控跑没跑成；null = 老数据没标注（界面不许把它当"验过了"）
+  bool? get castGateRan {
+    final known = castCandidates.where((c) => c.gateRan != null).toList();
+    if (known.isEmpty) return null;
+    return known.any((c) => c.gateRan == true);
+  }
+
+  /// 未跑成时的原因（任一带原因的候选给出）
+  String? get castGateReason => castCandidates
+      .map((c) => c.gateReason)
+      .firstWhere((r) => (r ?? '').isNotEmpty, orElse: () => null);
+
+  /// 已打分候选里的最高分；null = 一张都没打分
+  double? get castBestScore {
+    final s = castCandidates.map((c) => c.score).whereType<double>().toList();
+    if (s.isEmpty) return null;
+    s.sort();
+    return s.last;
+  }
+
+  factory MvCharacter.fromMap(Map m) {
+    final cands = MvCastCandidate.parseList(m['cast_images']);
+    return MvCharacter(
+      id: '${m['id'] ?? ''}',
+      projectId: '${m['project_id'] ?? ''}',
+      gender: '${m['gender'] ?? 'f'}',
+      name: m['name']?.toString(),
+      source: '${m['source'] ?? 'ai'}',
+      portraitUpload: m['portrait_upload']?.toString(),
+      castImageUrl: m['cast_image_url']?.toString(),
+      castVideoUrl: m['cast_video_url']?.toString(),
+      castImages: cands.map((c) => c.url).toList(),
+      castCandidates: cands,
+      frames: (m['frames'] as List? ?? const [])
+          .whereType<Map>()
+          .map(MvFrame.fromMap)
+          .where((f) => f.url.isNotEmpty)
+          .toList(),
+      confirmedAt: m['confirmed_at']?.toString(),
+    );
+  }
 }
 
 /// 镜卡「人话」类型（禁词纪律：演唱镜/剧情镜/空镜）
