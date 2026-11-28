@@ -149,9 +149,20 @@ class _StepLookState extends ConsumerState<StepLook> {
                 ? '这 ${castImages.length} 张都没过身份门控：最像的一张相似度 ${(bestScore * 100).round()}%，'
                     '低于 ${(kMvCastGateLine * 100).round()}% 通过线。可以硬挑，但我们没验到像。'
                 : null;
+    // 真人通道的三张候选其实是**用户自己那张照片**的三档轻度处理 —— 这台引擎保不住脸（实测
+    // h3-image-cast/edit 的身份余弦只有 -0.00~0.24 / 0.05~0.11，同人为 0.94 作标尺），所以执行侧
+    // 不再让它造脸。不写清楚就等于让用户以为引擎给他出了三张定妆照（契约 v5.6.20）。
+    final bool allPhoto = cands.isNotEmpty && cands.every((c) => c.isPhotoMaster);
+    final String? photoNote = (castImages.isEmpty || confirmed || !allPhoto)
+        ? null
+        : '这三张的底是你的原片，引擎没有重画你的脸；三档处理力度 '
+            '${cands.map((c) => c.denoise == null ? '?' : '${(c.denoise! * 100).round()}%').join(' / ')}'
+            '${cands.any((c) => c.score != null) ? '，实测相似度 ${cands.map((c) => c.score == null ? '未验' : '${(c.score! * 100).round()}%').join(' / ')}' : ''}'
+            '。处理越轻越像你，越重越容易走样。';
     final lookMessage = visibleError.trim().isNotEmpty
         ? visibleError
         : (gateWarning ??
+            photoNote ??
             (confirmed
                 ? '定妆已拍板固化，身份参考以服务端回执为准。'
                 : frameReady
@@ -187,6 +198,7 @@ class _StepLookState extends ConsumerState<StepLook> {
                     index: i,
                     url: i < castImages.length ? castImages[i] : null,
                     score: i < cands.length ? cands[i].score : null,
+                    denoise: i < cands.length ? cands[i].denoise : null,
                     selected: castImages.isNotEmpty &&
                         ((pickedUrl.isNotEmpty &&
                                 i < castImages.length &&
@@ -424,12 +436,34 @@ class _ScoreBadge extends StatelessWidget {
   }
 }
 
+class _DenoiseBadge extends StatelessWidget {
+  const _DenoiseBadge({required this.denoise});
+  final double denoise;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '处理${(denoise * 100).round()}%',
+        style: TextStyle(
+            fontSize: 9, fontWeight: FontWeight.w700, color: context.mvTextMuted),
+      ),
+    );
+  }
+}
+
 class _CandidateTile extends StatelessWidget {
   const _CandidateTile(
       {required this.index,
       required this.url,
       required this.selected,
       this.score,
+      this.denoise,
       this.onTap,
       this.onPreview});
   final int index;
@@ -438,6 +472,10 @@ class _CandidateTile extends StatelessWidget {
 
   /// facegate 与主角脸对照出的相似度（0~1）；null = 本轮没打分（未验脸）
   final double? score;
+
+  /// 真人通道：这张候选相对**用户原片**的处理力度（img2img denoise）。
+  /// 不露出来，用户会以为三张都是引擎画的定妆照 —— 而它们其实是自己那张照片。
+  final double? denoise;
   final VoidCallback? onTap;
   final VoidCallback? onPreview;
 
@@ -449,6 +487,7 @@ class _CandidateTile extends StatelessWidget {
       selected: selected,
       label: '定妆照候选 ${index + 1}'
       '${score == null ? '，未验脸' : '，相似度 ${(score! * 100).round()}%'}'
+      '${denoise == null ? '' : '，对原片处理力度 ${(denoise! * 100).round()}%'}'
       '${selected ? '，已选中' : ''}',
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -482,6 +521,14 @@ class _CandidateTile extends StatelessWidget {
                     // 相似度角标：让用户挑「最像主角的那张」而不是凭眼缘猜。
                     // 没打分必须明写「未验」——留白会被读成 0 分或被无视，那还是藏信息。
                     child: _ScoreBadge(score: score),
+                  ),
+                if (has && denoise != null)
+                  Positioned(
+                    left: 4,
+                    bottom: 4,
+                    // 真人通道的候选是**用户原片**的轻度处理版，处理力度必须写在图上：
+                    // 越大越不像原片（实测 denoise .1→相似度 0.80、.2→0.66、.35→0.48）。
+                    child: _DenoiseBadge(denoise: denoise!),
                   ),
                 if (selected)
                   Positioned(

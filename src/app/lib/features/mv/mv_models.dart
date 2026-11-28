@@ -377,7 +377,14 @@ class MvFrame {
 ///
 /// `gateRan == null` 表示老数据/未知 —— 界面**不许猜**，按"未标注"呈现。
 class MvCastCandidate {
-  MvCastCandidate({required this.url, this.score, this.gateRan, this.gateReason});
+  MvCastCandidate({
+    required this.url,
+    this.score,
+    this.gateRan,
+    this.gateReason,
+    this.mode,
+    this.denoise,
+  });
 
   final String url;
 
@@ -387,8 +394,17 @@ class MvCastCandidate {
   /// 门控这一轮是否真跑成了（有任意一张拿到分数）
   final bool? gateRan;
 
-  /// 未跑成的原因：unreachable / http_5xx / no_reference_portrait …
+  /// 未跑成的原因：unreachable / http_5xx / no_face_in_candidate / no_reference_portrait …
   final String? gateReason;
+
+  /// 'photo_master' = 真人通道：这张候选是**用户自己那张照片**的轻度处理版（引擎不造脸）；
+  /// 'ai_generated' = AI 通道：引擎造出来的脸，没有身份来源。null = 老数据未标注（不许猜）。
+  final String? mode;
+
+  /// 真人通道的处理力度（img2img denoise 0~1）；越大改动越多、也越不像原片。null = 未知。
+  final double? denoise;
+
+  bool get isPhotoMaster => mode == 'photo_master';
 
   static List<MvCastCandidate> parseList(Object? raw) {
     if (raw is! List) return const <MvCastCandidate>[];
@@ -399,11 +415,14 @@ class MvCastCandidate {
         if (url.isEmpty) continue;
         final g = e['gate'] is Map ? e['gate'] as Map : null;
         final s = e['score'];
+        final dn = e['denoise'];
         out.add(MvCastCandidate(
           url: url,
           score: s is num ? s.toDouble() : double.tryParse('$s'),
           gateRan: g == null ? null : g['ran'] == true,
           gateReason: g == null ? null : g['reason']?.toString(),
+          mode: e['mode'] == null ? null : '${e['mode']}',
+          denoise: dn is num ? dn.toDouble() : double.tryParse('$dn'),
         ));
       } else {
         // 老数据：裸 URL 字符串，没有门控信息 —— 保持可读，但状态为"未标注"

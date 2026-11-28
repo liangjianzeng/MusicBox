@@ -337,12 +337,23 @@ function completeMvCastImage(job, result, savedMap) {
     // 形状 [{url,score,gate}]；老数据是裸 URL 字符串，端上一并兼容（mv_models.dart）。
     const gate = (result.meta && result.meta.facegate) || null;
     const fscores = Array.isArray(result.face_scores) ? result.face_scores : [];
+    // cast_mode / denoise 也要落库：真人通道的三张候选是"同一张原片的三档轻度处理"，
+    // 端上必须说清这一点并显示每档实测相似度，不能把它们说成三张 AI 定妆照。
+    const castMode = (result.meta && result.meta.cast_mode) || null;
+    const denoiseArr = (result.meta && Array.isArray(result.meta.denoise)) ? result.meta.denoise : [];
     const cands = [1, 2, 3]
       .map((i) => {
         const url = result['cast_image_' + i + '_url'];
         if (!url) return null;
         const s = fscores[i - 1];
-        return { url, score: s === null || s === undefined || !Number.isFinite(Number(s)) ? null : Number(s), gate };
+        const d = denoiseArr[i - 1];
+        return {
+          url,
+          score: s === null || s === undefined || !Number.isFinite(Number(s)) ? null : Number(s),
+          gate,
+          mode: castMode,
+          denoise: d === null || d === undefined || !Number.isFinite(Number(d)) ? null : Number(d),
+        };
       })
       .filter(Boolean);
     if (cands.length) store.run('UPDATE mv_characters SET cast_images_json=? WHERE id=?', U.jstr(cands), payload.character_id);

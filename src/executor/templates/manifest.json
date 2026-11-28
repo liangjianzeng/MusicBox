@@ -107,6 +107,12 @@
       "vram_profile": "PLACEHOLDER：H3-Image 族 ~28G（与 h3-image-cast 同族常驻），实测数据由 SP-MV-4 回写",
       "evidence": null,
       "note": "mv_storyboard 角色镜专用（mv-plan §4.7.1 只换背景壳，denoise 0.85 身份保持档，真机标定归 SP-MV-4）；低分 → mv-facegate /swap ×2 非致命降级"
+    },
+    "h3-image-photo": {
+      "tmpl_sha16": "f74bd525e9576cd1",
+      "placeholder": false,
+      "family": "h3image",
+      "note": "2026-11-28 真人通道定妆母版：真 img2img（LoadImage→VAEEncode→latent），denoise 由执行侧按档位传入。实测身份余弦（buffalo_l，同图对自分 0.94 为天花板）：denoise .1→0.80 .2→0.66(过线) .35→0.48 .55→0.29；h3-image-cast(denoise1)→-0.00~0.24、h3-image-edit(0.85)→0.05~0.11 均非同人。故真人通道禁走造脸模板。"
     }
   }
 }

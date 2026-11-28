@@ -65,6 +65,26 @@ List<Map<String, dynamic>> _gated(List<double?> scores,
         }
     ];
 
+/// 真人通道（契约 v5.6.20）：候选是**用户原片**的三档轻度处理，mode/denoise 必须一路带到界面。
+/// 引擎在这台机器上保不住脸（实测身份余弦 h3-image-cast -0.00~0.24、h3-image-edit 0.05~0.11，
+/// 同图为 0.94），所以执行侧不许再拿 AI 造的脸冒充定妆照。
+List<Map<String, dynamic>> _photoMaster(List<double?> scores, List<double?> denoise) =>
+    <Map<String, dynamic>>[
+      for (var i = 0; i < scores.length; i++)
+        <String, dynamic>{
+          'url': <String>[_u1, _u2, _u3][i],
+          'score': scores[i],
+          'mode': 'photo_master',
+          'denoise': denoise[i],
+          'gate': <String, dynamic>{
+            'ran': true,
+            'attempted': scores.length,
+            'scored': scores.where((s) => s != null).length,
+            'reason': null,
+          },
+        }
+    ];
+
 class _FakeMvApi extends Fake implements MvApiClient {
   _FakeMvApi(this.detail);
   final Map<String, dynamic> detail;
@@ -155,6 +175,26 @@ void main() {
       expect(find.text('81'), findsOneWidget);
       expect(find.text('未验'), findsNothing);
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('真人通道：写清"底是你的原片"并露出每档处理力度（不许当成 AI 定妆照）', (tester) async {
+      await _pumpLook(tester,
+          _detail(_photoMaster(<double?>[0.80, 0.66, 0.55], <double?>[0.1, 0.2, 0.3])));
+      expect(find.textContaining('底是你的原片'), findsOneWidget,
+          reason: '真人通道的候选就是用户自己那张照片的处理版，含糊成"定妆照"就是撒谎');
+      expect(find.text('处理10%'), findsOneWidget);
+      expect(find.text('处理20%'), findsOneWidget);
+      expect(find.text('处理30%'), findsOneWidget);
+      expect(find.text('80'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('没有 mode 标注（老数据/AI 通道）：不许冒出"原片"这句话', (tester) async {
+      await _pumpLook(tester, _detail(_gated(<double?>[0.81, 0.72, 0.63])));
+      expect(find.textContaining('底是你的原片'), findsNothing,
+          reason: 'mode 未标注时按未知呈现，不许替引擎编一句"这是你的原片"');
+      expect(find.textContaining('处理10%'), findsNothing);
+      expect(find.textContaining('处理20%'), findsNothing);
     });
 
     testWidgets('跑成了但全没过线：点名"都没过"并给出最高分与通过线', (tester) async {

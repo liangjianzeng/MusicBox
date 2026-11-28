@@ -454,6 +454,12 @@ async function facegateScore(cfg, ctx, imgAbs, refFile) {
     });
     const j = res.json();
     if (res.status === 200 && j && Number.isFinite(Number(j.score))) return { score: Number(j.score), pass: !!j.pass, yaw: j.yaw, pitch: j.pitch, reason: null };
+    if (res.status === 200 && j && j.score === null) {
+      // worker 明说"没比对成"（多半是没检到人脸）：照实上报 reason，别压成 http_200，
+      // 也别让上游把它当 0 分 —— 0 分是"确认不像"，null 是"没验"，两件事（契约 v5.6.16/19）。
+      ctx.log('facegate 未比对（' + (j.reason || 'no_score') + '，face_detected=' + j.face_detected + '）');
+      return { score: null, pass: false, reason: j.reason || 'no_score' };
+    }
     ctx.log('facegate /score 返回 ' + res.status + '（评分缺省）');
     return { score: null, pass: false, reason: 'http_' + res.status };
   } catch (e) {
@@ -655,20 +661,48 @@ async function mockPreview(job, ctx) {
 // ---------- 真 mode 分支（lib/comfy.js + 83xx workers；绝不在此发 mock 网络调用） ----------
 
 // mv_cast_image：上传照垫图 → h3-image-cast ×3 seed → facegate 对照评分（失败缺省不致命）
+// 真人通道（有上传人像）＝定妆母版必须是那张照片本身，绝不让 AI 造脸。
+// 依据是实测而不是感觉（buffalo_l 身份余弦，同图对自分 0.9426 为天花板；数字已登记进 templates/manifest.json）：
+//   h3-image-cast（REF×3 当条件、denoise 1）  → -0.0012 / 0.2406（两种 prompt）
+//   h3-image-edit（单参考、denoise 0.85）      → 0.1140 / 0.0527 —— 连 "keep this exact same person
+//                                                 and identical face" 这种指令都只有 0.05
+//   h3-image-photo（真 img2img：VAEEncode→latent）→ denoise .1→0.8036、.2→0.6646（过 0.6 线）、.35→0.4841、.55→0.2872
+// 结论：这台 ComfyUI 上的 MiniMax H3（int8 convrot 版）没有"保脸换妆造"的能力 —— denoise 抬上去脸就丢，
+// 压到 0.2 以下又只剩磨皮（连"换成白 T 灰背景"都不执行，出来还是原片）。
+// 所以真人通道继续走 h3-image-cast 是**有害**的：它交出一个不是主角的人，还被当"定妆候选"让用户挑
+// （正是"无证据的绿"）。这里改成原片三档轻度处理，把"处理力度 ↔ 相似度"的代价摊开给用户选。
+const PHOTO_DENOISE_LEVELS = [0.1, 0.2, 0.3];
+const PHOTO_PROMPT = 'keep the exact same person, face, hairstyle, clothing and background as the reference photo; '
+  + 'minor denoise, skin cleanup and sharpen only; photorealistic; no text, no caption, no watermark, no poster layout';
+// AI 通道（无上传照片）没有身份可保，造脸是正当的；但必须禁字，否则模型会把 brief 原话印成海报文案（实测过）
+const CAST_TEXT_PROMPT = 'character sheet portrait, full face clearly visible, photorealistic, natural studio light, '
+  + 'plain background, no text, no caption, no watermark, no poster layout';
+
 async function realCastImage(job, ctx) {
   const p = job.payload || {};
   const seedBase = seedFor(p, ctx.cfg, 0), size = engineSize(p, ctx.cfg, CAST_IMG);
   const portraitAbs = await resolveSrc(p.portrait_path, ctx);
-  if (!portraitAbs) throw laneErr('COMFY_REFERENCE_REQUIRED', '真路径定妆需要真实人像；mock 才允许无参考图');
-  const refImage = await comfy.uploadAsset(ctx.cfg, fs.readFileSync(portraitAbs), path.basename(portraitAbs));
+  // 修前 !portraitAbs 直接抛 COMFY_REFERENCE_REQUIRED ⇒ 「AI 生成角色」在真机路径根本跑不通
+  // （且 h3-image-cast 有 3 个 LoadImage，无参考图也喂不进去）。真人通道与 AI 通道在此分流。
+  const photoMode = !!portraitAbs;
+  const refImage = photoMode ? await comfy.uploadAsset(ctx.cfg, fs.readFileSync(portraitAbs), path.basename(portraitAbs)) : null;
   const desc = String(p.desc || (p.gender === 'm' ? 'young man, studio portrait' : 'young woman, studio portrait')).slice(0, 900);
-  const files = [], faceScores = [], gateReasons = [];
+  const files = [], faceScores = [], gateReasons = [], levels = [];
   for (let i = 1; i <= CAST_IMG.n; i++) {
-    await ctx.progress(Math.round((i / CAST_IMG.n) * 85), '定妆候选 ' + i + '/' + CAST_IMG.n + '（引擎）');
-    const r = await comfySubmit(ctx.cfg, ctx, 'h3-image-cast', {
-      PROMPT: desc, WIDTH: size.w, HEIGHT: size.h, SEED: (seedBase + i) >>> 0,
-      REF_IMAGE_1: refImage, REF_IMAGE_2: refImage, REF_IMAGE_3: refImage,
-    }, TMO.imgspark);
+    const denoise = PHOTO_DENOISE_LEVELS[(i - 1) % PHOTO_DENOISE_LEVELS.length];
+    await ctx.progress(Math.round((i / CAST_IMG.n) * 85),
+      photoMode ? ('定妆候选 ' + i + '/' + CAST_IMG.n + '（原片轻度处理 ' + denoise + '）')
+        : ('定妆候选 ' + i + '/' + CAST_IMG.n + '（引擎造脸）'));
+    const r = photoMode
+      ? await comfySubmit(ctx.cfg, ctx, 'h3-image-photo', {
+        PROMPT: PHOTO_PROMPT, WIDTH: size.w, HEIGHT: size.h, SEED: (seedBase + i) >>> 0,
+        REF_IMAGE: refImage, DENOISE: denoise,
+      }, TMO.imgspark)
+      : await comfySubmit(ctx.cfg, ctx, 'h3-image-broll', {
+        PROMPT: [desc, CAST_TEXT_PROMPT].join(', ').slice(0, 900),
+        WIDTH: size.w, HEIGHT: size.h, SEED: (seedBase + i) >>> 0,
+      }, TMO.imgspark);
+    levels.push(photoMode ? denoise : null);
     const abs = path.join(ctx.workDir, 'cast_image_' + i + r.ext);
     fs.writeFileSync(abs, r.bytes);
     files.push({ field: 'cast_image_' + i, filename: 'cast_image_' + i + r.ext, abs });
@@ -689,7 +723,15 @@ async function realCastImage(job, ctx) {
     reason: scored > 0 ? null : (portraitAbs ? (gateReasons[0] || 'no_score') : 'no_reference_portrait'),
   };
   if (!gate.ran) ctx.log('身份门控未跑成（' + gate.reason + '）：定妆候选照常交付，但标注为未验脸');
-  return { result: { files: map, seed_base: seedBase, face_scores: faceScores, meta: { comfy: true, facegate: gate } }, files };
+  // cast_mode 上交给端上：真人通道必须显示"母版来自你上传的照片（轻度处理 x）"，
+  // 不许把 AI 造出来的另一张脸说成是定妆照。
+  return {
+    result: {
+      files: map, seed_base: seedBase, face_scores: faceScores,
+      meta: { comfy: true, facegate: gate, cast_mode: photoMode ? 'photo_master' : 'ai_generated', denoise: levels },
+    },
+    files,
+  };
 }
 
 // 定妆 I2V 核心（方案一 / 遗留分支共用）：首帧源 → h3-fl2va I2V → ffmpeg 抽 ~13 帧 → facegate 逐帧对照

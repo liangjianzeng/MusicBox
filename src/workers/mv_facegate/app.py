@@ -100,6 +100,10 @@ def _reference(ref_file: str):
 
 def _largest(engine, image):
     faces = engine.get(image)
+    if not faces:
+        # 修前这里 max([]) 直接抛 ValueError ⇒ /score 变 500，"图里没脸"根本走不到下面
+        # face_detected:false 的诚实分支，客户端只能报 http_500（把"没检到"混成"服务出错"）。
+        return None
     return max(faces, key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))) if faces else None
 
 
@@ -111,21 +115,32 @@ def _pose(face):
     eye_mid = (left + right) / 2.0
     mouth_mid = (left_mouth + right_mouth) / 2.0
     face_height = max(1.0, float(face.bbox[3] - face.bbox[1]))
+    # 眼→口的**垂直**跨度才是俯仰的基准尺；正脸时鼻尖约落在该跨度的 0.42 处。
+    # 修前 pitch 的分母误用了 mouth_mid.x - eye_mid.x（水平差）：正脸左右对称 ⇒ 分母≈0 被钳成 1，
+    # atan2(几十像素, 1) 恒 ≈89~90°。后果不只是罚分（|yaw|+|pitch| 的罚分被扣满 0.2），
+    # 而是人像预检的 frontalOk 判据 |pitch|<30 **永远为假** —— 每个用户的正脸照都会被说成
+    # "姿势不合格"。2026-11-28 用"同图对自分"对照组实测抓到（pitch 89.75）。
+    eye_to_mouth = float(mouth_mid[1] - eye_mid[1])
     yaw = math.degrees(math.atan2(float(nose[0] - eye_mid[0]), float(mouth_mid[1] - eye_mid[1]) + face_height * 0.2))
-    pitch = math.degrees(math.atan2(float(nose[1] - eye_mid[1]), max(1.0, float(mouth_mid[0] - eye_mid[0]))))
+    pitch = math.degrees(math.atan2(float(nose[1] - eye_mid[1]) - 0.42 * max(1.0, eye_to_mouth), max(1.0, eye_to_mouth)))
     return round(yaw, 2), round(pitch, 2)
 
 
 def score_faces(engine, image, reference):
     face, ref = _largest(engine, image), _largest(engine, reference)
     if face is None or ref is None:
-        return {"score": 0.0, "yaw": None, "pitch": None, "pass": False, "face_detected": face is not None}
+        # 「没检到脸」≠「不像」。修前两种情况都回 score:0.0 —— 界面显示"相似度 0%"，等于把
+        # "我没能比对"说成"这张脸完全不是那个人"，用户于是去换一张本来没问题的照片。
+        # 现在 score 一律 null，由 reason 说清是谁没脸（端上按契约 v5.6.16 显示"未验"）。
+        return {"score": None, "yaw": None, "pitch": None, "pass": False,
+                "face_detected": face is not None,
+                "reason": "no_face_in_candidate" if face is None else "no_face_in_reference"}
     score = float(np.dot(face.normed_embedding, ref.normed_embedding))
     yaw, pitch = _pose(face)
     penalty = min(0.2, (abs(yaw) + abs(pitch)) / 90.0 * 0.2)
     score = max(-1.0, min(1.0, score - penalty))
     return {"score": round(score, 4), "yaw": yaw, "pitch": pitch,
-            "pass": score >= FACEGATE_GATE, "face_detected": True}
+            "pass": score >= FACEGATE_GATE, "face_detected": True, "reason": None}
 
 
 def solo_faces(engine, image):

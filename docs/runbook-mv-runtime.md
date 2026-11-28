@@ -90,6 +90,41 @@ cd src/app && flutter test test/cast_gate_honesty_test.dart    # 端侧呈现腿
 | 脚手架恢复凭空发 0.90/0.83/0.76 | V43-④ **1 红** |
 | 全部恢复 | 端侧 7/7、V43 4/4、全量 `pass=224 fail=0 skip=44` |
 
+### facegate 权重（2026-11-28 实测补记）
+
+| 项 | 实测 |
+|---|---|
+| 我们的 worker | `src/workers/mv_facegate/app.py`（`/health` `/score` `/swap`，令牌头 `x-worker-token` / env `MB_WORKER_TOKEN` 两侧一致） |
+| 推理栈 | `/opt/musicbox/var/venv-facegate`：insightface 2.1、onnxruntime 1.32.0、cv2 5.1.0、numpy 2.5.5，`CPUExecutionProvider`（**不占 GPU**，与 vLLM 那 ~92G 无争抢） |
+| 期望目录 | `MB_FACEGATE_MODELS`（缺省 `~/MusicBox/var/models/facegate`）下的 **`models/buffalo_l/*.onnx`**（insightface `FaceAnalysis(name,root)` 的约定是 `{root}/models/{name}`） |
+| 实落点 | `/home/jianzengliang/musicbox-models/facegate/models/buffalo_l/`：`1k3d68 137.0MB / 2d106det 4.8MB / det_10g 16.1MB / genderage 1.3MB / w600k_r50 166.3MB`（合计 325.5MB） |
+| 为什么不是 `/opt/musicbox/var/models` | 那个目录属主是 **`musicbox` 服务账号**，我（`jianzengliang`）`mkdir` 直接 `权限不够`。施工计划 §7「全程用户态部署（/opt/musicbox 自有目录）」这句要按现场修正：权重由服务账号持有，判词侧一律用 `MB_FACEGATE_MODELS` 指到自己可读的目录 |
+| 下载源 | GitHub release 直连实测 **0.04–0.15 MB/s**（281MB 等不出来）；改用 tailnet 内从 GeekPro 同一份工件（`C:\Users\jianz\.insightface\models\buffalo_l\`）取，秒级完成 |
+
+临时取件的做法（**用完必须删，且删完要复测**）：
+
+```bash
+# 起：只绑 tailnet 网卡、只服务那一个目录，任务名带 Tmp 明示临时
+schtasks /create /tn MusicBoxWeightsTmp /tr "cmd.exe /c E:\ComfyUI\venv\Scripts\python.exe -m http.server 8477 --bind 100.100.140.75 --directory C:\Users\jianz\.insightface\models\buffalo_l" /sc once /st 00:00 /f
+schtasks /run /tn MusicBoxWeightsTmp
+# 拉（Spark 侧）：curl -o 1k3d68.onnx http://100.100.140.75:8477/1k3d68.onnx …
+# 停：taskkill /F /PID <pid> & schtasks /delete /tn MusicBoxWeightsTmp /f
+netstat -ano | findstr :8477   # 必须只剩 TIME_WAIT、无 LISTENING；schtasks /query 必须报"找不到"
+```
+
+### 判词怎么跑真机那条（选角/定妆）
+
+```bash
+MB_SPARK_COMFY=http://100.100.140.75:8188 node --test test/acceptance/v43_cast_gate.test.js
+```
+
+V43-⑤⑥ 的前置门**只装本用例需要的**（ComfyUI + facegate 权重 + ffmpeg + 主角像 sha256），
+**不捆 lipsync**：lipsync 挂起期间定妆不该陪着 skip。判词自己 spawn facegate（venv-facegate 的
+uvicorn，随机端口 + `MB_FACEGATE_ROOTS` 指向本次 `var-test/<runId>`，因为 `ref_file` 是在 facegate
+那侧 `Path(ref_file).resolve()` 并校验 ROOTS 白名单的，`app.py:87-91`）和真执行侧
+（`node src/executor/index.js --lanes imgspark,vidspark`，`EXECUTOR_MOCK=0`，
+`MB_VAR_DIR` 与 `MB_VAR_ROOT` 必须同时设 —— 同义双名是既有坑，见 `index.js:50-52`）。
+
 ### 还没解决的（别当成已完成）
 
 - **V14 真机的定妆段仍然进不去**：`test/acceptance/v14_mv_instrumental.test.js:55` 的 `realGate()` 只看
@@ -98,3 +133,53 @@ cd src/app && flutter test test/cast_gate_honesty_test.dart    # 端侧呈现腿
   会一直 skip —— 这是门装错了，不是定妆没问题。**解法必须是"按用例拆前置门"，不许为了变绿删断言。**
 - facegate `ref_loaded:false`：参考脸懒加载，真机第一次 `/score` 才会真加载；定妆真机判词要点名验证它。
 - lipsync：按用户指令挂起（权重、runtime、`MB_LIPSYNC_COMMAND`、跨机文件传输都还没做）。
+
+### 真人通道定妆改道＝原片母版（2026-11-28，用户看图后当场否掉旧做法）
+
+用户问「我看看图质量」，图拿出来**根本不是那个人**。查下来不是 prompt 写得不好，是这台引擎
+没有可用的保身份改绘路径。与参考脸的 ArcFace 余弦（`buffalo_l/w600k_r50`，同图自比 **0.9426**
+为天花板）实测：
+
+| 通道 | 模板 | 身份余弦 | 结论 |
+|---|---|---|---|
+| 定妆（brief 当 prompt） | `h3-image-cast` | **-0.0012** | 造的是另一个人 |
+| 定妆（结构化选角 prompt） | `h3-image-cast` | **0.2406** | 仍是另一个人 |
+| 改绘（1 参考图 / denoise .85） | `h3-image-edit` | **0.1140** | 不保身份 |
+| 改绘（同上 + 改发指令） | `h3-image-edit` | **0.0527** | 越改越不像 |
+| 轻度处理 0.55 / 0.35 | `h3-image-img2img*` | 0.2872 / 0.4841 | 不够 |
+| **轻度处理 0.2 / 0.1** | `h3-image-photo` | **0.6646 / 0.8036** | 过线，但"像"来自没听见改绘指令 |
+
+所以：`portrait_path` 存在时**不再让引擎造脸**。新增模板 `h3-image-photo.json`
+（`tmpl_sha16=f74bd525e9576cd1`，`LoadImage→VAEEncode→KSampler(denoise=<DENOISE>)`），
+档位固定 `[0.1,0.2,0.3]`，prompt 只许写"清一下噪点、别动人和背景"。实测三档 = **[0.7892, 0.7102, 0.513]**，
+即用户拿到的是**自己那张照片的三档处理版**，第 3 档（0.3）本来就没过 0.6 线 —— 界面把它明写出来，
+不许说成"三张 AI 定妆照"。契约 v5.6.20；落库 `cast_images_json[].mode/denoise`。
+AI 通道（无参考照）仍走 text2img，`cast_mode='ai_generated'`，此时**没有身份来源**。
+
+### 同一天在 facegate 里挖出来的三个真 bug（都不是测试写不严）
+
+- **pitch 恒 ~90°**：`_pose` 的分母误取了横向眼距，`atan2(几十像素, 1)` 永远接近 90°。后果：人像预检
+  `frontalOk` 永假 + 每张吃满姿态罚分。自打分从 `pitch 89.75 / score 0.80` 修正为 `pitch 14.02 / score 0.9426`。
+- **无脸 → HTTP 500**：`_largest([])` 触发 `max([])` ValueError。现在返回
+  `200 {score:null, face_detected:false, reason:"no_face_in_candidate"|"no_face_in_reference"}`；
+  `0.0` 只表示"有脸但不像"。**执行侧不许把 null 洗成 0**（`Number(null)===0`，判词曾因此说谎）。
+- **服务端预检漏发令牌**：`/score` 的 fetch 没带 `x-worker-token` → 401 被 catch 吞掉 → 永远
+  `available:false`，看起来像"照片不合格"。修在 `src/server/api/mv.js` 的 `facegateHeaders()`（契约 v5.6.18）。
+
+### 判词自己的坑：worker 地址会被**上一次注册**顶掉（排查两小时）
+
+固定 `runId` 复用 `var-test/<runId>/db/musicbox.sqlite` 时，执行侧上次启动注册的 facegate 端口
+会从库里出来顶掉本轮的 `MB_FACEGATE_URL` —— 表现成"facegate 明明活着、日志里却 unreachable"，
+而那个端口**从未被任何进程监听过**。判词因此改成**每轮全新 runId**（`V43-REAL-<时间戳>`）。
+另外两条纪律：子进程 stdio 必须落到**带时间戳的文件**（固定文件名会被上一轮还活着的进程继续写，
+混出的日志能把人骗惨），以及 `detached:true` + `kids.pid` 记录 pgid，起跑前与 `after()` 各扫一遍。
+
+### 破坏验证（这轮绿是有证据的）
+
+- 拆掉改道（验证树里把真人通道退回 `h3-image-cast`，参考图三槽照旧填满，任务能成功）：
+  V43-⑤ 红在 **`至少一张 ≥0.6，实际 [0, 0.1052, -0.0937]`** —— 正是身份那条断言在咬。
+- 恢复后 V43 ①–⑥ **全绿**（`# pass 6 / fail 0`），`meta.facegate={"attempted":3,"scored":3,"ran":true}`。
+- Dart 侧 `cast_gate_honesty_test.dart` **9 条全绿**，含新增两条：真人通道必须写「这三张的底是你的原片」
+  并逐张露出 `处理10%/20%/30%`；`mode` 未标注时不许冒出这句话。
+- 权重目录别再写「全程用户态部署（/opt/musicbox 自有目录）」：`/opt/musicbox/var/...` 属服务账号，
+  普通用户 `mkdir` 直接权限不够。判词用 `MB_FACEGATE_MODELS=/home/jianzengliang/musicbox-models/facegate`。

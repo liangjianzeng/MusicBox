@@ -233,6 +233,17 @@ function mvImage(ctx) {
 // —— POST /v1/mv/image/precheck {file} —— 契约 v2.22：人像预检 4 项人话反馈（辅助非门禁，PIPL 仅即时判定不留存）；
 //    facegate(:8395) 不可达 → available:false、相关项 null、诚实降级、绝不 500、不阻断上传
 const FACEGATE_URL = MV.facegateUrl;
+// server → 自有 worker 也必须带内部令牌。`config.workerToken` 的注释明写「非空时 server 侧
+// 健康探测与执行侧都要带」，`core/security.js:44` 还把缺失它当安全问题报，但 2026-11-28 之前
+// **全仓没有一处真的发这个头**：于是"按安全指引配了令牌"的部署里，人像预检永远拿 401 →
+// available:false，界面只说"预检不可用"，用户只会以为是自己的照片或网络不行。
+// 真机判词 V43-⑥ 抓到（facegate 活着却报不可用）。
+function facegateHeaders() {
+  const h = { 'content-type': 'application/json' };
+  const t = (config && config.workerToken) || '';
+  if (t) h['x-worker-token'] = t;
+  return h;
+}
 function imgDims(buf) {
   if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
   if (buf[0] === 0xff && buf[1] === 0xd8) {
@@ -258,7 +269,7 @@ async function mvImagePrecheck(ctx) {
   let available = false;
   try {
     const r = await fetch(FACEGATE_URL + '/score', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: facegateHeaders(),
       body: JSON.stringify({ img_b64: file.data.toString('base64') }), signal: AbortSignal.timeout(20000),
     });
     if (r.ok) {
