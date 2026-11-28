@@ -220,3 +220,35 @@ AI 通道（无参考照）仍走 text2img，`cast_mode='ai_generated'`，此时
 并排逃生口的正确用法（不动别人数据、不卸载）：`applicationIdSuffix` 只写在 `debug{}` 里，
 所以必须 `MB_APP_ID_SUFFIX=.verify flutter build apk --debug`（release 永远不带后缀）。
 已实测产物包名 `com.musicbox.musicbox.verify`（AXML 是 UTF-16LE，验包名用 `strings -el`）。
+
+## 视频主模型档位：16 GB 卡为什么必须走 NVFP4（2026-11-28）
+
+实测账本（GeekPro，RTX 5060 Ti）：
+
+| 项 | 实测值 | 来源 |
+|---|---|---|
+| 显存总量 | **15.93 GB** | ComfyUI `GET /system_stats` → `devices[].vram_total` |
+| h3-fl2va int8 主模型 | **20,970,379,616 B ＝ 19.53 GiB** | `dir E:\ComfyUI\models\diffusion_models` |
+| 加载方式 | `prepared for dynamic VRAM loading. 19999MB Staged` | `E:\ComfyUI\comfyui_boot.log` |
+| 5 秒定妆片 | **450 秒**（15.3/15.9 GB 显存占满） | 执行侧日志 + /system_stats |
+
+文件比整张卡大 3.6 GB，**装不进**，只能从内存逐层往显存流——这就是 450 秒的成因。
+官方档位里 int8 已是最小（bf16 61.73 / int8 31.70 / pruned bf16 37.46 / pruned fp8
+19.52 / pruned int8 19.53 GB），文本编码器 `qwen3vl_32b…nvfp4_awq` 14.61 GB 也已经是
+最小档（索引里其它档是 43.65 / 47.97 GB）。所以这张卡唯一实质的杠杆是**主模型量化**：
+NVFP4 10.86 GB（Blackwell 有 FP4 张量核心，最对口）。
+
+实现上**不在模板里写死权重文件名**：`h3-fl2va.json` 的 `unet_name` 是占位 `<UNET>`，
+由 `lanes/mv.js` 的 `pickVideoUnet()` 去问引擎自己的 `/object_info/UNETLoader`（只取单
+节点，别拉几 MB 的全量），按 `NVFP4 > pruned int8 > fl2va` 挑；**探测失败/无匹配一律
+回落 int8＝改动前的行为**，绝不因为问不到就把定妆视频判死；用了哪一档落执行侧日志。
+判词见 `test/acceptance/v44_video_unet.test.js`（五条 + 三条破坏验证）。
+
+### 下载这类权重的两个坑
+
+- GeekPro **连不上 `huggingface.co`**（`curl -o NUL -w %{http_code}` 返回 `000`），
+  但 `hf-mirror.com` 与 `github.com` 通。10.86 GB 走镜像实测约 4 MB/s，**要 40+ 分钟**，
+  必须 `-C - --retry`，别用一次性前台命令。
+- `curl.exe -w %{http_code}` 的 stdout 会被 gp.py 那条 SSH+conhost 的转义序列搅掉
+  （看起来像"没返回"）。要判定成败就把结果**写文件再 `type`**，或者用
+  `if exist … (echo FILE_EXISTS)`、`(gci …).Length` 这种走文件的问法。
