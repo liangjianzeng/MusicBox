@@ -202,3 +202,21 @@ AI 通道（无参考照）仍走 text2img，`cast_mode='ai_generated'`，此时
 真人通道在开发栈上的实测曲线（同一次派单，buffalo_l 余弦）：
 `denoise 0.1 → 0.7999`、`0.2 → 0.6813`、`0.3 → 0.5194`，三张 `mode=photo_master`，
 与本文上面那张测量表一致；执行侧日志逐张留痕 `comfy 完成 h3-image-photo … 4257535B/4408335B/4498024B`。
+
+## 真机调测的三个环境陷阱（2026-11-28 全部当场踩过）
+
+1. **`screencap` 在 Dozing 下返回纯黑**，看起来像"App 白屏/黑屏崩溃"。
+   截图前先 `dumpsys power | grep mWakefulness=`（要 `Awake`），必要时
+   `input keyevent KEYCODE_WAKEUP; input swipe …` 解锁。今天据此误判过一次"新包黑屏"，
+   是**对照组（同一台、同一服务端、只换提交）把它推翻的**——对照组同黑，才查出是息屏。
+2. **MIUI 的 USB 安装策略会自己收回**：同一台小米13 上午连装三次 `-r` 全 Success，
+   傍晚同样的命令变 `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`。
+   `adb install` 与 `adb push` + `pm install` 两条路都吃这个策略；这是"通过 USB 安装应用"
+   开关（需机主在手机上确认/小米账号），不要试图绕，也不要把别人的开发者选项当资源。
+3. **`adb shell input tap` 抛 Exception（INJECT_EVENTS）＝那台机不能做 UI 驱动**
+   （K40 `8b1e8747` 即如此，锁屏 + 安全设置未开）。这类机器只能做静态截图，
+   不能拿来证明"界面上真能用"。
+
+并排逃生口的正确用法（不动别人数据、不卸载）：`applicationIdSuffix` 只写在 `debug{}` 里，
+所以必须 `MB_APP_ID_SUFFIX=.verify flutter build apk --debug`（release 永远不带后缀）。
+已实测产物包名 `com.musicbox.musicbox.verify`（AXML 是 UTF-16LE，验包名用 `strings -el`）。
