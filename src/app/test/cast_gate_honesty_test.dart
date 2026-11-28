@@ -116,6 +116,20 @@ Future<void> _pumpLook(WidgetTester tester, Map<String, dynamic> detail) async {
   await tester.pump(const Duration(milliseconds: 200));
 }
 
+/// 取「…拍定妆视频」那颗按钮本体。
+/// 注意：`OutlinedButton.icon(...)` 是**工厂**，产出私有子类，
+/// `find.byType(OutlinedButton)` 精确匹配不到（曾据此误判成"按钮没渲染"）。
+ButtonStyleButton? _castVideoButton(WidgetTester tester) {
+  final label = find.textContaining('拍定妆视频');
+  if (label.evaluate().isEmpty) return null;
+  final hits = find
+      .ancestor(
+          of: label,
+          matching: find.byWidgetPredicate((w) => w is ButtonStyleButton))
+      .evaluate();
+  return hits.isEmpty ? null : hits.single.widget as ButtonStyleButton;
+}
+
 void main() {
   group('定妆身份门控诚实性（v5.6.16）', () {
     MvCharacter characterFrom(Object? castImages) => MvCharacter.fromMap(
@@ -205,6 +219,42 @@ void main() {
           reason: '通过线要写出来，否则用户不知道"没过"是没过哪条线');
       expect(find.text('31'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+    testWidgets('没点选时不许「看着已选、点不动」：默认必须真选最高分那张', (tester) async {
+      // 旧实现：_pickedCast==null 时把第 0 张画成 selected，但 pickedUrl 仍为空
+      // → 「用这张拍定妆视频」是灰的。界面显示"已选"而操作上没选，属于界面承诺了没有的状态。
+      // 画布按真机（小米13 1080×2400）给：默认 800×600 时这块在折叠区外，Widget 根本没被构建。
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final d = _detail(_photoMaster(<double?>[0.80, 0.66, 0.55], <double?>[0.1, 0.2, 0.3]));
+      // 拍板**之前**的态：服务端还没确认过任何一张。留着 cast_image_url 的话，
+      // 老实现会走"服务端已确认"分支照样可点，这条判词就成了摆设（破坏验证打过红才作数）。
+      ((d['characters'] as List).first as Map)['cast_image_url'] = null;
+      await _pumpLook(tester, d);
+      final btn = _castVideoButton(tester);
+      expect(btn, isNotNull, reason: '定妆视频入口应当渲染出来');
+      expect(btn!.onPressed, isNotNull,
+          reason: '三张候选都在、最高分 0.80 已过线，却要求用户先点一下才能拍视频；'
+              '而卡片已经把某张画成已选中 —— 显示态与操作态必须同源');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('一张候选都没有：不许给出可点的「拍定妆视频」入口', (tester) async {
+      // 破坏验证：上一条的绿不能是"按钮永远可点"换来的。
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final d = _detail(<dynamic>[]);
+      // 真·无首帧态：_detail 默认塞了服务端已确认的 cast_image_url，
+      // 而 step_look 会把它补进候选列表（那也是合法首帧）—— 要测"没得拍"必须一起清掉。
+      ((d['characters'] as List).first as Map)['cast_image_url'] = null;
+      await _pumpLook(tester, d);
+      final btn = _castVideoButton(tester);
+      expect(btn == null || btn.onPressed == null, isTrue,
+          reason: '没有首帧就没有可拍的东西，入口必须缺席或置灰，不许让人点出一个必然失败的任务');
     });
   });
 }

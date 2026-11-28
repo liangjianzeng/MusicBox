@@ -30,6 +30,22 @@ class StepLook extends ConsumerStatefulWidget {
 
 class _StepLookState extends ConsumerState<StepLook> {
   int? _pickedCast; // 选中的定妆照候选（0..2）
+
+  /// 没有点选时默认「真选」实测相似度最高的一张（无分数/全空则取第一张）。
+  /// 目的不是替用户做主，而是让卡片高亮与 pickedUrl 同源：
+  /// 绝不再出现"看着已选中、按钮却是灰的"这种界面骗人的状态（契约 v5.6.20 同源要求）。
+  int _bestCandidateIndex(List<MvCastCandidate> cands, int n) {
+    int best = 0;
+    double bestScore = -1;
+    for (int i = 0; i < n && i < cands.length; i++) {
+      final s = cands[i].score;
+      if (s != null && s > bestScore) {
+        bestScore = s;
+        best = i;
+      }
+    }
+    return best;
+  }
   Set<String>? _selectedFrames; // 勾选帧 url（首次以 pass 帧预选）
   String? _frameSignature; // 数据签名变化时重新预选，build 内无写副作用
   bool _busy = false;
@@ -107,10 +123,21 @@ class _StepLookState extends ConsumerState<StepLook> {
               .contains(character!.castImageUrl))
         character.castImageUrl!,
     ];
-    final pickedUrl = _pickedCast != null && _pickedCast! < castImages.length
-        ? castImages[_pickedCast!]
-        : (character?.castImageUrl ?? '');
     final cands = character?.castCandidates ?? const <MvCastCandidate>[];
+    // 选中态必须"真"：优先用户点选 → 其次服务端已确认的那张 → 否则默认**真选**实测
+    // 相似度最高的一张。旧写法在没有点选时把第 0 张画成已选中、pickedUrl 却仍为空，
+    // 于是「用这张拍定妆视频」是灰的：界面显示"已选"而操作上没选，属于界面骗人。
+    final String serverPick = (character?.castImageUrl ?? '').trim();
+    final int? effectivePick = _pickedCast != null && _pickedCast! < castImages.length
+        ? _pickedCast
+        : (castImages.isEmpty
+            ? null
+            : (serverPick.isNotEmpty && castImages.contains(serverPick))
+                ? castImages.indexOf(serverPick)
+                : _bestCandidateIndex(cands, castImages.length));
+    final pickedUrl = effectivePick == null || effectivePick >= castImages.length
+        ? ''
+        : castImages[effectivePick];
     // 身份门控的真相（呈现见下方 gateWarning，契约 v5.6.16）
     final gateRan = character?.castGateRan;
     final bestScore = character?.castBestScore;
@@ -200,12 +227,9 @@ class _StepLookState extends ConsumerState<StepLook> {
                     score: i < cands.length ? cands[i].score : null,
                     denoise: i < cands.length ? cands[i].denoise : null,
                     selected: castImages.isNotEmpty &&
-                        ((pickedUrl.isNotEmpty &&
-                                i < castImages.length &&
-                                castImages[i] == pickedUrl) ||
-                            (pickedUrl.isEmpty &&
-                                _pickedCast == null &&
-                                i == 0)),
+                        effectivePick != null &&
+                        effectivePick < castImages.length &&
+                        i == effectivePick,
                     onTap: castImages.isEmpty || confirmed
                         ? null
                         : () => setState(() {
@@ -224,7 +248,7 @@ class _StepLookState extends ConsumerState<StepLook> {
           ),
           SizedBox(height: 8),
           // 拍定妆视频（cast_video：约 5 秒多角度转头，~5 分钟）
-          if (!confirmed && (castVideo.isEmpty || _pickedCast != null))
+          if (!confirmed && (castVideo.isEmpty || pickedUrl.isNotEmpty))
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(

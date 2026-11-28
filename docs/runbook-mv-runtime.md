@@ -183,3 +183,22 @@ AI 通道（无参考照）仍走 text2img，`cast_mode='ai_generated'`，此时
   并逐张露出 `处理10%/20%/30%`；`mode` 未标注时不许冒出这句话。
 - 权重目录别再写「全程用户态部署（/opt/musicbox 自有目录）」：`/opt/musicbox/var/...` 属服务账号，
   普通用户 `mkdir` 直接权限不够。判词用 `MB_FACEGATE_MODELS=/home/jianzengliang/musicbox-models/facegate`。
+
+## 派单时引擎地址的真源：`model_nodes` 表，不是环境变量（2026-11-28 实测）
+
+现象：给执行侧 export 了正确的 `MB_COMFY_URL=http://100.100.140.75:8188`（`/proc/<pid>/environ` 可证），
+定妆仍报 `COMFY_UNREACHABLE … connect ECONNREFUSED 127.0.0.1:8188`。
+
+三条事实（都当场验过，别再猜）：
+
+1. `src/executor/lib/comfy.js:134 comfyBase(cfg)` 的优先级是 `cfg.comfyUrl` **先于** `process.env.MB_COMFY_URL`，
+   而 `cfg.comfyUrl` 是服务端在派发时塞进任务负载的；
+2. 服务端那份来自 `model_nodes` 表（`kind='comfy'` 的 `endpoint`），不是 env；开发库默认播种的是 `http://127.0.0.1:8188`；
+3. 服务端**启动时**把 `model_nodes` 读进内存 —— 只 `UPDATE` 表不重启服务端，派发的还是旧地址。
+
+所以排查顺序固定为：`SELECT id,endpoint FROM model_nodes WHERE kind IN ('comfy','facegate')` → 改表 → **重启服务端** → 再看执行侧日志。
+（`tmp/dev_up.sh` 已把 `MB_COMFY_URL / MB_FACEGATE_URL / MB_WORKER_TOKEN` 加进透传白名单，避免每次起栈都退回 localhost。）
+
+真人通道在开发栈上的实测曲线（同一次派单，buffalo_l 余弦）：
+`denoise 0.1 → 0.7999`、`0.2 → 0.6813`、`0.3 → 0.5194`，三张 `mode=photo_master`，
+与本文上面那张测量表一致；执行侧日志逐张留痕 `comfy 完成 h3-image-photo … 4257535B/4408335B/4498024B`。
