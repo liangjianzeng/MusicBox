@@ -232,8 +232,83 @@ async function complete(jobId, executorId, result, files) {
   if (job.type === 'intent_voice' || job.type === 'intent_image' || job.type === 'intent_text') return completeIntent(job, result);
   if (job.type === 'dsp') return completeDsp(job, result, savedMap);
   if (String(job.type).startsWith('mv_')) return completeMv(job, result, savedMap);
+  if (job.type === 'replica_analyze') return completeReplicaAnalyze(job, result); // 契约 v5.7.4（复刻）
   finishDone(job, result);
   return { ok: true };
+}
+
+// —— 复刻分析完成（契约 v5.7.4/5/10）：LLM 归纳 → 词表封闭 → 建谱。三条硬纪律都在这里：
+//  ① ASR 转写只作归纳入参；**落库的 job.result 必须是净化版（无文本字段）** —— finishDone 会把
+//     result 写进 jobs.result 持久化，转写原文进去就是复制歌词（v5.7.5 合规锚）。
+//  ② LLM 不可达或归纳为空 → 规则画像（degraded=1）；连规则也归纳不出 → **不建谱**，
+//     job note 带明确原因（v5.7.10：绝不空数组假装分析过）。
+//  ③ 词表封闭靠 closeToCatalog 机械校验（prompts/replica.js），LLM 只是提词器不是闸门。
+async function completeReplicaAnalyze(job, result) {
+  const promptsReplica = require('../prompts/replica');
+  const payload = U.jparse(job.payload, {}) || {};
+  const meta = payload.meta || {};
+  const asr = result && typeof result === 'object' ? result.asr : null;
+  const fallback = !!(result && result.fallback) || !asr;
+
+  let factsText = '';
+  let ruleMoods = []; let ruleGenres = []; let ruleBpm = null;
+  if (meta.kind === 'work') {
+    // work 源：歌词语境只在内存里临时读（不落任何新表），输出被 SYSTEM 禁止含歌词原文
+    const w = store.get('SELECT * FROM works WHERE id=?', meta.ref);
+    if (w) {
+      ruleGenres = String(w.genres || '').split(',').map((s) => s.trim()).filter(Boolean);
+      ruleMoods = String(w.mood || '').split(',').map((s) => s.trim()).filter(Boolean);
+      ruleBpm = w.bpm;
+      factsText += '曲名：' + w.title + '\n元数据曲风：' + (w.genres || '未知') + '；氛围：' + (w.mood || '未知') + '；BPM：' + (w.bpm || '未知') + '\n';
+      if (w.lyrics) factsText += '歌词（只许用于归纳听感，输出绝不得包含歌词原文或片段）：\n' + String(w.lyrics).slice(0, 800) + '\n';
+    }
+  } else {
+    factsText += '来源：用户上传的参考曲「' + String(payload.title || '参考曲').slice(0, 60) + '」\n';
+  }
+  if (asr) {
+    factsText += '音频识别观测：情绪=' + (asr.emotion || '未知') + '；事件='
+      + (Array.isArray(asr.events) && asr.events.length ? asr.events.join('/') : '无')
+      + '；时长=' + (asr.duration || '未知') + 's\n';
+    if (asr.text) factsText += '语音内容（只许用于归纳听感，输出绝不得包含原文片段）：\n' + String(asr.text).slice(0, 1200) + '\n';
+  }
+
+  let closed = null;
+  try { closed = await promptsReplica.synthProfile(factsText); } catch (e) { closed = null; }
+  // 统一信封形状 {features, bpm_est}：closed 是 closeToCatalog 的返回（特征在 .features 里），规则兜底直接给同形
+  let env = closed ? { features: closed.features, bpm_est: closed.bpm_est } : null;
+  let summary = closed && closed.summary;
+  let confidence = closed && closed.confidence;
+  let degraded = 0;
+  const hasAny = (e) => !!e && !!(e.features.moods.length || e.features.genres.length
+    || e.features.style_words.length || e.features.voice.length || e.bpm_est);
+  if (!hasAny(env)) {
+    const rule = promptsReplica.ruleProfile({ text: factsText, moods: ruleMoods, genres: ruleGenres, bpm: ruleBpm });
+    env = { features: rule.features, bpm_est: rule.bpm_est };
+    summary = rule.summary; confidence = rule.confidence; degraded = 1;
+  }
+  if (!hasAny(env)) {
+    const reason = fallback
+      ? '未能从参考内容归纳出风格特征：识别服务不可用，且没有可用的元数据'
+      : '未能从参考内容归纳出可映射进创作词表的特征';
+    finishDone(job, { ok: false, reason, fallback }); // 不建谱：空谱=假装分析过（v5.7.10）
+    store.run('UPDATE jobs SET note=? WHERE id=?', reason, job.id);
+    store.log('replica.analyze.empty', { job_id: job.id, user_id: job.user_id, source_kind: String(meta.kind || '') });
+    return { ok: false };
+  }
+  const id = U.uid('rp_');
+  // 列清单与 api/replica.js createProfile 保持逐字一致（v22 DDL）
+  store.run(
+    'INSERT INTO replica_profiles(id,user_id,source_kind,source_ref,title,features_json,bpm_est,summary,confidence,degraded,job_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    id, job.user_id, String(meta.kind || 'work'), meta.ref || null, String(payload.title || '').slice(0, 80),
+    U.jstr(env.features), env.bpm_est == null ? null : Math.round(Number(env.bpm_est)),
+    String(summary || '').slice(0, 200), Number(confidence) || 0.4, degraded, job.id, U.nowIso());
+  // 落库净化：转写不进 jobs.result；只留观测摘要（has_text 不带内容）
+  finishDone(job, {
+    ok: true, profile_id: id, degraded: !!degraded, fallback,
+    asr_observed: asr ? { emotion: asr.emotion || null, events: Array.isArray(asr.events) ? asr.events : [], duration: asr.duration || null, has_text: !!(asr.text && String(asr.text).trim()) } : null,
+  });
+  store.log('replica.profile.create', { user_id: job.user_id, profile_id: id, job_id: job.id, source_kind: String(meta.kind || ''), degraded });
+  return { ok: true, profile_id: id };
 }
 
 // mv_* 通用完成：契约 §4 的 files→*_url 回填 + done 广播（未知 mv_* 兜底，V13 不崩）

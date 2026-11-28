@@ -41,9 +41,6 @@ POST /v1/auth/recovery/rotate (需鉴权) → 200 {recovery_code}
                           # device_key 必填且 ≥16 字符（客户端 Random.secure 生成的 64 位 hex，只生成一次、永不重生成）；
                           # 缺失/过短 → 400 BAD_REQUEST，**禁止**静默建号（旧行为：无锚点每次 INSERT 新号返回 200 → 用户作品"全没了"）
                           # first_time=true 表示本次新建了账号，客户端必须可对用户说明；同一 device_key 复用则 false
-                          # device_key 必填且 ≥16 字符（客户端 Random.secure 生成的 64 位 hex，只生成一次、永不重生成）；
-                          # 缺失/过短 → 400 BAD_REQUEST，**禁止**静默建号（旧行为：无锚点每次 INSERT 新号返回 200 → 用户作品"全没了"）
-                          # first_time=true 表示本次新建了账号，客户端必须可对用户说明；同一 device_key 复用则 false
 POST /v1/auth/phone/request-code   {phone}         → 200 {sent:true}；DEV_OTP=1 时验证码固定 888888
 POST /v1/auth/phone/verify         {phone, code}   → 200 {access_token, refresh_token, user:{id,nickname,is_guest:false}}
 POST /v1/auth/refresh              {refresh_token} → 200 {access_token, refresh_token}
@@ -933,7 +930,7 @@ POST /v1/assistant/feedback  {message_id,result}
 | # | 判据 | 违反后果 | 验收 |
 |---|---|---|---|
 | v5.3.0 | 游客身份必须有可恢复锚点：`POST /v1/auth/guest` **必须**带 `device_key`（≥16 字符），服务端按 `sha256(device_key)` 复用同一游客号；无锚点一律 400，**禁止** `if (!user) INSERT` 静默建号；响应必须回 `first_time`，客户端在新建账号且本机已有内容时必须向用户明说。客户端清 token（登出/刷新失败）**不得**清除 device_key | 重装/清数据/401 刷新失败即换人：用户全部作品"凭空消失"且界面零提示（2026-11-27 真机 P0，用户原话「重装覆盖不能保存本地内容？？？？？？？？？？」） | V36-①②③④ |
-| v5.6.0 | **克隆不许说谎 + 身份必须可自助恢复**：① `meta.clone.applied=true` 当且仅当 stage②（cover 变声）**成功替换了成品**；失败必须 `applied=false` + `stage2_failed=true`（可另带 `ref_unavailable`/`invalid_strength`），端侧必须把「没有套上」说给用户听 —— 禁止"payload 带了 persona 就宣布已克隆"。② `cover_strength`（唯一能锁音色/性别的旋钮）默认值**唯一真源 = `config.persona.defaultCoverStrength`**，业务代码与执行器一律不得自带默认数；App 深度档必须可调。③ 游客身份必须能被本人恢复：首次建号发一次备份码（只存 sha256），`POST /v1/auth/claim` 认领（本机已有临时号时摘锚让位、有作品时 403 停下），rotate 换码。④ 用户选的 `cover_strength`/`clone_mode` 必须过派单白名单并进幂等键，真的抵达引擎。⑤ 克隆诚实性只有一个读取路径：`meta.clone` 在候选 meta 根上 | 真机 2026-11-27：引擎 cover 失败（`stage2_error=MUSIC_HTTP`）时 `applied` 仍为 true，用户以为用的是自己的人格其实拿到默认音色；强度被硬编码 0.2 共三处、用户想锁也锁不住；重装后游客号无从恢复，只能靠运维手工 UPDATE guest_key | V37-①…⑩ |
+| v5.6.0 | **克隆不许说谎 + 身份必须可自助恢复**：① `meta.clone.applied=true` 当且仅当 stage②（cover 变声）**成功替换了成品**；失败必须 `applied=false` + `stage2_failed=true`（可另带 `ref_unavailable`/`invalid_strength`），端侧必须把「没有套上」说给用户听 —— 禁止"payload 带了 persona 就宣布已克隆"。② `cover_strength`（唯一能锁音色/性别的旋钮）默认值**唯一真源 = `config.persona.defaultCoverStrength`**，业务代码与执行器一律不得自带默认数；App 深度档必须可调。③ 游客身份必须能被本人恢复：首次建号发一次备份码（只存 sha256），`POST /v1/auth/claim` 认领，rotate 换码 | 真机 2026-11-27：引擎 cover 失败（`stage2_error=MUSIC_HTTP`）时 `applied` 仍为 true，用户以为用的是自己的人格其实拿到默认音色；强度被硬编码 0.2 共三处、用户想锁也锁不住；重装后游客号无从恢复，只能靠运维手工 UPDATE guest_key | V37-①②③④⑤⑥ |
 | v5.2.1 | 用户上传的**声纹样本属敏感个人信息**，必须存私有目录 `var/voices/`（**不在** `/f/*` 公共静态映射内），`personas.voice_ref` 以 `voices/` 前缀标记；经 `GET /v1/personas/:id/voice` 取件，响应必须 `cache-control: private, no-store` | 任何持 URL 者可下载他人声纹（未经同意的声纹扩散） | V30-①② |
 | v5.2.2 | 取件口按身份把关：**属主本人**或持 `X-Executor-Token` 的执行器可取；他人 403、未登录 401；**人格 `is_public=1` 只公开元数据，绝不公开声纹**；列表响应不得带出 `voice_ref` | 公开人格成为声纹泄露面；执行器取不到参考音频 → 声线克隆静默失效 | V30-②③ |
 | v5.2.3 | 历史行（曾误存 `out` 的裸相对路径）必须仍可解析（`resolveVoiceRef` 兼容），加固不得把用户已有数据判死 | 升级即丢声纹，用户需重新录音 | V30-④ |
@@ -1001,34 +998,120 @@ POST /v1/assistant/feedback  {message_id,result}
 | v5.5.16 | 新增服务端 `agent_memory` 表（`scope ∈ {global, intent:<id>, work:<id>}`）与 `memory_set/get/delete`（free，不涉扣费不发票，但审计 `initiated_by:'agent'`）。记忆注入 system 独立段、置于工具/审批纪律之前且**不得覆盖**之；不得存凭据/手机号/声纹；有条数与长度上限；「我的 → 伴创记忆」必须逐条可见可删可清空 | 用户每次创作都要重述同样偏好；或反之，记忆成为绕过白名单的后门、成为无法删除的个人信息 | V35-㉙㉚ |
 | v5.5.17 | **迁移 UI 规范**：从 TongYi-Lite 只搬逻辑层（`lib/agent/{loop,session,skills,tools,llm/adapter,llm/openai_adapter,agent_tier}` 与 `lib/websearch/src/*`），**禁带其 `lib/screens/**`（5109 行）与 `lib/widgets/**`（含 `agent_workflow.dart` 2334 行）**；移植后的逻辑层文件不得 `import 'package:flutter/material.dart'`。伴创 UI 全部用 `CreationPalette`/`CreationBackdrop`/`creationFieldDecoration` 与既有公共件（`PrimaryButton`/`TagChip`/`MoodChips`/`AiBadge`）重建，业务文件不得出现 `Color(0x` 字面量或裸 `InputDecoration(`；不得引入 `pubspec.yaml` 未声明依赖；关键交互件必须有语义节点且**不可点必须带 reason**。用户可见文案不得出现引擎名/模型名/协议黑话 | "遵守总体设计"若只是叮嘱，会退回今天 `assistant_surface.dart` 的样子（8 处硬编色绕过设计系统、`:543` 用 Material 默认 `OutlineInputBorder`）；缺语义节点的按钮对 TalkBack 与自动化**同样点不到**（IA review #10/#14/#15 已实证） | V35-㉛㉜㉝ |
 
-## v5.6 克隆诚实性、强度唯一真源与身份可自助恢复（2026-11-27 追加，append-only）
 
-> 由来：小米13 真机选人格生成，引擎 cover 变声失败（`meta.clone.stage2_error="MUSIC_HTTP"`），
-> 但候选 meta 仍是 `{applied:true, stage2_failed:true}` —— 执行器在发起变声**之前**就把 applied 写死了 true，
-> 失败分支只补 stage2_failed 从不撤销。用户以为拿到自己录的声线，实际拿到默认音色；而这件事界面上一字不提。
-> 同期另外三件事：`cover_strength`（唯一能锁音色/性别的旋钮）被硬编码 `0.2` 共三处且 App 无处可调；
-> 老作品 tags 被按空格切碎（`female,vocal` / `vinyl,crackle`）；游客号换机后无人能恢复，最后靠运维手工
-> `UPDATE users SET guest_key=…` 救号。验收：`test/acceptance/v37_clone_honesty.test.js`（V37-①…⑥，含真跑的功能判词）。
+## v5.6 身份可自助恢复与克隆强度单一真源（2026-11-27 追加，append-only）
 
-| # | 判据 | 违反后果 | 验收 |
+> 由来：这一版**不是新功能提案，是两次真机事故的收口**，因此条目全部照实现写、不掺设想。
+> ① 2026-11-27 老客户端从不送 `device_key`，账号锚点是随机 `gk_xxx` —— 用户换机/重装后**结构上无法自证身份**，
+>    当时是靠运维手工 `UPDATE guest_key` 救回来的。"能登录的账号却永远找不回"不是体验问题，是账号资产问题；
+>    恢复通道必须是产品机制，不是运维手艺。
+> ② 同日真机在认领时 500「服务开小差了」：换机的真实时序是本机首启**先**自动建了临时游客号、占住了
+>    `sha256(device_key)`，用户这才想起用备份码认回老身份，于是直接 `UPDATE` 撞 `UNIQUE(users.guest_key)` ——
+>    恢复通道在最需要它的那一刻失灵。
+> ③ 同日还发现 `cover_strength` 在端侧自带 `?? 0.6` 默认值：运营改服务端默认后，App 显示的档位与
+>    实际跑出来的音色不一致，**用户看到的和听到的对不上**。
+> 本块由智能体助手负责人（lead）依据 `src/server/api/auth.js`、`core/store.js` v21、`api/appconfig.js`、
+> `api/personas.js` 的已落地实现补写；验收沿用该批改动自带的 V36/V37 套件，未新造用例。
+> ⚠ 交叉约束记一笔：`V37-④`（简约档必须能选「谁来唱」）与 `create_layout_test`（320×568 + 2 倍字号不得挤压主操作）
+> 是同一次 sticky dock 改动的一体两面 —— 修布局时必须**同时**满足两者：可以牺牲说明文字或折成单行滚动，不能把控件本身拿掉。
+
+| ID | 条目 | 防什么 | 验收 |
 |---|---|---|---|
-| v5.6.1 | `meta.clone.applied=true` **当且仅当** stage②（cover 变声）成功替换了成品。全文件只允许一处把 applied 置真，且必须位于成品替换（`renameSync(coverAbs…)`）之后；失败必须 `applied=false` + `stage2_failed=true`（可另带 `ref_unavailable`/`invalid_strength`/`stage2_error`） | 用户把默认音色当成自己的声线，且无从知道；人格功能整体失去可信度 | V37-①（源码结构判词：置真位置必须在成品替换之后） |
-| v5.6.2 | 端侧必须把"没套上"说给用户：`Candidate.personaApplied/personaFailed/personaFailReason` 真读 `meta.clone`，揭晓页引用它们。只写进 meta 而界面沉默 = 等于没说 | 同 v5.6.1，且用户连投诉的线索都没有 | V37-③ |
-| v5.6.3 | `cover_strength` 默认值的**唯一真源 = `config.persona.defaultCoverStrength`**：建人格、派单、执行器一律不得自带数字；缺省走 config、给了就 clamp 到 `[min,max]`；默认值经 `/v1/app/config` 下发（必须进 `config_version` 的 sig），端侧取不到要如实显示"未取到"，**不许**自带 `?? 0.6` | 运营改默认后 App 显示的档位和实际跑出来的不是一回事；用户想锁音色锁不住 | V37-② |
-| v5.6.4 | 「谁来唱」三档一致：简约/标准/深度都必须能单选性别，且中文标签→规范词必须走词典真源（`styleCatalog.wireOf`） | 最省事的那一档恰恰锁不住性别；端侧词表各说各话 | V37-④ |
-| v5.6.5 | 游客身份必须能被**本人**恢复：首次建号发一次备份码（库里只存 sha256，之后任何接口都不得吐回），`POST /v1/auth/claim` 按备份码命中才认领（命中后换锚点 + 该用户旧会话全部作废），`POST /v1/auth/recovery/rotate` 换码即作废旧码。认领失败**绝不许**顺手建号；无 `device_key` 认领一律 400 | 重装/换机即永久丢号（今天的现实是运维手工 UPDATE）；或恢复通道变成任何人可冒充的接管入口 | V37-⑥（旧 token 认领后必须 401、rotate 后旧码必须 401、乱码必须 401 且不建号） |
-| v5.6.6 | 批量修用户数据的脚本必须：词表只从 `prompts/dictionary` 读（代码里不得出现规范词字面量）、默认干跑（显式 `--apply` 才写库）、幂等（二次运行 0 改动）、按原存储格式写回、落审计 `tags.repair` | 第二个词表真源开始漏修；一次误跑把用户数据改没且无从追溯 | V37-⑤ |
-| v5.6.7 | 用户选的音色贴近程度必须**抵达引擎**：`POST /v1/works/generate` 的入参白名单必须含 `cover_strength` 与 `clone_mode`；且二者必须进**幂等键**（只拖滑杆/只切模式再派单，必须是一单新的活，不得被 10 分钟窗口内的旧 job 吃掉） | 滑杆只是装饰：显示 100%、payload 永远跑默认值；或改完强度按生成拿回上一首 —— 都是「选了却被静默丢」 | V37-⑨（1 / 0.35 / 越界夹紧 / `clone_mode=full` 原样抵达 + 改强度不得命中幂等旧单；抽掉白名单字段或幂等键字段判词必须变红） |
-| v5.6.8 | 备份码认领必须处理**重装的真实顺序**（首启先自动建临时游客号，用户才想起认回）：本机锚点被空壳号占用时摘锚退役（改 `guest_key='retired-'||id` + 作废其会话，**保留行** —— 积分流水等外键指着它，删行留孤儿账）；持有人已有作品则 403 停下并说清下一步，绝不为认领静默毁掉任何一侧内容 | 恢复通道在最需要它的那一刻 500（`UNIQUE users.guest_key`）；或用恢复换掉别人的作品 | V37-⑦（复刻真机顺序：先本机建号再认领必须 200、内容一行不少、临时号被摘锚且留审计）、V37-⑧（本机号有内容必须 403，两边内容都不许少） |
-| v5.6.9 | 克隆诚实性的**唯一公开读取路径 = `meta.clone`（根上）**。执行器把引擎回执整包写在 `raw.meta.clone` 时，服务端必须在 `store.candidateOf` 归位到根；端侧只准认这一个路径，不得去猜嵌套 | 数据是诚实的但界面读不到 = 等于说谎：真机揭晓页因此完全不显示「没有套上」 | V37-⑩（灌入真机形制的 `raw.meta.clone`，`GET /v1/jobs/:id` 返回的候选 `meta.clone` 必须在根上且 `applied/stage2_failed/cover_strength` 原样抵达；抽掉归位判词必须变红） |
-| v5.6.10 | 变声阶段失败必须留下**可诊断面包屑**：`meta.clone.ref_path`（引擎被要求读的声纹路径）与 `meta.clone.engine`（引擎 host:port）。跨机拓扑下 `MUSIC_HTTP` 绝大多数是「引擎那台机器读不到这个路径」 | 同样的 400 每次都要翻执行器日志重查 20 分钟，缺陷因此长期存活 | V37-①（源码判词：失败分支必须落 ref_path/engine） |
-| v5.6.11 | 跨机部署下**声纹与源曲都必须先经引擎 `POST /ref` 投递口**送进去，`/music` 的 `ref_audio`/`src_audio` 只能是该口返回的**引擎本机路径**。投递口规矩（实现 `ref_intake.py`，与 `server.py` 同目录同推）：未配 `ACE_REF_KEY` → 503（**禁止匿名写文件**）、错 key → 401、空 body → 400、超 25MiB → 413、扩展名白名单外 → 415、落盘名一律引擎生成（客户端给的路径/文件名不得进路径）、过期声纹按期清理。执行器投递失败必须诚实退回本机路径，并把 `meta.clone.ref_delivery`/`src_delivery` 的 `reason`（`unsupported`/`key_rejected`/`intake_disabled`/`http_*`/`net_*`）落全 | 引擎只认自己文件系统里的绝对路径（`os.path.isfile`），递执行器本机的 Linux 路径必然 `HTTP 400 ref_audio not found` —— **人格克隆自上线以来一次都没有真的生效过**，用户长期说「不像我的人格/性别不对」却谁都查不到原因（2026-11-27 真机靠执行器日志查了 20 分钟）。只投声纹不投源曲等于修了一半：cover 任务引擎要同时读两个文件 | V38-①…⑤（假引擎带**虚拟文件系统**：没投递过的路径一律按引擎真实脾气回 400 → 投了才允许 `applied=true`，没投必须 `applied=false + stage2_failed=true` 且 reason 有名有姓；抽掉投递判词必红）+ `scripts/check_ace_ref_intake.py` 12 条自测 |
-| v5.6.12 | 「空壳作品」的判定**只有一个真源 = `Work.isHusk`**（标题/时长/标签/歌词/音频全空，显示占位符「未命名作品」按空标题算）。曲库卡片与作品详情都必须走它：空壳不得画伪波形、不得写 `0:00`、**不得留一颗点了没反应的播放键**，必须说「数据不完整」并给出路（重试/删除） | 骨架被打扮成正经歌 = 用户以为“我存好的歌变成了一首空歌”，比直接报错更像数据丢了；而列表才是用户第一眼看到的地方，只修详情页等于没修（2026-11-27 真机） | V37-⑪（服务端确实会原样发这种行 + 卡片/详情都必须用 `.isHusk`、不许私有复刻、空壳分支不许出现 `onPlay`/`play_arrow`）+ `src/app/test/work_husk_honesty_test.dart` 5 条 |
-| v5.6.13 | **界面里不许出现「解释控件不是什么」的说明句**：`Text`/`hint`/`trailing`/`label` 等**用户可见字符串**里不得出现「这是 X，不是 Y」「而非风格」式澄清句。需要靠脚注才能被理解的控件即为不合格控件 —— **该删的是控件或改它的形态，不许给用户加阅读负担**。分组的可见标签**不许**因 `shortScreen` 等条件消失（只剩裸 chips 更容易被误读成风格），chips 必须单行横向滚动 | 这是同一批 bug 的化石：女声/男声曾被塞进「风格点缀」，于是简约档、标准档、要素选择器**各挂一句**「这是人不是风格」，把设计失败转嫁成用户的阅读负担；同时小屏上「谁来唱」标签还整行消失，只剩裸 chips。用户原话「这他妈的都可以做界面提示，是我疯了还是你疯了？」（2026-11-28） | V39-①②（扫全部 Dart 用户可见字符串；把说明句塞回去判词必红）+ `create_layout_test`（标签常驻仍不溢出 320×568 @2× 字号）+ V31 锚点跟随标题改名 |
-| v5.6.14 | **「要人声」和「有歌词」是一件事的两半，不许静默拆票**：歌词为空而用户要人声时，执行器**必须**按纯音乐向引擎发请求（`instrumental:true` —— 不许拿 `false` 去骗一个只会出纯音乐的引擎），并落 `meta.vocal={requested:true,delivered:false,reason:'no_lyrics'}`；端侧必须说破（`Candidate.vocalUnmet` + 揭晓页横幅 + 歌词字段上的后果提示）；**没有歌词时不许发起 cover**（`clone.skipped_no_vocal`，一个字节都不许多投）。**界面承诺必须有实现兜着**：服务端没有写词模块就不许出现「自动填词」类文案 | 真机 2026-11-28：载荷 `{"lyrics":"","instrumental":false}` 一路照发到引擎，用户在深度档选了「人声演唱」拿到的却是纯音乐（他原话「这不是纯音乐么？」），而字段上写着「留空则由 AI 自动填词」—— 全仓零实现，用户只会以为是自己的歌词没写好；连带对一首没有人的歌做 cover = 白烧一次 GPU + 谎称「用了你的人格」 | V40-①…⑤（假引擎跑真实数据路径：不许骗引擎 / 不许误伤正常路径 / 纯音乐不许假告状 / 无歌词不许 cover 且零字节投递；⑤ 是「承诺 ↔ 能力」对账，真写了填词模块会自动放行文案）+ `vocal_honesty_test.dart` 4 条 |
-| v5.6.15 | **花费必须在按下去之前可见，且显示价与扣价同源**：真实单价的唯一真源是运营配置中心（`AC.credits()`，热改），由 `GET /v1/credits.prices` 下发（`per_candidate/adjust/extend/cover/dsp`）；端侧 `credit_guard.dart` 的常量**只准当老服务端兜底**，界面展示与扣费闸门一律走 `creditPrice(ref,'per_candidate',…)`。简约/标准档必须提供候选数量选择器（与主按钮同行，不得挤掉主操作），默认 **1 首**；按钮必须写「N 首 · M⚡」；派单数量、`TaskBrief.count`、`plannedCount` 三者必须等于用户选的数 | 简约档 `'count': 3` + 标准档连数量控件都没有 + 单价端侧手抄 15 是三处合谋：一键闷声 45⚡ 而每日免费才 50，用户在按之前既不知几首也不知多少钱，运营一改价闸门还拿旧价放行（2026-11-28 用户「这就是测试，你自己充值1万自己搞啊」）；旧测试「创作三档不呈现积分信息」把这条 bug 供成了规范，已带理由反转 | V41-①…④（真服务端 + 真管理端改价：下发价×候选数==`credits_charged`，改价后显示价与真扣价必须一起动；破坏 `prices` 取 config 默认值 → ③ 立刻红）+ `easy_count_price_test.dart` 4 条（选 2 首 → 派单 `count==2`、价格用服务端下发值、老服务端兜底 15 也要显示、空内容不发单）+ `create_layout_test` 反转后的「三档必须写清真花费」 |
-| v5.6.16 | **定妆候选必须连带「身份门控有没有跑」一起交付，端上不许替一次没发生的验脸作担保**：`facegateScore` 失败只许返回 `reason`（`unreachable`/`http_<status>`），执行侧 `mv_cast_image` 落 `meta.facegate={attempted,scored,ran,reason}`、定妆视频落 `meta.facegate_frames`；`completeMvCastImage` 落库形状从裸 URL 数组改为 `[{url,score,gate}]`（老数据裸字符串仍可读，`gate` 缺省即**未标注**，只许 null 不许脑补 true/false）；端上 `MvCharacter.castGateRan/castBestScore` + 横幅点名未验脸 + 格子角标（过线绿/未过黄/没打分写「未验」），过门线 `kMvCastGateLine=0.6` 与判词 V14-① 同源，改一处必须同改另一处。判词 V43-①②③ + `src/app/test/cast_gate_honesty_test.dart`（7 条）。 |
-| v5.6.17 | **参考脸与脚手架不许自证**：定妆判词的参考脸是入库固化的真人像 `test/acceptance/fixtures/mv_lead_portrait.jpg`（sha256 `e8bf45a8…`，登记于施工计划 §6.3.1，换脸须同时改登记），**禁止用引擎现生成的脸当参考去 gate 引擎自己**（恒真式）；内置 mock 执行侧 `mv_cast_image` 的 `face_scores` 恒为 `null` 且自报 `meta.facegate={ran:false,reason:'mock_executor'}` —— 脚手架凭空发 0.90/0.83/0.76 等于自己造一份「验过脸」的假证据（V43-④ 钉死）。 |
-| v5.6.18 | **服务端调用自有 worker 的每一次 fetch 都必须真的带上令牌**：`config.workerToken`（`MV_WORKER_TOKEN`/`MB_WORKER_TOKEN` 两侧同名）存在时，请求头必须含 `x-worker-token`。`core/security.js` 报「worker 未配令牌」只是**配置层**的绿，不等于调用链带了令牌 —— 漏发的表现是 worker 明明活着而预检只会说 `available:false`（401 被 catch 吞掉），等于把自己的失败藏进用户的损失里。锁：`test/acceptance/v43_cast_gate.test.js` V43-⑥。 |
-| v5.6.19 | **「没检到脸」与「检到脸但不像」是两种事实，不许合并成一个数**：facegate `/score` 无脸必须返回 `200 {score:null, face_detected:false, reason:"no_face_in_candidate"|"no_face_in_reference"}`，`score=0.0` 只保留给"有脸但不像"；执行侧 `facegateScore` 必须把 `score:null` 连同 reason 原样上报（`Number(null)===0` 会把"没验"洗成"0 分不像"，判词曾因此自己成为说谎的那一环），端上按 v5.6.16 显示「未验」。`yaw/pitch` 必须是真实姿态角（pitch 曾因分母误取横向眼距恒为 ~90°，令预检 `frontalOk` 永假且每张吃满姿态罚分）。参考照不在 `MB_FACEGATE_ROOTS` 白名单内 → 403，不许静默当"没脸"。 |
-| v5.6.20 | **真人通道定妆＝原片母版，不许引擎造脸**：这台 ComfyUI（MiniMax H3 image）没有可用的保身份改绘路径 —— 与参考脸的 ArcFace 余弦（同图自比 0.9426 作标尺）实测：`h3-image-cast` 以 brief 为 prompt **-0.0012**、结构化 casting prompt **0.2406**；`h3-image-edit`（1 参考图 / denoise .85）**0.1140**，加改发指令 **0.0527**。低 denoise 的"像"来自没听见改绘指令（0.55→0.2872 / 0.35→0.4841 / 0.2→0.6646 / 0.1→0.8036）。因此 `portrait_path` 存在时执行侧必须走 `h3-image-photo`（`LoadImage→VAEEncode→KSampler(denoise=档)`，档位固定 `[0.1,0.2,0.3]`），并落库 `meta.cast_mode='photo_master'` + `meta.denoise[]` → `mv_characters.cast_images_json[].mode/denoise`；只有无参考照的 AI 通道允许 text2img（`cast_mode='ai_generated'`，此时**没有身份来源**，端上不许暗示"已与主角对过脸"）。端上必须明写「这三张的底是你的原片」并逐张显示处理力度与实测相似度（处理越轻越像，越重越走样）。 |
+| v5.6.1 | 游客身份必须能被**本人**恢复：`POST /v1/auth/claim {device_key, recovery_code}`（免鉴权，`device_key` ≥16 字、备份码 12 位可带连字符，格式不合一律 `BAD_REQUEST`，**绝不凭空建号**）；`POST /v1/auth/recovery/rotate`（`requireUser`）重新生成 | 无 device_key 时静默建号 = 换人 = 作品永久找不回；恢复只能靠运维手工改库，等于没有恢复通道 | V36-①②③④、V37-⑥ |
+| v5.6.2 | 备份码等同**账号凭证**：`users.recovery_hash`（迁移 v21）只存 `sha256`，明文码只在生成那一刻回显一次，此后任何接口都不得吐出旧码；字符集去掉 `O0I1` 等易混字符（用户要手抄或拍照） | 库里存明文 = 把恢复通道做成泄漏面；旧码可回显 = 截图/日志一次泄漏就永久可接管 | V37-⑥ |
+| v5.6.3 | 认领必须先处理"本机已有空壳临时号占住锚点"这一真实时序：空壳号**摘锚点不删行**（`guest_key='retired-<id>'` + 清 sessions，积分流水等外键还指着它，删行会留孤儿账）并审计 `auth.claim_retire_placeholder`；若该号**已有作品**必须 `FORBIDDEN` 停下来让人决定，**绝不为认领静默毁掉任何用户内容**；认领成功后旧设备令牌全部作废 | 撞 UNIQUE 直接 500（恢复通道在最需要时失灵）；删行留孤儿账；或反过来把别人的作品当成可覆盖的残渣 | V37-⑦⑧ |
+| v5.6.4 | `cover_strength` 的默认值**只允许一个真源** = `config.persona`：`GET /v1/app/config` 下发 `persona.{default_cover_strength,min_cover_strength,max_cover_strength}` 且计入 `config_version` 内容签名；端侧不得自带 `?? 0.6` 之类的本地默认 | 第二个真源必然漂移：运营改默认后 App 显示的档位与实际跑出的音色不一致，用户看到的和听到的对不上；不进签名则 APK 不会重拉 | V37-② |
+| v5.6.5 | 克隆（变声）不许说谎：`meta.clone.applied` **只允许在变声成品被替换之后**置真（全文件恰好一处置真，位置即 `renameSync(coverAbs…)`），失败分支必须显式 `stage2_failed=true` 让端侧有东西可展示 | 发起 cover 之前就写 `applied:true`，失败时它就是"已完成"的谎话（真机 2026-11-27 已发生一次） | V37-①③⑩ |
+
+## v5.7 复刻（风格画像）与翻唱入口（2026-11-27 追加，append-only）
+
+> 由来：发起人拍板在创作三档之外新增两个产品概念，口径为——**翻唱**＝曲子歌词不变（就是原曲音频）、
+> 只换唱法/音色/声调（变风格、换男女声）；**复刻**＝曲子歌词全新、但风格画像与声线风格来自用户喜欢的参考歌曲。
+> 三个来源通道：曲库作品 / 本地上传 / 联网搜索（歌名→文字资料）；反馈形态＝自由文字＋选择题收敛；
+> 入口＝创建页第 4 档（tier=4）。
+>
+> **合规锚（不可谈判项，承 v5.2.5 与 v5.5.6）**：不做歌手声纹提取——参考歌曲只产出**风格特征层**
+> （曲风/情绪/BPM/配器质感/声线词表），不产出也不存储声纹、旋律转写与歌词原文；
+> 未经同意的声纹克隆属深度合成违规。翻唱（词曲不变的重制）仅对**本人曲库作品**开放
+> （词曲归用户或 AI 生成、谱系完整），他人歌曲只能走复刻。
+>
+> 复用纪律：词表封闭与歌手名拦截复用 `core/websearch.js` 的 `mapDomains`/`artistBlocked`（v5.5.6 同口径）；
+> 收敛交互复用意图卡全链（v5.5.8 ask_budget / v5.5.9 opt.set / v5.5.10 事务 / v5.5.11 限流）；mock 先行对齐契约 §0。
+
+| ID | 条目 | 防什么 | 验收 |
+|---|---|---|---|
+| v5.7.1 | **定义与三边界**：复刻＝来源曲的**风格画像**→词曲全新生成；声线维度只落 `dict.catalog()` voice 词表或**本人** persona（v5.2.5 归属校验不变）；不提取/不存储/不下发参考曲声纹；不复制参考曲旋律与歌词；翻唱＝仅本人曲库作品、词曲不变 | 从"我喜欢某歌手"滑到声纹克隆（v5.2.5 同源定罪）；或把参考曲歌词原文塞进生成 | V38-②⑧、V35-⑰ 回归 |
+| v5.7.2 | **tier=4 灰度**：新特性位 `replicaMode`（FLAG_KEYS 注册，默认关 gray 0，模式照 v5.5.2）；端侧 `tier_config` 增 tier=4（flagKey='replicaMode'，色取 `CreationPalette` 既有令牌），`resolveStoredTier` 上界扩到 4、灰度关时残留 tier=4 回落 0；`create_page` 本批**完成 tier_config 数据驱动接线**（现欠账：tabs 仍硬编 3 档、`resolveStoredTier` 零调用点）；`replicaMode` 关 → `/v1/replica/*` 一律 404、第 4 档整档消失、`ask_budget` 分档不受影响 | 第二个真源漂移（照抄 v5.5.2 教训）；灰度关不掉；持久化 tier=4 撞上灰度关闭后回落错档 | V38-①⑪、agent_ui_test 回归 |
+| v5.7.3 | **三来源与上传规格**：`POST /v1/replica/source/upload`（multipart；mp3/wav/m4a ≤20MB；魔数实测＋sha256 去重＋72h TTL，`uploads.kind='replica_source'`，模板照 `mvImage`）；m4a/wav 时长实测 ≤240s，mp3 无服务端时长解析器则按大小粗限、分析侧校验；work 源仅 `ownWork`；web 源＝服务端文字检索（复用 `core/websearch.js`，**永不下载音频**） | 通用上传口被撑破；把他人/过期/超大文件喂进 ASR；服务器开对外抓取口 | V38-③ |
+| v5.7.4 | **分析 job**：`replica_analyze` 走拉单架构——server `lanes/index.js` 与 executor ROUTE **双处登记**（未知类型兜底 ffmpeg 的陷阱不再犯），per-type timeout 300s；executor 只做「取件→:8191 ASR→raw 特征回传」，LLM 归纳在服务端；`EXECUTOR_MOCK=1` 产**确定性假特征**；ASR 不可达→诚实 `fallback=true`，不伪造 | 单点新增类型静默落 ffmpeg；把 LLM 依赖塞进执行器（LLM 是增强不是依赖）；验收依赖真 ASR | V38-②⑨ |
+| v5.7.5 | **复刻谱 schema 与存储**：新表 `replica_profiles`（迁移 v22：id/user_id/source_kind/source_ref/title/features_json/bpm_est/summary/confidence/degraded/created_at）；`features` 只含 catalog 四域词（moods/genres/style_words/voice）；`bpm_est` 为 LLM 推断值、用户面恒标「估」且卡上可改；**任何表任何列不得存歌词原文/ASR 全文转写**（ASR 文本仅作归纳入参用后即弃）；来源与置信度随谱下发 | 词表外自由词污染生成参数；把推断值当实测值展示；转写落库=复制歌词 | V38-②⑤⑧ |
+| v5.7.6 | **词表封闭与歌手名拦截**：归纳产出经 `mapDomains`（只认 catalog 四域，映射不上丢弃并如实 `dropped`）；用户反馈/检索文本命中 `artistBlocked` → 返回诚实话术「不能模仿具体歌手的声音，但可以做这种风格」并只按描述特征映射 | "像某歌手"被转成生成参数（v5.5.6 同源）；映射不上时编词 | V38-④、V35-⑰ 同款写法 |
+| v5.7.7 | **feedback→意图卡**：`POST /v1/replica/profiles/:id/feedback {text}` → 抽出的 `createIntentInternal`（带 gen_params 预填）建卡，`mode='replica'` → `ask_budget=3`；后续收敛/点改/答题全部走既有 `answerIntent`/`patchIntentInternal` 纪律（事务、限流、审核、审计零豁免） | 复刻绕过意图卡限流与事务（v5.5.10/11 白修）；文本绕过词库审核 | V38-⑤、V8/V35 回归 |
+| v5.7.8 | **出歌与溯源**：出歌＝既有 `POST /v1/intent/:id/generate`（计费/幂等/审核零改动，per_candidate×count）；`lineage` 白名单增 `'replica'`（works.js kinds），`works.gen_params.replica={profile_id, source_kind, source_ref}` 随 adopt 落库；`ai_label=1` 不变；详情面展示「复刻自」来源标注 | 复刻产物谱系断裂（答不上"这首歌从哪来的"）；计费旁路 | V38-⑥ |
+| v5.7.9 | **主权与生命周期**：profile 属主校验（他人 403）；`GET /v1/replica/profiles` 列表 + `DELETE`（「我的 → 复刻偏好」可见可删）；删除 profile 不删除已出作品（作品的 replica 标注保留）；上传件由既有 uploads 72h sweep 自动清理（零改动） | 偏好不可见不可删（PIPL 口径）；删谱误伤作品 | V38-⑦ |
+| v5.7.10 | **降级诚实**：LLM 不可达→规则画像（work 源直接映射元数据词表）且 `degraded=true`；上传件 ASR 失败→如实说明并给出路；无源/无资料→返回明确原因，**绝不空数组假装分析过**（v5.4/V35-⑰ 口径） | 用"看似分析完了"的空谱骗用户 | V38-⑨ |
+| v5.7.11 | **翻唱入口**：无新增服务端端点——复用 `POST /v1/works/:id/cover`（ownWork＋persona 归属校验已有）与 DSP pitch（升降调，既有能力，作可选后续动作）；端侧作品详情页加「翻唱」入口（选人格＋变声强度）；产物 `lineage='cover'` 既有语义；变声诚实性沿 v5.6.5 | 为翻唱另开旁路端点绕过归属校验；把"变声"吹成"换人重唱" | V38-⑩、V31/V37 回归 |
+
+## v5.8 智能体定名、入口归位与两层助手收敛
+
+来源：2026-11-27 K90（`43328e37` / `100.75.247.55:5555`）真机调测。产品口径更正——
+**层级只有一个方向**：本页小助理答不了往上交给智能体；智能体（老大）不把难题推回小助理，
+用户"搞不清楚"时点到的那个入口必须直接落到能干活的大智能体。
+
+| id | 契约 | 破窗后果 | 验收 |
+|---|---|---|---|
+| v5.8.1 | **定名**：用户可见文案统一称**「智能体」**（tab 标签、档位标签、页面标题、卡片与反馈话术）；「伴创」只作方案/文档代号留在注释与文件名里，不再出现在任何 UI 字符串 | 一处两个名字，用户不知道哪个是入口、客服与验收对不上话术 | agent_ui_test 回归（`CreationTiers.labelOf(3)`）、K90 截图 |
+| v5.8.2 | **入口归位**：四个业务页的「助手」入口在 `createAgentMode` 命中时**直达智能体**并带 `panelId` 上下文（`agentPanelContextProvider` + `cocreateJumpRequestProvider`）；灰度未命中必须**原样**调用现网弹层 `legacy()`，零跳转、零行为漂移（红线：规则模式永远可用） | 门面是小弟、老大藏在按钮后面；或灰度关不掉 | agent_entry_routing_test（2 例）|
+| v5.8.3 | **板块小助手弹层下线**：客户端整条链路删除——`agent_panel_assistant.dart`、`agentPanelUiProvider`、`AgentPanelHandoffNotice`、composer 的下沉入口参数、`AgentSession.handoff`、`AgentUiState.{role,panelId,handoff,handoffOffered,handoffReason}`、`AgentPhase.handedOff`。**引擎与服务端的 panel 封顶不动**（单轮、无技能、无检索、无建议票、无画像写入），继续作为独立防线 | 两套聊天栈各自漂移；死码继续被当成"两层助手还活着"来维护 | agent_engine_test（封顶五条判据）保留全绿 |
+| v5.8.4 | **层级单向**：智能体页面不得提供「交给小助手」这类下沉出口；向上交是唯一合法方向 | 老大把难题推给只答本页的小助理＝用户的问题原地消失 | verify_agent_ui.mjs 机检（老大页出现 `panelAssistantLabel:` 即红）|
+| v5.8.5 | **`ref.listen` 只能在 `build()` 内**：`ConsumerState.initState` 里调用抛 `debugDoingBuild`；release 关掉 Dart 断言故线上完全隐形，必须机检 + 规则用例双守，不许靠"我记得能用" | 底部导航整屏红而闸门全绿（真机已发生一次） | riverpod_listen_rule_test（2 例）+ verify_agent_ui.mjs 机检 |
+
+
+## v5.9 智能体页不呈现计费（2026-11-28，产品拍板）
+
+用户在 K90 上打开「智能体」，第一眼看到的是「每首 15⚡ × 3 首 = 合计 45⚡ · 余额 10005⚡」
+加「你点一下我才动手。要花钱的那步，后台真开始做才扣。」——活还没干，先摆价目表。
+原话：「智能体里不要放那堆狗屁积分和价格，什么都没做出来，就想着发财么，正经的做产品」。
+本增量把计费从智能体页与模型话术里撤出；**服务端计费、扣费、成本闸门一行未动**，钱仍只由服务端裁决。
+
+| 版本 | 约束 | 为什么 | 怎么验 |
+|---|---|---|---|
+| v5.9.1 | **智能体页不呈现计费**：删除简报卡的价格框（`单价 × 数量 = 合计 · 余额`）、`_PriceProbe`、`_PriceRetry`「刷新价格」、脚注里「要花钱的那步，后台真开始做才扣」、票面的 `${ticket.credits} ⚡`、提问卡尾部的「不花钱」、开场建议里的「这次要花多少积分？」；并删除其整条数据管线（`AgentPriceInfo`、`AgentCreditsReader`、`agentCreditsProvider`、`refreshPricing`、`AgentUiState.price`），页面不再为该目的打 `/v1/credits` | 计费台不是产品：未产出任何东西前不给用户看账本；`confirmBrief` 的载荷本就不含价格，整条管线纯属摆设 | agent_ui_test 两条新红线用例（整页禁出现单价/合计/余额/刷新价格/积分/价格/花钱）+ verify_agent_ui.mjs |
+| v5.9.2 | **主 CTA 不被计费扣住**：`confirmGate` 不得出现价格相关前置（原「价格还在读 / 价格还没取到 / 积分不够」三条全部废除）。真不够时由服务端拒绝，其原话经 `_fail` 如实上屏 | 「开始做」被一次价格查询扣住，是把计费台的排队逻辑装进了创作入口 | agent_ui_test「主 CTA 不被计费扣住」用例 |
+| v5.9.3 | **简报卡出现条件不含价格**：`showBrief` 判据为 `briefRows.isNotEmpty \|\| ticket != null`。没定下参数前不再撑出一张只有价目表的空卡 | 过去 `price.known` 也能让卡出现，等于给还没开始的活儿先摆一张价目表 | agent_ui_test 渲染断言（`AgentBriefCard` 需先有问题才出现）|
+| v5.9.4 | **模型话术同样不主动提钱**：`budget-explain` 技能退为被动应答 —— `whenToUse` 只允许「用户问花费/余额/上限」触发，禁止「要出草稿、要产出」；技能正文不得再要求把「单价 × 条数 = 合计 · 余额」写进给用户的话。**「价格与余额只讲服务端返回的数字」这条护栏原样保留**（它防的是模型自己编价） | UI 拆干净而模型仍被要求念价目表，等于把价目表从墙上搬进嘴里 | verify_agent_ui.mjs 机检 whenToUse |
+| v5.9.5 | **红线机检的口径**：只扫 UI 层（`features/agent/ui/`）的**代码字面量**，扫描前必须剥掉 `//` 与 `/* */` 注释；提示词/技能正文里的诚实护栏文案（如「给出不花钱的下一步」）属内容不属页面，不受此检约束 | 第一版扫全文＋含注释，被自己写的解释性注释误红两次 | `node scripts/verify_agent_ui.mjs` |
+| v5.9.6 | **智能体那一格不挂助手悬浮入口**：底栏的 `AssistantDock()`（写着「助手」的胶囊，点开 `showGlobalAssistant`）必须被具名判据 `showAssistantDockAt(rc, tab)` 扣住，第 4 格命中智能体时不渲染；其余各格、以及灰度未命中（第 4 格是「人格」）时照旧在场 | 真机上切到「智能体」，聊天流底下还浮着一个「助手」入口。那一格就是老大本人，底栏再挂助手等于鼓动用户往下找小弟，与 v5.8.4「层级单向、只向上交」直接相反 | agent_entry_routing_test（2 例：第 4 格关 / 其余格与人格页必须开）+ verify_agent_ui.mjs 机检（无条件渲染 `AssistantDock()` 即红；判据消失或没排除第 4 格即红）|
+| v5.9.7 | **注释不许指向不存在的文件**：`root_shell.dart` 原写着「见 test/root_shell_nav_test.dart」，而该文件从未存在。空头指针比没指针更坏 —— 后来人会去读一个读不到的地方，并据此相信规则已被测试守着 | 我在改这条时按注释去找那个测试，扑空；若它本来就红过，也没有任何机检会响 | `grep -rn "test/[a-z_]*\.dart" lib/` 逐个查证存在（本轮已清掉这一处）|
+
+### 二次收紧：智能体全域不提钱（v5.9.8，2026-11-28 真机逼出来的）
+
+v5.9.1～v5.9.5 把 UI 的账本拆了，真机 K90 上模型仍在回复里说「（这一步会用到你的额度，所以一定先等你拍板）」。
+追查：**那句话不在 UI，是工具描述喂的** —— `proposal_tools` 的 `music.propose_generate` description 原本写着
+「会消耗用户额度，所以永远先出草稿等用户拍板；本工具自己不产出、不扣任何额度」，模型照着念。
+产品原话：「说了几百次，别什么狗屁积分余额的，你充一个亿都没事，好好做产品」。故红线范围从 UI 扩到**整个 agent 特性目录**。
+
+| 版本 | 约束 | 为什么 | 怎么验 |
+|---|---|---|---|
+| v5.9.8.1 | **智能体全域不提钱**：`features/agent/**` 的代码（剥注释后）不得出现 `积分/余额/额度/单价/合计/价格/花费/花钱/扣费/付费/充钱/充值/计费/收费/⚡` —— 覆盖范围含**系统提示词、工具 description、技能正文**，不只 UI | 模型说的话 = 提示词与工具描述的复读；只拆 UI 等于拆了墙上的价目表、留着嘴里的 | verify_agent_ui.mjs 全目录扫描（16 个禁词，先剥 `//` 与 `/* */`）|
+| v5.9.8.2 | **`budget-explain` 技能整条删除**（正文 + 注册项），不得以"被动应答"形式复活；同时系统提示词必须保留一条「只有服务端才有的数字一律不许自己编、也不许猜，让用户去「我的」页看」 | 该技能存在的每一天都在教模型主动念账本；但删了它若不补这句，用户一追问模型就随口编个假数 —— 那是更坏的不诚实 | verify_agent_ui.mjs 两条机检（技能复活即红；缺"不许自己编"即红）|
+| v5.9.8.3 | **护栏文案不带账本字样但仍须诚实**：用量护栏文案改为「这是护栏不是故障：它按账号算，新开一对话也不会绕过去」；`budgetMessageIsHonest` 的判据同步从 `账号累计` 改为 `按账号`，并把假承诺的写法**堵严**（`新开会话/新开一对话/开新对话/换个对话/换个会话/新对话` × `就能/即可/就会/可以/便可/能/会` × `继续/恢复/接着/重新开始`） | 旧判据只认「新开会话」，我换成「新开一对话」时它**根本抓不到** —— 说明原来就太窄；诚实性一条没降，只是不再出现钱的字样 | agent_engine_test 两条护栏用例（含新增的"文案禁出现额度/积分/余额/价格/花费"断言）|
+| v5.9.8.4 | 钱的字样的**权威展示位只有一个**：「我的」页（积分 + 流水）与服务端账本。智能体不做客服式报价，也不解释自己贵不贵 | 智能体的职责是把歌做出来；账单页本来就有，不必在每个聊天页复制一份 | 人工：真机走一遍三题 → 草稿 → 出歌，全程截屏无钱话 |
+
+### 提问卡与"用户不用打字"（v5.9.9，2026-11-28 产品拍板）
+
+| 版本 | 契约 | 理由 | 验证 |
+| --- | --- | --- | --- |
+| v5.9.9.1 | 需要澄清时**必须以可点选的提问卡呈现**：引擎侧 `agent.ask_user` 工具（`kind: readOnly`、`isConcurrencySafe:false`）产出 `NeedsUserAnswer`，每题候选 **2–4 项**且为短词；工具侧上限与界面侧丢弃阈值**必须是同一个 4**（`kAskUserMaxOptions == _kUiMaxOptions`），否则模型给 5 项时界面整题丢弃、用户看着像"问了个寂寞" | 产品原话：「交互过程不能采用提问卡的形式么？用户做选择就好了……尽量减少用户打字输入」 | agent_engine_test「澄清提问卡」用例 + agent_ui_test「三题点得动、点完主 CTA 可用（一个字都不用打）」 |
+| v5.9.9.2 | 提问卡交给界面后**本回合就地收口**：`AgentStopReason.awaitingUser`，`mk(ok: true)` 复用既有收口形状，**不得**再向模型追发请求（自问自答）；用户点选后作为**一条用户消息**（`我选：<题>＝<值>；…`，跳过的题记「都行」）进入下一回合 | 引擎是 `while(true)` 循环，不显式停就会替用户把答案编出来；"答案进下一回合"才是对话，替用户回答不是 | agent_engine_test 用例（真 buildAgentEngine + 真 AgentBridgeSession，数 `requests.length`） |
+| v5.9.9.3 | 聊天回合**默认不开思考**：`AgentEngineConfig.thinkingEnabled = false` → 请求带 `thinking:false` → 服务端仅在显式 `false` 时下发 `chat_template_kwargs:{enable_thinking:false}`（`thinking_enabled`、`thinking_budget:0` 实测压不住思考）；上游超时按是否思考分档 —— 显式不思考 30s，要思考回落到 `config.llmTimeoutMs`，**不得**再写死 30s | 实测一发思考 47–48s 且 reasoning 与正文抢 `max_tokens`：300 token 时 reasoning 468 字、**正文 0 字**，用户什么也看不到；关掉后 reasoning 0 字、正文正常出。原来 30s 写死必然把思考轮掐成空话（日志一串 `This operation was aborted`） | 活体探针 `test/agent_live_llm_test.dart`（`MB_LIVE_PROBE=1` 才跑：真引擎+真防腐层+真服务端+真模型，验提问卡、就地收口、回填口吻、全程无钱话）+ curl 对照表 |
+| v5.9.9.4 | **服务端替智能体说的话**同受"不提钱"红线约束：`src/server/api/agent.js` 的字符串字面量（剥注释后）不得出现禁词 | 端侧把 `ApiError.message` 原样贴进气泡。真机补漏时连抓两条同类：「该额度按账号累计，新开会话不会把它清零」与「…额度按账号累计，新开会话不会清零」—— 只扫 Dart 永远看不见 | verify_agent_ui.mjs 服务端字符串扫描（喂旧文件可复现咬合，实测共咬 2 处） |
+| v5.9.9.5 | **每条建议都必须有宿主出口，三处缺一即视为没接线**：① 装配处把 `onProposal` 传进 `buildAgentEngine`；② 服务端有 `POST /v1/agent/proposals`（草稿→确认票，`scope='agent'`，走 `gov.issueTicket`）；③ 票面通道取得到（`agentTicketGatewayProvider` 默认从实现了 `AgentTicketCapableSession` 的会话身上取）。缺任何一处，工具回给模型的话**必须是「没有交上去」并给出去向**，禁止演成"在等你确认" | 真机（小米13 `98fc9410`，2026-11-28 14:05–14:11）走完整条链后停在：简报卡「已提交确认」+ 模型说「这一步还只是草稿…服务端出确认票后产出就开始」—— 而 `chat_tickets` 零行、`jobs` 06:00Z 后零行：三处一处都没接，"等票"是句永远不会兑现的空话。老大定的收尾判据：**不允许出现"用户点完了所有能点的、活却没开始"** | agent_ticket_flow_test「出票通道没接上时：不许演『在等你确认』，也不许把主 CTA 锁死」+「用户拍一次板，服务端就真建出任务」 |
+| v5.9.9.6 | **出曲前只确认一次，票照发**：简报卡主 CTA 就是方案 D-2 那"一次"总确认。按下它，会话侧记一次**绑回合号的一次性授权**（`AgentBriefApproval.grantBriefApproval`），宿主据此带 `auto_confirm` 去出票 —— 服务端在同一次里 `verifyAndConsumeTicket` 五连校验后开工，**不得**再逼用户点第二遍；没按过就只发票，界面必须长出「就按这张票办」。授权模型无法伪造（它是界面→会话的方法调用，不在任何工具入参里），且跨回合即失效 | §6.6「出曲前一次总确认 = 任务简报卡」与 §6.5「派单永远走票」不冲突：人只拍一次板，票照发照验。真机那台机器上用户点完主 CTA 之后屏幕上再没有任何可点的东西，就是这个二选一被做成了"两次都不算" | agent_ticket_flow_test 用例一（`auto_confirm` 送达 + 只 `dispatched` 一次）与用例二（未拍板 ⇒ 票 pending、按钮可见、点下才派出活） |
+| v5.9.9.7 | **参数权威在服务端**：`params.count/sec` 由服务端按 `gen_params > 本次建议 > config.gen 默认` 定，随票回带；界面念的数、模型念的数、真正派单的数**必须是同一个**。端侧工具**不得**替用户填默认条数（参数没填就整条不送），也**不得**提供服务端应用不上的旋钮 | 简报卡写「3 首挑着听」而模型草稿写「候选条数：1 条」：界面取平台默认 3、工具 `fallback: 1` 又总是序列化，两边各自拍脑袋。`music.propose_card_patch` 原来的 `title/lyrics` 两个参数 `patchIntentInternal` 根本不认 —— 给用户一个拧不动的把手就是撒谎（契约 v2.19 的取值优先级同源） | agent_ticket_flow_test 用例一（模型不填 count，界面那句仍念服务端那个 3）|
+| v5.9.9.8 | **引擎事件不许在防腐层被吞或打乱**：① 只有结果没有开头的调用（入参不合格、`AgentToolSkipped`、模型喊了不存在的能力）也必须落成一条步骤；② 防腐层到界面那条流必须 `broadcast(sync: true)`，与提问卡同一条投递路径，否则收尾那句话会先按"还没开工"念、半秒后才补"已开始做"；③ 会话合成的降级 `TurnFinished` **不得**重复携带 `reply`（引擎那条已经念过）；④ 引擎带来的 `activityLabel` 必须一路带到界面上，落到通用兜底句「助手正在办一件事」视为缺陷 | 真机同一段流水里引擎明明发了 `ToolStarted(music.propose_generate) → AgentToolFinished → AgentAssistantText`，屏幕上却一张卡都没有、同一条回复并排出现两遍 —— 事件是发出来的，是防腐层与界面把它们丢了/重了/排错了 | agent_ticket_flow_test「引擎试过但没开头的步骤也要留在屏幕上」「降级那一轮不许把同一句助手回复念两遍」 |
+| v5.9.9.9 | **模型给的编号一律不信**：`intent_id` 查不到或不是本人 ⇒ 记 `agent.proposal.foreign_intent` 留痕（不判红），就地建一张属主本人的卡（`source_kind='agent'`、`ask_budget=3`、`source_text` 用用户原话），真编号随票回带；连灵感都没有时回 `NOT_READY` 并明确要用户补哪一句 | 智能体对话流里从来不产生意图卡，真机上模型那个 `intent_id` 是编的 —— 拿幻觉编号去派单，等于让它替别人决定"给谁的歌"（契约 v5.4.3 同一条） | 手工核 `intent_cards`/`chat_tickets`/`jobs` 三张表（见 v5.9.9.5 的落地验证） |
+
+**未改动的部分（刻意的）**：`/v1/credits` 与其鉴权、`credit_ledger` 账本、`fuseCheck` 成本闸门、
+服务端对积分不足的拒绝与文案、简约/标准/深度档的价目呈现（那是创作流，用户要按数量付钱，
+报价是应当的）。本增量只管智能体这一档。

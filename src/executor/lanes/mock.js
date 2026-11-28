@@ -87,4 +87,23 @@ async function runImage(job, ctx) {
   return { result: card, files: [] };
 }
 
-module.exports = { runMusic, runVoice, runImage };
+// replica_analyze（契约 v5.7.4 mock 先行）：确定性假观测 —— 有文本/情绪/事件，
+// 让 v38 套件在无 GPU、无 ASR 的机器上全绿；服务端规则画像能从文本里命中词典词
+async function runReplicaAnalyze(job, ctx) {
+  await ctx.progress(50, 'mock 识别完成');
+  return {
+    result: {
+      asr: {
+        emotion: 'happy',
+        events: ['BGM'],
+        duration: 45,
+        text: 'mock 参考曲转写：轻快的电子节拍，温暖的钢琴与弦乐铺底，女声气声唱法',
+      },
+      fallback: false,
+      mock: true,
+    },
+    files: [],
+  };
+}
+
+module.exports = { runMusic, runVoice, runImage, runReplicaAnalyze };

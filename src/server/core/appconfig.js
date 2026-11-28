@@ -6,7 +6,11 @@ const store = require('./store');
 const U = require('./util');
 
 // 功能开关键位（mv 灰度、dsp、persona、助手对话、音乐助手（契约 v3.1））
-const FLAG_KEYS = ['mv', 'dsp', 'persona', 'assistant_chat', 'music_assistant', 'assistant_chat_music', 'assistant_core', 'assistant_actions'];
+const FLAG_KEYS = ['mv', 'dsp', 'persona', 'assistant_chat', 'music_assistant', 'assistant_chat_music', 'assistant_core', 'assistant_actions',
+  // 伴创（契约 v5.5）：默认全关，随 P7 灰度开。createAgentMode 关时第 4 档位整个隐藏且 /v1/agent/* 一律 404
+  'createAgentMode', 'agentWebSearch',
+  // 复刻（契约 v5.7）：风格画像档。默认关 gray 0，模式照 v5.5.2 —— 关时 /v1/replica/* 一律 404、创建页第 4 档不出现
+  'replicaMode'];
 
 // 默认快照：取自 config.js（现网实值），运营后台改后写入 app_config
 function defaultBlob() {
@@ -103,6 +107,10 @@ function initDefaults() {
     // 统一助手（契约 v4.0）：核心默认全量开启，跨域付费动作默认关闭。
     if (k === 'assistant_core') { on = 1; gray = 1; }
     if (k === 'assistant_actions') { on = 0; gray = 0; }
+    // 伴创两兄弟默认关：契约 v5.5 的灰度节奏是「先补闸门，再随伴创一起开」（D-7）
+    if (k === 'createAgentMode' || k === 'agentWebSearch') { on = 0; gray = 0; }
+    // 复刻（契约 v5.7.2）：同 fail-closed 模式，运营显式开了才出现在创建页
+    if (k === 'replicaMode') { on = 0; gray = 0; }
     store.run('INSERT OR IGNORE INTO feature_flags(key,enabled,grayscale,created_at,updated_at) VALUES(?,?,?,?,?)', k, on, gray, now, now);
   }
 }

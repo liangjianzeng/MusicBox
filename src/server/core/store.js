@@ -335,11 +335,110 @@ ALTER TABLE admins ADD COLUMN token_expire_at TEXT;
 `,
   },
   {
+    // v16 · 契约 v5.5.8（伴创）：澄清题量按卡分档。
+    // 为什么必须是**列**而不是运行时参数：四处夹点（answerIntent 的答题上限、enforceQuestions、
+    // prompts 编译、词典兜底题）都要读同一个口径，任何一处从别处推断就会各说各话 ——
+    // 硬凑两轮破坏"开局一次问完"，悄悄放宽又把存量三档一起改了。默认 2 = v1 原值，存量卡行为不变。
+    version: 16,
+    sql: `
+ALTER TABLE intent_cards ADD COLUMN ask_budget INTEGER NOT NULL DEFAULT 2;
+`,
+  },
+  {
+    // v17 · 契约 v5.5.16（伴创）：智能体的**偏好**存储（不是数据、不是方法）。
+    // 三层分工：表能穷举的数据走 dict.catalog() 投递；判断与步骤走 skill；只属于这个用户的口味走这里。
+    // 唯一约束 (user_id,key)：同一偏好只有一份，重复写是更新而不是无限堆积 ——
+    // 否则智能体每轮记一条"用户喜欢电子"，半年后 prompt 里全是自相矛盾的历史残骸。
+    version: 17,
+    sql: `
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'agent',
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);
+`,
+  },
+  {
+    // v18 · 契约 v5.5.9（伴创）：给「谁来唱」一个真正的承载位。
+    // 此前"女声/男声"只能靠 dict.scan(label) 猜进 genre_hypotheses 的 tags，被 cap=3 且 a 优先静默挤掉，
+    // 即真机记录的「勾女声出男声」。缺列就永远只能猜；补一列，语义才有落脚处。语义对齐 dictionary.js VOICE_WORDS.dim。
+    version: 18,
+    sql: `
+ALTER TABLE intent_cards ADD COLUMN voice TEXT;
+`,
+  },
+  {
+    // v19 · 契约 v5.5.7（伴创）：智能体 token 用量账本。
+    // 为什么必须建表而不是塞进 audit：成本闸门要**求和比较**，audit 的 obj 是 JSON 文本，
+    // 每次 SUM 都要全表扫 + 逐行 JSON.parse；而智能体每回合都写一条，账本必须是可直接聚合的。
+    version: 19,
+    sql: `
+CREATE TABLE IF NOT EXISTS agent_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  session_id TEXT,
+  turn_index INTEGER,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_usage_user ON agent_usage(user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_usage_session ON agent_usage(session_id);
+`,
+  },
+  {
+    // v20 · 契约 v5.5.12（伴创）：技能目录。rank 100=APK 内置 / 150=服务端下发 / 200=用户，
+    // 去重按 rank 降序（端侧 provider 已有该逻辑）。delivered=1 才进目录，未勾选的不投递正文。
+    version: 20,
+    sql: `
+CREATE TABLE IF NOT EXISTS agent_skills (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  rank INTEGER NOT NULL DEFAULT 150,
+  kind TEXT NOT NULL DEFAULT 'method',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_skills_deliver ON agent_skills(enabled, delivered, rank DESC);
+`,
+  },
+  {
     // v21 · 契约 v5.6.0「身份可恢复」：游客身份必须能被**本人**恢复，而不是靠运维手工 UPDATE guest_key
     // （2026-11-27 真机就是这么救回来的：老客户端从不送 device_key，账号锚点是随机 gk_xxx，结构上不可恢复）。
     // 只存哈希：备份码等同"能接管这个账号"的凭证，库里存明文等于把恢复通道做成泄漏面。
     version: 21,
     sql: `ALTER TABLE users ADD COLUMN recovery_hash TEXT;`,
+  },
+  {
+    // v22 · 契约 v5.7.5（复刻）：风格画像（复刻谱）。features_json 只存 catalog 四域词（zh 标签），
+    // **绝不存歌词原文 / ASR 全文转写** —— 转写是参考曲的复制物，落库即违反 v5.7.1 合规锚；
+    // bpm_est 是推断值（用户面恒标「估」），不是实测值。job_id 让端侧在分析 job done 后能反查自己的谱。
+    version: 22,
+    sql: `
+CREATE TABLE IF NOT EXISTS replica_profiles (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,               -- work | upload | web
+  source_ref TEXT,                         -- work_id / uploads.id / query_hash(web)
+  title TEXT NOT NULL DEFAULT '',
+  features_json TEXT NOT NULL DEFAULT '{}',-- {moods:[],genres:[],style_words:[],voice:[]} 只认 catalog 词
+  bpm_est INTEGER,
+  summary TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  degraded INTEGER NOT NULL DEFAULT 0,     -- 规则画像/降级分析 = 1（诚实纪律 v5.7.10）
+  job_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replica_profiles_user ON replica_profiles(user_id, created_at DESC);
+`,
   },
 ];
 
@@ -599,9 +698,13 @@ function intentOf(r) {
     mood: U.toArr(r.mood), scene_desc: r.scene_desc || '',
     genre_hypotheses: U.toArr(r.genre_hypotheses),
     vocal: r.vocal || 'unknown', duration_hint: r.duration_hint || '',
+    // v5.5.9：谁来唱。老卡为 null，前端不许编造，缺失就显示"未指定"。
+    voice: r.voice == null ? null : String(r.voice).slice(0, 24),
     confidence: r.confidence == null ? 0 : r.confidence,
     questions: U.jparse(r.questions, []) || [],
     answers: U.jparse(r.answers, []) || [],
+    // v5.5.8：本轮可问几题由卡自带（伴创 3，其余 2）。缺列的老库按 2 兜底 = v1 原值，绝不悄悄放宽。
+    ask_budget: (() => { const n = Number(r.ask_budget); return Number.isFinite(n) && n >= 1 && n <= 3 ? n : 2; })(),
     // 诚实化（v11）：用户到底说了什么 / 这次理解是不是词典兜底出来的。
     // 语音=转写逐字，文本=用户原文，图片=画面理解摘要；拿不到就 null，前端不许编。
     source_text: r.source_text == null ? null : String(r.source_text),

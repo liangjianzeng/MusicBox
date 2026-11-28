@@ -62,9 +62,21 @@ function buildMusicPayload(params, actor) {
     mood, tags, lyrics, bpm, sec, count, seed_base,
     instrumental, persona,
     src_audio: params.src_audio || null,
+    replica: sanitizeReplica(params.replica),
     prompt: String(params.prompt || '').slice(0, 500),
     candidates: Array.from({ length: count }, (_, i) => ({ seq: i + 1, seed_delta: i })),
   };
+}
+
+// 契约 v5.7.8（复刻）：溯源随 payload 进 job，adopt 写入 works.gen_params.replica。
+// 三个字段全部收紧，非法值直接置 null —— 溯源标注是元数据，绝不能变成注入面。
+function sanitizeReplica(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const pid = String(r.profile_id || '').trim().slice(0, 40);
+  const kind = String(r.source_kind || '');
+  const ref = String(r.source_ref || '').trim().slice(0, 80);
+  if (!pid || !['work', 'upload', 'web'].includes(kind)) return null;
+  return { profile_id: pid, source_kind: kind, source_ref: ref || null };
 }
 
 function normalizeForIdem(user, kind, params) {
@@ -222,7 +234,7 @@ function adopt(ctx) {
   if (!job || (job.user_id && job.user_id !== user.id)) throw new U.ApiError('FORBIDDEN', '无权操作该候选');
   const payload = U.jparse(job.payload, {}) || {};
   const meta = U.jparse(cand.meta, {}) || {};
-  const lin = (payload.lineage && ['origin', 'adjust', 'variation', 'extend', 'cover'].includes(payload.lineage.kind)) ? payload.lineage : { kind: 'origin' };
+  const lin = (payload.lineage && ['origin', 'adjust', 'variation', 'extend', 'cover', 'replica'].includes(payload.lineage.kind)) ? payload.lineage : { kind: 'origin' }; // 'replica'：契约 v5.7.8 复刻溯源
   const parent = lin.parent_id ? store.get('SELECT * FROM works WHERE id=?', lin.parent_id) : null;
   const workId = store.tx(() => {
     const w = U.uid('w_');
@@ -234,7 +246,7 @@ function adopt(ctx) {
       cand.audio_master, cand.audio_playback, cand.duration_sec, cand.format || 'wav', cand.waveform_ref,
       payload.mood || '', (payload.tags || []).join(','), payload.bpm || null, 'zh', payload.lyrics || '',
       'music', meta.seed == null ? payload.seed_base : meta.seed,
-      U.jstr({ prompt: payload.prompt, tags: payload.tags, sec: payload.sec, seed_base: payload.seed_base, instrumental: payload.instrumental, job_id: job.id }),
+      U.jstr({ prompt: payload.prompt, tags: payload.tags, sec: payload.sec, seed_base: payload.seed_base, instrumental: payload.instrumental, job_id: job.id, ...(payload.replica ? { replica: payload.replica } : {}) }),
       lin.kind, parent ? parent.id : null, parent ? (parent.lineage_depth || 0) + 1 : null,
       payload.persona_id || null, U.nowIso());
     store.run('UPDATE candidates SET adopted=1, work_id=? WHERE id=?', w, cand.id);

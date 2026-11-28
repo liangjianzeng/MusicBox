@@ -104,17 +104,29 @@ describe('V30 声纹私有化与字段长度真源', () => {
     assert.strictEqual(core.FIELD_LIMITS, fields.FIELD_LIMITS, 'l2 治理层必须转出自 core/fields，不得各留一份');
     assert.ok(Number.isInteger(fields.FIELD_LIMITS.mood) && fields.FIELD_LIMITS.mood > 0, 'FIELD_LIMITS.mood 必须是正整数');
 
-    // ① 两个助手入口的 mood 上限必须引用常量（写字面量就是漂移的开始）
+    // ① 两个助手入口的 mood 上限必须**转出**到 core/fields 的唯一真源（v5.5.9：参数表收进 SET_CARD_PARAMS）。
+    //    真源合并后"逐文件核对内联声明"已无对象，这里改判三件事，比原来更严：
+    //    (a) 消费方必须显式引用 core/fields 并把参数表转交 SET_CARD_PARAMS；
+    //    (b) 消费方不得再自带一份 mood 参数声明 —— 自带就是漂移的重新开始；
+    //    (c) 真源自己的上限也必须是常量引用，不是写死的数字。
     const gates = [
-      ['src/server/l2assistant/core.js', /mood:\s*\{\s*kind:\s*'string'[^}]*?max:\s*([^,}]+)/],
-      ['src/server/l2music/governance.js', /mood:\s*\{\s*kind:\s*'string'[^}]*?max:\s*([^,}]+)/],
+      ['src/server/l2assistant/core.js', /\.\.\/core\/fields/],
+      ['src/server/l2music/governance.js', /\.\.\/core\/fields/],
     ];
-    for (const [rel, re] of gates) {
-      const m = re.exec(fs.readFileSync(path.join(H.ROOT, rel), 'utf8'));
-      assert.ok(m, rel + ' 里没找到 mood 参数声明 —— 请同步修改本用例，而不是把它删掉');
-      assert.ok(!/^\d+$/.test(m[1].trim()), rel + ' 的 mood 上限必须是常量引用，实际 ' + m[1].trim());
-      assert.strictEqual(m[1].trim().split('.').slice(-1)[0], 'mood', rel + ' 的 mood 上限必须取自 FIELD_LIMITS.mood');
+    for (const [rel, reqRe] of gates) {
+      const src = fs.readFileSync(path.join(H.ROOT, rel), 'utf8');
+      assert.ok(reqRe.test(src),
+        rel + ' 必须引用 core/fields（mood 长度上限的唯一真源）—— 请同步修改本用例，而不是把它删掉');
+      assert.ok(/params:\s*FL\.SET_CARD_PARAMS/.test(src),
+        rel + ' 的 music.set_card 参数表必须转交 SET_CARD_PARAMS，不得在自己文件里另列一份');
+      assert.ok(!/mood:\s*\{\s*kind:\s*'string'/.test(src),
+        rel + ' 里不得再自带 mood 参数声明（当年就是 60 / 20 两处并存，用户静默丢字）');
     }
+    const fieldsSrc = fs.readFileSync(path.join(H.ROOT, 'src/server/core/fields.js'), 'utf8');
+    const fm = /mood:\s*\{\s*kind:\s*'string'[^}]*?max:\s*([^,}]+)/.exec(fieldsSrc);
+    assert.ok(fm, 'src/server/core/fields.js 里没找到 mood 参数声明 —— 请同步修改本用例，而不是把它删掉');
+    assert.ok(!/^\d+$/.test(fm[1].trim()), '唯一真源的 mood 上限必须是常量引用，实际写死 ' + fm[1].trim());
+    assert.strictEqual(fm[1].trim().split('.').slice(-1)[0], 'mood', '唯一真源的 mood 上限必须取自 FIELD_LIMITS.mood');
 
     // ② 落库/搜索处的截断长度也不得写字面量：曾经 落库 20 / 搜索 30 / 助手 60 三个数并存
     const works = fs.readFileSync(path.join(H.ROOT, 'src/server/api/works.js'), 'utf8').split('\n');

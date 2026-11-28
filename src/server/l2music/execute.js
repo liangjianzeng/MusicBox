@@ -54,7 +54,8 @@ function applyMusicFree(user, subject, tool, args) {
     const row = ownIntent(user, subject.id);
     if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '这张意图卡已经用过，请重新发起灵感');
     const body = {};
-    for (const k of ['mood', 'vocal', 'sec', 'bpm', 'count', 'scene_desc']) if (args[k] !== undefined) body[k] = args[k];
+    // 键列表取自唯一真源（v5.5.9），不再手抄：漏一个键就是「说了改好了但卡没变」
+    for (const k of require('../core/fields').SET_CARD_KEYS) if (args[k] !== undefined) body[k] = args[k];
     if (!Object.keys(body).length) throw new U.ApiError('BAD_REQUEST', '没有要改的参数');
     intentApi.patchIntentInternal(user, row, body); // 复用点改内核（净化 + 审核 + 审计）
     store.log('music.assistant.exec', { user_id: user.id, subject_id: subject.id, action: 'music.set_card', fields: Object.keys(body), initiated_by: 'assistant' });

@@ -9,6 +9,7 @@ const engine = require('../core/engine');
 const rules = require('../core/rules');
 const auth = require('./auth');
 const U = require('../core/util');
+const AC = require('../core/appconfig');
 const dict = require('../prompts/dictionary');
 const intentPrompt = require('../prompts/intent');
 const worksApi = require('./works');
@@ -92,13 +93,36 @@ function registerUpload(user, kind, saved, bytes, mime) {
     U.isoAfterMs(UP.ttlHours * 3600 * 1000), U.nowIso());
   return id;
 }
-function newDraftIntent(user, kind, uploadId) {
+// v5.5.8：开局问几题由**服务端**判，不接受客户端直传。
+// 客户端能自己声明"我是伴创"就等于绕过了"开局别问太多"的体验约束；灰度没开时也必须是 2。
+function askBudgetFor(user, body) {
+  const b = body || {};
+  const mode = String(b.surface || b.mode || '');
+  const wantsAgent = mode === 'agent' || Number(b.create_tier) === 3;
+  // 契约 v5.7.7（复刻）：mode='replica' 的卡同样按 3 题分档；flag 未开 = 未开放，fail-closed 回 2
+  const wantsReplica = mode === 'replica';
+  if (!wantsAgent && !wantsReplica) return 2;
+  let on = false;
+  try { on = AC.featureOn(wantsReplica ? 'replicaMode' : 'createAgentMode', user && user.id); } catch (e) { on = false; } // flag 未注册 = 未开放，fail-closed
+  return on ? 3 : 2;
+}
+function cardBudget(intentId) {
+  const r = store.get('SELECT ask_budget FROM intent_cards WHERE id=?', intentId);
+  const n = r ? Number(r.ask_budget) : NaN;
+  return Number.isFinite(n) && n >= 1 && n <= 3 ? Math.trunc(n) : 2;
+}
+function newDraftIntent(user, kind, uploadId, askBudget) {
   const id = U.uid('in_');
+  const budget = Number.isFinite(askBudget) && askBudget >= 1 && askBudget <= 3 ? Math.trunc(askBudget) : 2;
+  // 顺带修一处**存量错位**：原语句 7 个占位符只配 6 个参数，于是 genre_hypotheses 被绑成时间戳、
+  // updated_at 一直是 NULL。草稿卡随即被 engine 覆盖，所以多年没人发现；我给这条 INSERT 加第 8 列后
+  // 错位才顶到 ask_budget 的 NOT NULL 上暴露出来。这里把 genre_hypotheses 改为字面量 ''，
+  // 让占位符与参数一一对应（草稿本来就没有流派猜测，空串才是它的真值）。
   store.run(
     `INSERT INTO intent_cards(id,user_id,source_kind,source_ref,mood,scene_desc,genre_hypotheses,vocal,duration_hint,
-      confidence,questions,answers,rounds,status,gen_params,created_at,updated_at)
-     VALUES(?,?,?,?,'','',?,'unknown','',0,'[]','[]',0,'clarifying',NULL,?,?)`,
-    id, user.id, kind, uploadId, U.nowIso(), U.nowIso());
+      confidence,questions,answers,rounds,status,gen_params,created_at,updated_at,ask_budget)
+     VALUES(?,?,?,?,'','','','unknown','',0,'[]','[]',0,'clarifying',NULL,?,?,?)`,
+    id, user.id, kind, uploadId, U.nowIso(), U.nowIso(), budget);
   return id;
 }
 
@@ -120,10 +144,10 @@ function intentVoice(ctx) {
   if (dur > UP.voiceMaxSec + 1) throw new U.ApiError('BAD_REQUEST', `语音需不超过 ${UP.voiceMaxSec} 秒`);
   const saved = saveUpload(file.data, ext, 'voice');
   const uploadId = registerUpload(user, 'voice', saved, file.data.length, ext === 'wav' ? 'audio/wav' : 'audio/mp4');
-  const intentId = newDraftIntent(user, 'voice', uploadId);
+  const intentId = newDraftIntent(user, 'voice', uploadId, askBudgetFor(user, fields));
   const hint = String(fields.hint || '').trim().slice(0, 300);
   if (hint) rules.moderateFields([hint]);
-  engine.enqueue({ type: 'intent_voice', payload: { upload_path: saved.abs, intent_id: intentId, hint }, userId: user.id });
+  engine.enqueue({ type: 'intent_voice', payload: { upload_path: saved.abs, intent_id: intentId, hint, ask_budget: cardBudget(intentId) }, userId: user.id });
   store.log('intent.upload', { user_id: user.id, kind: 'voice', intent_id: intentId, bytes: file.data.length });
   return { status: 202, body: { intent_id: intentId } };
 }
@@ -141,10 +165,10 @@ function intentImage(ctx) {
   if (!(isJpg || isPng)) throw new U.ApiError('BAD_REQUEST', '文件内容与格式不符');
   const saved = saveUpload(file.data, ext, 'image');
   const uploadId = registerUpload(user, 'image', saved, file.data.length, isPng ? 'image/png' : 'image/jpeg');
-  const intentId = newDraftIntent(user, 'image', uploadId);
+  const intentId = newDraftIntent(user, 'image', uploadId, askBudgetFor(user, fields));
   const hint = String(fields.hint || '').trim().slice(0, 300);
   if (hint) rules.moderateFields([hint]);
-  engine.enqueue({ type: 'intent_image', payload: { upload_path: saved.abs, intent_id: intentId, hint }, userId: user.id });
+  engine.enqueue({ type: 'intent_image', payload: { upload_path: saved.abs, intent_id: intentId, hint, ask_budget: cardBudget(intentId) }, userId: user.id });
   store.log('intent.upload', { user_id: user.id, kind: 'image', intent_id: intentId, bytes: file.data.length });
   return { status: 202, body: { intent_id: intentId } };
 }
@@ -169,13 +193,14 @@ function intentText(ctx) {
     if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用');
     intentId = row.id;
     // 原话变了，之前对澄清题的回答就作废，避免「答的是上一句」
-    store.run('UPDATE intent_cards SET source_text=?,degraded=0,answers=\'[]\',rounds=0,status=\'clarifying\',updated_at=? WHERE id=?',
-      text, U.nowIso(), intentId);
+    // 复用旧卡时一并刷新问法档位：问几题描述的是「现在怎么问用户」，不是卡的历史属性
+    store.run('UPDATE intent_cards SET source_text=?,degraded=0,answers=\'[]\',rounds=0,status=\'clarifying\',ask_budget=?,updated_at=? WHERE id=?',
+      text, askBudgetFor(user, body), U.nowIso(), intentId);
   } else {
-    intentId = newDraftIntent(user, 'text', null);
+    intentId = newDraftIntent(user, 'text', null, askBudgetFor(user, body));
     store.run('UPDATE intent_cards SET source_text=? WHERE id=?', text, intentId);
   }
-  engine.enqueue({ type: 'intent_text', payload: { text, intent_id: intentId, hint }, userId: user.id });
+  engine.enqueue({ type: 'intent_text', payload: { text, intent_id: intentId, hint, ask_budget: cardBudget(intentId) }, userId: user.id });
   store.log('intent.text', { user_id: user.id, intent_id: intentId, bytes: text.length });
   return { status: 202, body: { intent_id: intentId } };
 }
@@ -224,64 +249,134 @@ function getIntent(ctx) {
 }
 
 // POST /v1/intent/:id/answer {answers:[{q_idx,option_idx}]}
-// 服务端强制：总轮次 ≤2、每轮 ≤2 题、每题必带 recommended_idx、confidence≥0.75 直接 ready
-function answerIntent(ctx) {
-  const user = requireUser(ctx);
-  const row = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
-  if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
-  if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用');
-  if (row.status === 'ready') return { status: 200, body: store.intentOf(row) };
-  const answers = Array.isArray((ctx.body || {}).answers) ? ctx.body.answers : [];
-  if (!answers.length) throw new U.ApiError('BAD_REQUEST', '请至少回答一道题');
-  if (answers.length > 2) throw new U.ApiError('BAD_REQUEST', '每轮最多回答 2 题');
-  if ((row.rounds || 0) >= 2) throw new U.ApiError('BAD_REQUEST', '澄清轮次已达上限');
-  const questions = U.jparse(row.questions, []) || [];
-  const prevAnswers = U.jparse(row.answers, []) || [];
-  const card = store.intentOf(row);
-  const applied = [];
-  for (const a of answers) {
-    const q = questions.find(x => x.q_idx === Number(a.q_idx));
-    if (!q) continue; // 忽略陈旧题
-    const opt = (q.options || []).find(o => o.idx === Number(a.option_idx));
-    if (!opt) throw new U.ApiError('BAD_REQUEST', '选项不存在');
-    applied.push({ q_idx: q.q_idx, option_idx: opt.idx, label: opt.label });
-    // 依选项语义回填卡面
-    const scan = dict.scan(opt.label);
-    if (/纯音乐|无人声/.test(opt.label)) { card.vocal = 'instrumental'; }
-    else if (/人声|演唱/.test(opt.label)) { card.vocal = 'song'; }
-    if (scan.moods.length && !card.mood.includes(scan.moods[0])) card.mood = U.unionArr(card.mood, [scan.moods[0]], 3);
-    if (scan.tags.length) card.genre_hypotheses = U.unionArr(card.genre_hypotheses, scan.tags.slice(0, 2), 3);
+// 契约 v5.5.8/9/10（2026-11-27 追加，伴创）。四条纪律都在这一段，每条都对应一个真实故障：
+//  ① 题量按**卡**的 ask_budget 分档（伴创 3，其余 2）。全局硬编码 2 会让"开局一次问完"变成硬凑两轮；
+//     而全局放宽到 3 又把存量三档一起改了 —— 所以是卡上带字段，不是常量。
+//  ② 回填**优先用选项自带的 set**，dict.scan(label) 只在缺 set 时兜底。
+//     靠猜标签字面回填正是真机「勾女声出男声」的根因：scan.tags 被 unionArr(cap=3, a 优先) 静默挤掉。
+//  ③ set.tags_add 写 gen_params.tags，**绝不并入 genre_hypotheses**。后者是卡面展示位，
+//     混进来会挤掉用户显式点选的流派；流派只认 genre_add 这一条显式通道。
+//  ④ 整段走 BEGIN IMMEDIATE（对齐 v5.3.1）。此前是裸 read-modify-write：并发两次都从 rounds=0 起算，
+//     结果是丢更新、轮次少计、半截答案；answers 另按 q_idx 去重，同一题重复提交只算一次，防止刷 confidence。
+const VOICE_DIMS = ['gender', 'voice', 'language', 'accent'];
+
+function applyOptionToCard(opt, card, gp) {
+  const set = opt && opt.set && typeof opt.set === 'object' && !Array.isArray(opt.set) ? opt.set : null;
+  if (set) {
+    if (Array.isArray(set.tags_add) && set.tags_add.length) {
+      gp.tags = U.unionArr(gp.tags || [], set.tags_add.map((t) => String(t).trim().slice(0, 24)).filter(Boolean), 5);
+    }
+    if (Array.isArray(set.genre_add) && set.genre_add.length) {
+      card.genre_hypotheses = U.unionArr([], set.genre_add.map((t) => String(t).trim().slice(0, 24)).filter(Boolean), 3);
+    }
+    if (Array.isArray(set.mood_add) && set.mood_add.length) {
+      card.mood = U.unionArr([], set.mood_add.map((t) => String(t).trim().slice(0, 20)).filter(Boolean), 3);
+    }
+    if (set.vocal !== undefined && set.vocal !== null) {
+      const v = String(set.vocal);
+      if (['song', 'instrumental', 'unknown'].includes(v)) { card.vocal = v; gp.instrumental = v === 'instrumental'; }
+    }
+    if (set.bpm !== undefined && set.bpm !== null) {
+      const b = Math.round(Number(set.bpm));
+      if (Number.isFinite(b) && b >= 40 && b <= 200) gp.bpm = b; // 越界静默丢弃：选项是服务端发的，越界说明发错了，不该污染卡
+    }
+    if (set.sec !== undefined && set.sec !== null) {
+      const g = config.gen; const x = Math.round(Number(set.sec));
+      if (Number.isFinite(x) && x >= g.sec_min && x <= g.sec_max) { gp.sec = x; card.duration_hint = x + 's'; }
+    }
+    if (set.dim !== undefined && set.dim !== null) {
+      // dim 是**维度溯源**（这个选项在回答哪一维），不是生乐参数；gender/voice 维落到 voice 承载位
+      const d = String(set.dim).trim().slice(0, 24);
+      gp.dims = U.unionArr(gp.dims || [], [d], 6);
+      if (VOICE_DIMS.includes(d)) card.voice = String(opt.label || '').trim().slice(0, 24) || null;
+    }
+    return;
   }
-  if (!applied.length) throw new U.ApiError('BAD_REQUEST', '没有匹配到待回答的题目');
-  // 置信度推进：答完全部题 → 显著上升
-  const totalQ = questions.length || 1;
-  const newConf = Math.min(0.95, (row.confidence || 0) + 0.18 * (applied.length / totalQ) + 0.07 * applied.length);
-  const next = { ...card, confidence: newConf };
-  let status; let questionsOut;
-  if (newConf >= 0.75) { status = 'ready'; questionsOut = []; }
-  else {
-    const qs = dict.defaultQuestions(next); // 仍不充分→追加下轮题（≤2 题，必带 recommended_idx）
-    const baseIdx = (U.jparse(row.questions, []) || []).length;
-    qs.forEach((q, i) => { q.q_idx = baseIdx + i; });
-    questionsOut = enforceQuestions(qs);
-    status = questionsOut.length ? 'clarifying' : 'ready';
-    if (!questionsOut.length) next.confidence = Math.max(newConf, 0.75);
-  }
-  const answersMerged = prevAnswers.concat(applied.map(a => ({ q_idx: a.q_idx, option_idx: a.option_idx })));
-  store.run(
-    'UPDATE intent_cards SET mood=?,genre_hypotheses=?,vocal=?,confidence=?,questions=?,answers=?,rounds=?,status=?,updated_at=? WHERE id=?',
-    card.mood.join(','), card.genre_hypotheses.join(','), next.vocal, next.confidence,
-    U.jstr(questionsOut), U.jstr(answersMerged), (row.rounds || 0) + 1, status, U.nowIso(), row.id);
-  bus.intentCard(user.id, row.id, status);
-  store.log('intent.answer', { user_id: user.id, intent_id: row.id, applied: applied.length, status });
-  return { status: 200, body: store.intentOf(store.get('SELECT * FROM intent_cards WHERE id=?', row.id)) };
+  // 兜底路径：存量卡没有 set，只能猜标签。**保持原行为不动** —— 新卡走 set，老卡行为不变，
+  // 不把"修复"变成对存量的静默改版。
+  const scan = dict.scan(opt.label);
+  if (/纯音乐|无人声/.test(opt.label)) { card.vocal = 'instrumental'; }
+  else if (/人声|演唱/.test(opt.label)) { card.vocal = 'song'; }
+  if (scan.moods.length && !card.mood.includes(scan.moods[0])) card.mood = U.unionArr(card.mood, [scan.moods[0]], 3);
+  if (scan.tags.length) card.genre_hypotheses = U.unionArr(card.genre_hypotheses, scan.tags.slice(0, 2), 3);
 }
 
-function enforceQuestions(qs) {
+function answerIntent(ctx) {
+  const user = requireUser(ctx);
+  const head = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
+  if (!head || head.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
+  if (head.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用');
+  if (head.status === 'ready') return { status: 200, body: store.intentOf(head) };
+  const answers = Array.isArray((ctx.body || {}).answers) ? ctx.body.answers : [];
+  if (!answers.length) throw new U.ApiError('BAD_REQUEST', '请至少回答一道题');
+  const budget = store.intentOf(head).ask_budget;
+  if (answers.length > budget) throw new U.ApiError('BAD_REQUEST', `每轮最多回答 ${budget} 题`);
+
+  const out = store.tx(() => {
+    // 事务内**重读**：BEGIN IMMEDIATE 之后才是可信写快照，事务外的 head 只用于快速失败与取 budget
+    const row = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
+    if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
+    if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用');
+    if (row.status === 'ready') return { done: true, body: store.intentOf(row) };
+    if ((row.rounds || 0) >= 2) throw new U.ApiError('BAD_REQUEST', '澄清轮次已达上限');
+    const questions = U.jparse(row.questions, []) || [];
+    const prevAnswers = U.jparse(row.answers, []) || [];
+    const answered = new Set(prevAnswers.map((a) => Number(a.q_idx)));
+    const card = store.intentOf(row);
+    const gp = U.jparse(row.gen_params, {}) || {};
+    const applied = [];
+    const seen = new Set();
+    for (const a of answers) {
+      const qIdx = Number(a.q_idx);
+      const q = questions.find((x) => Number(x.q_idx) === qIdx);
+      if (!q) continue;                  // 陈旧题（上一轮已收起）忽略
+      if (seen.has(qIdx)) continue;      // 同轮重复提交：只算第一次
+      if (answered.has(qIdx)) continue;  // 跨轮已答过：不得二次计分
+      const opt = (q.options || []).find((o) => Number(o.idx) === Number(a.option_idx));
+      if (!opt) throw new U.ApiError('BAD_REQUEST', '选项不存在');
+      seen.add(qIdx);
+      applied.push({ q_idx: q.q_idx, option_idx: opt.idx, label: opt.label });
+      applyOptionToCard(opt, card, gp);
+    }
+    if (!applied.length) throw new U.ApiError('BAD_REQUEST', '没有匹配到待回答的题目');
+    const totalQ = questions.length || 1;
+    const newConf = Math.min(0.95, (row.confidence || 0) + 0.18 * (applied.length / totalQ) + 0.07 * applied.length);
+    const next = { ...card, confidence: newConf };
+    let status; let questionsOut;
+    if (newConf >= 0.75) { status = 'ready'; questionsOut = []; }
+    else {
+      const qs = dict.defaultQuestions(next, budget); // 仍不充分 → 追加下轮题（按卡分档，必带 recommended_idx）
+      const baseIdx = (U.jparse(row.questions, []) || []).length;
+      qs.forEach((q, i) => { q.q_idx = baseIdx + i; });
+      questionsOut = enforceQuestions(qs, budget);
+      status = questionsOut.length ? 'clarifying' : 'ready';
+      if (!questionsOut.length) next.confidence = Math.max(newConf, 0.75);
+    }
+    const answersMerged = prevAnswers.concat(applied.map((a) => ({ q_idx: a.q_idx, option_idx: a.option_idx })));
+    // UPDATE 必须含 gen_params：此前只写卡面字段，用户选的 BPM/sec 永远落不了地（v5.5.10）
+    store.run(
+      'UPDATE intent_cards SET mood=?,genre_hypotheses=?,vocal=?,voice=?,confidence=?,questions=?,answers=?,rounds=?,status=?,gen_params=?,updated_at=? WHERE id=?',
+      card.mood.join(','), card.genre_hypotheses.join(','), next.vocal, card.voice == null ? null : card.voice,
+      next.confidence, U.jstr(questionsOut), U.jstr(answersMerged), (row.rounds || 0) + 1, status,
+      U.jstr(gp), U.nowIso(), row.id);
+    store.log('intent.answer', { user_id: user.id, intent_id: row.id, applied: applied.length, status, set_used: applied.length });
+    return { done: false, id: row.id, status };
+  });
+  if (out.done) return { status: 200, body: out.body };
+  bus.intentCard(user.id, out.id, out.status); // 通知放事务外：提交成功再广播，回滚不发假事件
+  return { status: 200, body: store.intentOf(store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id)) };
+}
+
+function enforceQuestions(qs, budget) {
+  const cap = Number.isFinite(budget) && budget >= 1 && budget <= 3 ? Math.trunc(budget) : 2;
   const out = [];
-  for (const q of (qs || []).slice(0, 2)) {
+  for (const q of (qs || []).slice(0, cap)) {
     if (!q.q || !Array.isArray(q.options) || q.options.length < 2) continue;
-    if (q.recommended_idx == null || q.recommended_idx < 0 || q.recommended_idx >= q.options.length) q.recommended_idx = 0;
+    // 原实现 Math.min(recommended_idx, 1) 把推荐位**永久钳死在第 0/1 项**：
+    // 4 选项的题里，正确答案排在 2/3 时永远拿不到高亮。按实际选项数钳。
+    const last = Math.max(0, Math.min(4, q.options.length) - 1);
+    if (q.recommended_idx == null || !(Number(q.recommended_idx) >= 0) || Number(q.recommended_idx) > last) q.recommended_idx = 0;
+    else q.recommended_idx = Math.trunc(Number(q.recommended_idx));
     out.push(q);
   }
   return out;
@@ -295,11 +390,15 @@ function patchIntent(ctx) {
   const row = store.get('SELECT * FROM intent_cards WHERE id=?', ctx.params.id);
   if (!row || row.user_id !== user.id) throw new U.ApiError('NOT_FOUND', '意图卡不存在');
   if (row.status === 'consumed') throw new U.ApiError('BAD_REQUEST', '意图卡已使用，不能再修改');
-  if (!U.allowRate('intent:' + user.id, 10, 60000)) throw new U.ApiError('RATE_LIMITED', '操作过于频繁，请稍后再试');
+  // 限流已内移到 patchIntentInternal（v5.5.11）；这里不再重复扣桶，否则一次请求计两次。
   return patchIntentInternal(user, row, ctx.body || {});
 }
 // 内部 kernel：供 PATCH 端点与音乐助手 set_card 复用（行须已按属主加载并校验状态）
 function patchIntentInternal(user, row, body) {
+  // v5.5.11：限流必须在**内核内部**。三个调用方汇聚到这里 —— HTTP PATCH、l2assistant 轻量写
+  // （facade.js 的 patchIntentInternal）、l2music set_card（execute.js:59）—— 只在 HTTP 端点校验，
+  // 等于给助手通道留了一个不限流的刷卡口；智能体会把它放大成脚本刷改卡。
+  if (!U.allowRate('intent:' + user.id, 10, 60000)) throw new U.ApiError('RATE_LIMITED', '操作过于频繁，请稍后再试');
   const G = config.gen;
   const card = store.intentOf(row);
   const gp = U.jparse(row.gen_params, {}) || {};
@@ -325,6 +424,14 @@ function patchIntentInternal(user, row, body) {
     card.vocal = v;
     gp.instrumental = v === 'instrumental';
     fields.push('vocal');
+  }
+  if (has('voice')) {
+    // v5.5.9「谁来唱」：独立承载位，不再靠把女声/男声塞进 genre_hypotheses 的 tags 里猜
+    const v = String(body.voice || '').trim().slice(0, 24);
+    if (!v) throw new U.ApiError('BAD_REQUEST', 'voice 不能为空');
+    rules.moderateFields([v]);
+    card.voice = v;
+    fields.push('voice');
   }
   if (has('scene_desc')) {
     const d = String(body.scene_desc || '').trim().slice(0, 301);
@@ -356,9 +463,10 @@ function patchIntentInternal(user, row, body) {
   if (!fields.length) throw new U.ApiError('BAD_REQUEST', '没有可修改的字段');
 
   store.run(
-    'UPDATE intent_cards SET mood=?,genre_hypotheses=?,vocal=?,scene_desc=?,duration_hint=?,gen_params=?,updated_at=? WHERE id=?',
-    card.mood.join(','), card.genre_hypotheses.join(','), card.vocal, card.scene_desc, card.duration_hint,
-    U.jstr(gp), U.nowIso(), row.id);
+    'UPDATE intent_cards SET mood=?,genre_hypotheses=?,vocal=?,voice=?,scene_desc=?,duration_hint=?,gen_params=?,updated_at=? WHERE id=?',
+    card.mood.join(','), card.genre_hypotheses.join(','), card.vocal,
+    has('voice') ? card.voice : (row.voice == null ? null : row.voice),
+    card.scene_desc, card.duration_hint, U.jstr(gp), U.nowIso(), row.id);
   bus.intentCard(user.id, row.id, row.status);
   store.log('intent.patch', { user_id: user.id, intent_id: row.id, fields, status: row.status });
   return { status: 200, body: store.intentOf(store.get('SELECT * FROM intent_cards WHERE id=?', row.id)) };
@@ -388,7 +496,9 @@ function generateIntentInternal(user, row) {
     sec: p.sec, instrumental: p.instrumental,
     // count 只在用户显式点改过才覆盖默认——用户选 1 首就不发 3 首（计费交付一致，对齐 DEV-LADDER-PAY）
     count: gp.count == null ? config.gen.count_default : gp.count,
-  }, { reason: 'gen' });
+    // 契约 v5.7.8（复刻）：溯源随 payload 进 job，adopt 时写 works.gen_params.replica + lineage='replica'
+    ...(gp.replica && typeof gp.replica === 'object' && !Array.isArray(gp.replica) ? { replica: gp.replica } : {}),
+  }, gp.replica ? { reason: 'gen', lineage: { kind: 'replica' } } : { reason: 'gen' });
   if (r.status === 202 && !r.body.idempotent) {
     store.run("UPDATE intent_cards SET status='consumed', updated_at=? WHERE id=?", U.nowIso(), row.id);
     bus.intentCard(user.id, row.id, 'consumed');
@@ -399,6 +509,10 @@ function generateIntentInternal(user, row) {
 
 module.exports = {
   audioDurationSec,
+  // 供复刻（api/replica.js）与智能体（api/agent.js 的建议票）复用：上传取件/建卡/首轮题整形。
+  // 智能体那条必须有它：模型给的 intent_id 查不到时，服务端要能就地建一张**属主本人**的任务单，
+  // 而不是拿一个幻觉编号去派单（复制一份 INSERT 就是第二份真源，早晚会和这张表打架）。
+  takeFile, newDraftIntent, enforceQuestions,
   patchIntentInternal, generateIntentInternal, // 供音乐助手 set_card / regenerate-from-intent 复用
   routes: [
     { m: 'POST', p: '/v1/intent/voice', h: intentVoice, raw: true, limitMb: UP.voiceMaxMb + 2 },

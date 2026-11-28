@@ -207,18 +207,32 @@ function heuristicIntent(text) {
 function question(id, q, options, recommendedIdx) {
   return { q_idx: id, q, options: options.slice(0, 4).map((label, idx) => ({ idx, label })), recommended_idx: Math.min(recommendedIdx, Math.max(0, Math.min(4, options.length) - 1)) };
 }
-function defaultQuestions(card) {
+// v5.5.8：兜底题量按卡分档。默认仍是 2（= v1 原值，存量三档与存量卡行为不变），
+// 只有伴创卡传 3 进来才会一次问三题。
+function defaultQuestions(card, budget) {
   const qs = [];
   if (!card.mood || !card.mood.length) {
     qs.push(question(qs.length, '你想要什么样的情绪基调？', ['欢快明亮', '安静治愈', '热血带感', '忧伤抒情'], 0));
   }
   if (card.vocal === 'unknown' || !card.vocal) {
-    qs.push(question(qs.length, '要人声演唱还是纯音乐？', ['人声演唱', '纯音乐（无人声）'], 0));
+    // 「谁来唱」这题带 set：回填走显式通道，不再靠 dict.scan 猜"女声/男声"字面（勾女声出男声的根因）
+    qs.push({ ...question(qs.length, '要人声演唱还是纯音乐？', ['人声演唱', '纯音乐（无人声）'], 0),
+      options: [
+        { idx: 0, label: '人声演唱', set: { vocal: 'song', tags_add: ['female vocal'], dim: 'gender' } },
+        { idx: 1, label: '纯音乐（无人声）', set: { vocal: 'instrumental' } },
+      ] });
   }
   if (!card.genre_hypotheses || !card.genre_hypotheses.length) {
-    qs.push(question(qs.length, '更偏好哪种风格？', ['流行', '电子', '民谣', '国风'], 0));
+    qs.push({ ...question(qs.length, '更偏好哪种风格？', ['流行', '电子', '民谣', '国风'], 0),
+      options: [
+        { idx: 0, label: '流行', set: { genre_add: ['pop'], tags_add: ['pop'] } },
+        { idx: 1, label: '电子', set: { genre_add: ['electronic'], tags_add: ['electronic'] } },
+        { idx: 2, label: '民谣', set: { genre_add: ['folk'], tags_add: ['folk'] } },
+        { idx: 3, label: '国风', set: { genre_add: ['chinese style'], tags_add: ['chinese style'] } },
+      ] });
   }
-  return qs.slice(0, 2); // 每轮 ≤2 题
+  const cap = Number.isFinite(budget) && budget >= 1 && budget <= 3 ? Math.trunc(budget) : 2;
+  return qs.slice(0, cap); // 每轮题量按卡分档（v5.5.8）
 }
 
 module.exports = { ENTRIES, EMOTION_MAP, STYLE_WORDS, VOICE_WORDS, scan, heuristicIntent, defaultQuestions, question, catalog, zhFor };

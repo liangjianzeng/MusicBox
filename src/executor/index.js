@@ -109,6 +109,7 @@ function applyServerNodes(nodes) {
 const ROUTE = {
   music: 'music', adjust: 'music', extend: 'music', cover: 'music', variation: 'music',
   intent_voice: 'intent', intent_image: 'intent', intent_text: 'intent',
+  replica_analyze: 'intent',  // 契约 v5.7.4（复刻）：与 intent 同 lane（ASR 模式同源），双处登记纪律
   transcode: 'ffmpeg', dsp: 'ffmpeg',
   mv_cast: 'vidspark',
   mv_cast_image: 'imgspark', mv_storyboard: 'imgspark',
@@ -156,6 +157,8 @@ function pickRunner(type) {
     case 'music': case 'adjust': case 'extend': case 'cover': case 'variation':
       return cfg.mock ? mock.runMusic : music.runMusic;
     case 'intent_voice': return cfg.mock ? mock.runVoice : intent.runVoice;
+    // 复刻分析（契约 v5.7.4）：mock 产确定性假观测，真模式走 ASR（LLM 归纳在服务端，执行器只做特征采集）
+    case 'replica_analyze': return cfg.mock ? mock.runReplicaAnalyze : intent.runReplicaAnalyze;
     case 'intent_image': return cfg.mock ? mock.runImage : intent.runImage;
     // 文本线不需要 ASR/LLM 也能诚实兜底，故 mock 模式同样走真实现
     case 'intent_text': return intent.runText;

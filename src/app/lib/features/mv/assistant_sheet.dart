@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../core/state.dart';
+import '../creation/tier_config.dart';
+import '../agent/agent_bootstrap.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/speech/asr_engine.dart';
@@ -36,6 +39,26 @@ Future<void> showMvAssistant(
 }) {
   // D-2 薄壳（Phase 5 UI 合一）：跳转统一 surface 并预绑定 project/shot ref，
   // MV 动作（重排/删镜/重拍等）由统一助手 19 工具覆盖，语音/图片同面可用。
+  // 板块小助手（弱层）灰度分流：同音乐侧，命中才换封顶形态，未命中原样转发。
+  final ref = ProviderScope.containerOf(context, listen: false);
+  return openPanelAssistant(
+    context,
+    panelId: shotId == null ? 'mv' : 'mv_shot_$shotId',
+    cocreateEnabled: cocreateEnabledOf(ref.read(remoteConfigProvider)),
+    legacy: () => _showMvGlobalAssistant(context, projectId, projectTitle,
+        shotLabel, shotId, chatEnabled, modeHint));
+}
+
+/// 原实现原封不动挪到这里 —— 只换了个名字，没改任何行为（灰度关时走的就是它）。
+Future<void> _showMvGlobalAssistant(
+  BuildContext context,
+  String projectId,
+  String projectTitle,
+  String? shotLabel,
+  String? shotId,
+  bool chatEnabled,
+  String? modeHint,
+) {
   return showGlobalAssistant(
       context,
       surface: 'mv',

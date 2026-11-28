@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../persona/persona_page.dart';
+import '../creation/replica_profiles_page.dart';
+import '../creation/tier_config.dart';
 
 import '../../core/api_client.dart';
 import '../../core/server_url_editor.dart';
@@ -248,6 +250,19 @@ class MePage extends ConsumerWidget {
                   // 这两处必须同批发布。
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(
                       builder: (_) => const PersonaPage())),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.content_copy_rounded),
+                  title: const Text('复刻偏好'),
+                  subtitle: const Text('学过的风格画像都在这里，可删、可随时再用',
+                      style: TextStyle(fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right),
+                  // 契约 v5.7.9：复刻谱主权页。灰度未开时入口也收起来 ——
+                  // 否则点进去只会看到「列表打不开」，比没有还差。
+                  onTap: replicaEnabledOf(ref.watch(remoteConfigProvider))
+                      ? () => Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => const ReplicaProfilesPage()))
+                      : null,
                 ),
                 ListTile(
                   leading: const Icon(Icons.memory_outlined),

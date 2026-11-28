@@ -94,6 +94,14 @@ if out=$(node scripts/verify_contract.mjs 2>&1); then
 else
   printf '%s\n' "$out" | grep -v Experimental | sed 's/^/  /'; FAILS=$((FAILS + 1))
 fi
+# 伴创（智能体）迁移 UI 规范机检（契约 v5.5.17 / 方案 §11.7）。
+# 移植 TongYi-Lite 时抄来的 UI 能跑、能过功能测试，只有机检能挡住它带进来的 Material 依赖、
+# 裸色值与黑话文案 —— 这类东西一旦合入，后面没人会回头逐行清。
+if out=$(node scripts/verify_agent_ui.mjs 2>&1); then
+  printf '%s\n' "$out" | sed 's/^/  /'
+else
+  printf '%s\n' "$out" | sed 's/^/  /'; FAILS=$((FAILS + 1))
+fi
 
 # —— 4. 起服冒烟：真的把 server 拉起来，/healthz 必须 200（挡住 require 期崩溃）——
 step "4/5 起服冒烟（: $PORT）"
@@ -126,6 +134,44 @@ else
 fi
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 
+# —— 4.5 Dart 侧静态闸门 ——
+# 伴创把整条智能体循环（引擎 / 工具 / 技能 / UI）搬进了 App，而闸门此前**只查 JS**：
+# 15 个编译错误可以静静躺在仓里，直到有人手抖跑了一次 analyze。
+# flutter analyze 实测 4 秒，没有不进闸门的理由。只拦 error：存量 300+ info/warning 是既有债，
+# 拿存量债拦人会逼人绕过闸门，那不是加检查是制造噪音。
+step "4.5/5 Flutter 静态检查"
+FLUTTER_BIN="$(command -v flutter || true)"
+[ -z "$FLUTTER_BIN" ] && [ -x "$HOME/flutter/bin/flutter" ] && FLUTTER_BIN="$HOME/flutter/bin/flutter"
+if [ -n "$FLUTTER_BIN" ]; then
+  DART_ERRS=$( (cd src/app && "$FLUTTER_BIN" analyze --no-pub 2>&1) | grep -E '^ *error •' || true)
+  if [ -z "$DART_ERRS" ]; then
+    ok "flutter analyze 无 error"
+  else
+    bad "flutter analyze 有 error（Dart 侧编译不过，伴创等于没落地）："
+    printf '%s\n' "$DART_ERRS" | head -12 | sed 's/^/      /'
+  fi
+else
+  echo "  ! 未找到 flutter，跳过 Dart 静态检查（装了 SDK 的机器上这一步会真的拦人）"
+fi
+
+# —— 4.6 Dart 行为闸门：flutter test 实测 11 秒 ——
+# 加这一步的当轮就抓出一条真回归：简约档在 320×568 + 2 倍字号下内容溢出 143px 看不见
+# （shell_easy.dart 的 sticky dock），而它恰好是**用户最可能用的那档**。此前 Dart 只查语法不查行为。
+step "4.6/5 Flutter 测试"
+if [ -n "$FLUTTER_BIN" ]; then
+  DART_TEST_LOG="$VARROOT/flutter-test.log"
+  if (cd src/app && "$FLUTTER_BIN" test --no-pub) >"$DART_TEST_LOG" 2>&1; then
+    ok "flutter test 全绿（pass=$(grep -oP '(?<=\+)[0-9]+(?!.*\+)' "$DART_TEST_LOG" | tail -1)）"
+  else
+    bad "flutter test 有红（Dart 行为回归，禁止入仓）—— 失败用例："
+    # flutter 的进度行用 \r 分隔，不先 tr 成换行就一条都抽不出来 —— 报红却说不出哪条红，等于没报
+    tr '\r' '\n' < "$DART_TEST_LOG" | grep -oE "test/[a-z_0-9]+\.dart: [^:]+\[E\]" | sed 's/ *$//' | sort -u | head -8 | sed 's/^/      /'
+    echo "      完整日志：$DART_TEST_LOG"
+  fi
+else
+  echo "  ! 未找到 flutter，跳过 Flutter 测试"
+fi
+
 # —— 5. 验收套件（可选）——
 if [ "${1:-}" = "--full" ] || [ "${1:-}" = "--repeat" ]; then
   REPS=1
@@ -134,19 +180,10 @@ if [ "${1:-}" = "--full" ] || [ "${1:-}" = "--repeat" ]; then
   for i in $(seq 1 "$REPS"); do
     log="$VARROOT/acceptance-$i.log"
     if node --test --test-concurrency=1 "test/acceptance/*.test.js" >"$log" 2>&1; then
-      # node 的摘要行前常有 \r 进度帧，^ℹ 会匹配不到 → 计数取空。
-      # **读不到计数的"全绿"等于没跑**：2026-11-28 真出现过 pass= 空仍打印全绿的现场，
-      # 无证据的绿比红更危险（它会让人以为 217 条判词跑过了）。所以取空即判红。
-      pass=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^[#ℹ] pass )\d+' | tail -1)
-      skip=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^[#ℹ] skipped )\d+' | tail -1)
-      if [ -z "$pass" ]; then
-        bad "第 $i 轮读不到判词计数（node 退出码 0 但摘要没落地）—— 无证据的绿不算绿，判红"
-        echo "      完整日志：$log"
-      else
-        ok "第 $i 轮全绿（pass=$pass skip=$skip）"
-      fi
+      pass=$(grep -oP '(?<=^[#ℹ] pass )\d+' "$log" | tail -1); skip=$(grep -oP '(?<=^[#ℹ] skipped )\d+' "$log" | tail -1)
+      ok "第 $i 轮全绿（pass=$pass skip=$skip）"
     else
-      fail=$(tr '\r' '\n' < "$log" | grep -oP '(?<=^[#ℹ] fail )\d+' | tail -1)
+      fail=$(grep -oP '(?<=^[#ℹ] fail )\d+' "$log" | tail -1)
       bad "第 $i 轮红（fail=$fail）—— 失败用例："
       sed -n '/failing tests:/,$p' "$log" | grep -E '^✖ ' | head -10 | sed 's/^/      /'
       echo "      完整日志：$log"

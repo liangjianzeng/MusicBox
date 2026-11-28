@@ -256,5 +256,21 @@ void main() {
       expect(btn == null || btn.onPressed == null, isTrue,
           reason: '没有首帧就没有可拍的东西，入口必须缺席或置灰，不许让人点出一个必然失败的任务');
     });
+    testWidgets('没出片时不许顶着「约 5 秒」摆人像：标题要承认未拍，封面要标「未拍」', (tester) async {
+      // 起因：默认真选首帧后，MvVideoPlayer(url:null, coverUrl:首帧) 会在
+      // 「定妆视频（多角度转头 · 约 5 秒）」标题下画一张定妆照 —— 用户会读成"视频已经好了"。
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final d = _detail(_photoMaster(<double?>[0.80, 0.66, 0.55], <double?>[0.1, 0.2, 0.3]));
+      ((d['characters'] as List).first as Map)['cast_video_url'] = null;
+      await _pumpLook(tester, d);
+      expect(find.textContaining('未拍'), findsWidgets,
+          reason: '标题或封面必须有一处明说"还没拍"，否则一张人像配上"约 5 秒"就是界面承诺了没有的能力');
+      expect(find.textContaining('约 5 秒'), findsNothing,
+          reason: '没出片就不许承诺时长');
+      expect(tester.takeException(), isNull);
+    });
   });
 }

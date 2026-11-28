@@ -231,6 +231,10 @@ class ApiClient {
   Future<MeInfo> me() async =>
       MeInfo.fromMap(await _do(() => _dio.get('/v1/me')) as Map);
 
+  /// 积分与配额（GET /v1/credits）。伴创简报卡必须在**出曲之前**把"这一单花多少、还剩多少"摊开，
+  /// 而 App 此前从没调过这个端点 —— 余额只藏在计费响应里，等于让用户在看不见家底的情况下拍板。
+  Future<Map> credits() async => await _do(() => _dio.get('/v1/credits')) as Map;
+
   // ---------- 文本创作线 ----------
 
   /// mode: simple|custom；返回 {job_id, credits_charged, idempotent}
@@ -351,6 +355,62 @@ class ApiClient {
   Future<String> intentGenerate(String id) async {
     final d = await _do(() => _dio.post('/v1/intent/$id/generate')) as Map;
     return '${d['job_id']}';
+  }
+
+  // ---------- 复刻线（契约 v5.7）----------
+
+  /// 上传参考曲（mp3/wav/m4a ≤20MB，服务端魔数+sha256 去重+72h TTL）。
+  /// 同一文件重复上传吃幂等，返回同一个 upload_id。
+  Future<String> replicaUpload(String filePath, {String? filename}) async {
+    final fd = FormData();
+    fd.files.add(MapEntry(
+        'file',
+        await MultipartFile.fromFile(filePath,
+            filename: filename ?? 'reference.wav')));
+    final d =
+        await _do(() => _dio.post('/v1/replica/source/upload', data: fd)) as Map;
+    return '${d['upload_id']}';
+  }
+
+  /// 发起风格分析。work/upload → {job_id}（异步，轮询 job 后按 job_id 反查谱）；
+  /// web → {ok:true, profile} | {ok:false, reason, artist_blocked?}（同步，永不下载音频）。
+  Future<Map> replicaAnalyze(
+      {required String kind, String? ref, String? query, String? title}) async {
+    return await _do(() => _dio.post('/v1/replica/analyze', data: {
+          'source': {
+            'kind': kind,
+            if (ref != null && ref.isNotEmpty) 'ref': ref,
+            if (query != null && query.isNotEmpty) 'query': query,
+            if (title != null && title.isNotEmpty) 'title': title,
+          },
+        })) as Map;
+  }
+
+  /// 本人复刻谱列表；[jobId] 用于分析 job 完成后反查自己的谱（列表端点上的查询串）。
+  Future<List<ReplicaProfile>> replicaProfiles({String? jobId}) async {
+    final d = await _do(() => _dio.get('/v1/replica/profiles',
+            queryParameters:
+                jobId == null || jobId.isEmpty ? null : {'job_id': jobId}))
+        as Map;
+    return (d['items'] as List? ?? const [])
+        .whereType<Map>()
+        .map(ReplicaProfile.fromMap)
+        .toList();
+  }
+
+  /// 删谱不删作品（作品上的复刻标注保留，契约 v5.7.9）。
+  Future<void> replicaProfileDelete(String id) async {
+    await _do(() => _dio.delete('/v1/replica/profiles/$id'));
+  }
+
+  /// 自由反馈 + 谱 → 服务端预填意图卡并出 ≤3 道收敛题。返回 intent_id，
+  /// 之后 answer/patch/generate 全走既有意图卡链（事务/限流/审核零豁免）。
+  Future<String> replicaFeedback(String profileId, String text) async {
+    final d = await _do(() => _dio.post(
+            '/v1/replica/profiles/$profileId/feedback',
+            data: {'text': text}))
+        as Map;
+    return '${d['intent_id']}';
   }
 
   /// 微调：{understood:true, job_id} | {understood:false, clarify}

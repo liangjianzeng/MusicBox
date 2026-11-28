@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../creation/tier_config.dart';
+
 abstract final class CreationPalette {
   static const background = Color(0xFF090A0F);
   static const surface = Color(0xFF11121A);
@@ -62,29 +64,25 @@ class CreationBackdrop extends StatelessWidget {
 class CreationTierTabs extends StatelessWidget {
   const CreationTierTabs({
     super.key,
+    required this.specs,
     required this.selected,
     required this.onChanged,
   });
 
+  /// 数据驱动的可见档位（`CreationTiers.visible(...)`）。档位名/图标/色板全部来自
+  /// spec，不再允许硬编平行数组 —— 第 4/5 个档位（复刻/智能体）由同一数据源给出，
+  /// 加档位只改 tier_config，不改本组件（契约 v5.5.15 / v5.7.2）。
+  final List<CreationTierSpec> specs;
+
+  /// [specs] 内的下标（不是持久化 tier —— tier 与显示顺序解耦，v5.5.15）。
   final int selected;
   final ValueChanged<int> onChanged;
 
-  static const labels = ['简约', '标准', '深度'];
-  static const icons = [
-    Icons.auto_awesome_rounded,
-    Icons.tune_rounded,
-    Icons.equalizer_rounded,
-  ];
-  static const iconColors = [
-    CreationPalette.amber,
-    CreationPalette.green,
-    CreationPalette.blue,
-  ];
-
   @override
   Widget build(BuildContext context) {
+    if (specs.isEmpty) return const SizedBox(height: 44);
     return LayoutBuilder(builder: (context, constraints) {
-      final width = constraints.maxWidth / labels.length;
+      final width = constraints.maxWidth / specs.length;
       return RepaintBoundary(
         child: SizedBox(
           height: 44,
@@ -114,13 +112,14 @@ class CreationTierTabs extends StatelessWidget {
                 ),
               ),
               Row(
-                children: List.generate(labels.length, (index) {
+                children: List.generate(specs.length, (index) {
                   final active = index == selected;
+                  final color = specs[index].color;
                   return Expanded(
                     child: Semantics(
                       button: true,
                       selected: active,
-                      label: labels[index],
+                      label: specs[index].label,
                       child: Material(
                         type: MaterialType.transparency,
                         child: InkWell(
@@ -133,24 +132,22 @@ class CreationTierTabs extends StatelessWidget {
                                 width: 22,
                                 height: 22,
                                 decoration: BoxDecoration(
-                                  color:
-                                      iconColors[index].withValues(alpha: .14),
+                                  color: color.withValues(alpha: .14),
                                   border: Border.all(
-                                    color: iconColors[index]
-                                        .withValues(alpha: .28),
+                                    color: color.withValues(alpha: .28),
                                   ),
                                   borderRadius: BorderRadius.circular(7),
                                 ),
                                 child: Icon(
-                                  icons[index],
+                                  specs[index].icon,
                                   size: 15,
-                                  color: iconColors[index],
+                                  color: color,
                                 ),
                               ),
                               const SizedBox(width: 6),
                               Flexible(
                                 child: Text(
-                                  labels[index],
+                                  specs[index].label,
                                   style: TextStyle(
                                     color: active
                                         ? CreationPalette.text

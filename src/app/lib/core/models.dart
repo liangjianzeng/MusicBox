@@ -59,7 +59,7 @@ class Credits {
   final int dailyQuota;
   final int dailyUsed;
 
-  /// 单价的**唯一真源**：服务端 `/v1/credits` 的 prices 字段，取自运营配置中心（热改）。
+  /// 单价的**唯一真源**：服务端 `/v1/credits 的 prices`，取自运营配置中心（热改）。
   /// 端侧 `credit_guard.dart` 里那几个常量只是老服务端不下发时的兜底，**不许**当权威价：
   /// 2026-11-28 之前界面拿着手抄的 15 做扣费闸门，运营一改价就变成"界面说了不算"
   /// （闸门按旧价放行，派单时被服务端拒），见契约 v5.6.15 / 判词 V41。
@@ -634,4 +634,71 @@ class WorkDetail {
             .toList(),
         childrenCount: _asInt(m['children_count']),
       );
+}
+
+/// 复刻谱（契约 v5.7：风格画像）。
+/// features 四域只含服务端 catalog 下发的中文词（端侧不造词，v5.7.5/6）；
+/// [bpmEst] 是推断值，UI 恒标「估」；[degraded]=true 表示走了规则兜底，UI 必须明说（v5.7.10）。
+class ReplicaProfile {
+  ReplicaProfile({
+    required this.id,
+    required this.sourceKind,
+    this.sourceRef,
+    required this.title,
+    required this.moods,
+    required this.genres,
+    required this.styleWords,
+    required this.voice,
+    this.bpmEst,
+    required this.summary,
+    required this.confidence,
+    required this.degraded,
+    this.jobId,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String sourceKind; // work / upload / web
+  final String? sourceRef;
+  final String title;
+  final List<String> moods;
+  final List<String> genres;
+  final List<String> styleWords;
+  final List<String> voice;
+
+  /// 推断 BPM（没有就是 null —— 绝不拿别的数顶替）。
+  final int? bpmEst;
+  final String summary;
+  final double confidence;
+
+  /// 规则兜底画像 = true（理解服务不可用时服务端如实降级）。
+  final bool degraded;
+  final String? jobId;
+  final int createdAt;
+
+  bool get hasFeatures =>
+      moods.isNotEmpty ||
+      genres.isNotEmpty ||
+      styleWords.isNotEmpty ||
+      voice.isNotEmpty;
+
+  factory ReplicaProfile.fromMap(Map m) {
+    final f = (m['features'] as Map?) ?? const {};
+    return ReplicaProfile(
+      id: '${m['id'] ?? ''}',
+      sourceKind: '${m['source_kind'] ?? ''}',
+      sourceRef: m['source_ref']?.toString(),
+      title: '${m['title'] ?? ''}',
+      moods: _asStrList(f['moods']),
+      genres: _asStrList(f['genres']),
+      styleWords: _asStrList(f['style_words']),
+      voice: _asStrList(f['voice']),
+      bpmEst: m['bpm_est'] == null ? null : _asInt(m['bpm_est']),
+      summary: '${m['summary'] ?? ''}',
+      confidence: _asDouble(m['confidence']),
+      degraded: m['degraded'] == true,
+      jobId: m['job_id']?.toString(),
+      createdAt: _asInt(m['created_at']),
+    );
+  }
 }

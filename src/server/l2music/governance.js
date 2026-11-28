@@ -7,6 +7,7 @@ const store = require('../core/store');
 const AC = require('../core/appconfig');
 const lex = require('../rules/mv_lexicon');
 const core = require('../l2/governance_core');
+const FL = require('../core/fields');
 
 const AUDIT = 'music.assistant';
 const CREDITS_SCOPE = 300; // scope 级预算兜底（无基准时用；fuse 基准优先取项目/作品累计）
@@ -22,14 +23,10 @@ const TOOLS = {
   },
   'music.set_card': {              // 免费：改意图卡参数（mood/vocal/sec/bpm/count/scene_desc）——意图卡指挥
     expensive: false,
-    params: {
-      mood: { kind: 'string', min: 1, max: core.FIELD_LIMITS.mood, optional: true }, // 单一真源，防与助手侧漂移
-      vocal: { kind: 'enum', values: ['song', 'instrumental', 'unknown'], optional: true },
-      sec: { kind: 'integer', min: config.gen.sec_min, max: config.gen.sec_max, optional: true },
-      bpm: { kind: 'integer', min: 40, max: 200, optional: true },
-      count: { kind: 'integer', min: config.gen.count_min, max: config.gen.count_max, optional: true },
-      scene_desc: { kind: 'string', min: 1, max: 300, optional: true },
-    },
+    // 参数表收敛到 core/fields.SET_CARD_PARAMS（唯一真源，v5.5.9）：
+    // 此前 governance_core 会把未声明的键静默丢掉，漏抄 genre_hypotheses/voice 就表现为
+    // 「助手说改好了，卡其实没动」且零报错。加参数只改 core/fields.js 一处。
+    params: FL.SET_CARD_PARAMS,
     est: () => ({ credits: 0, minutes: 0 }),
   },
   'music.adjust_params': {         // 昂贵（10⚡）：对已生成曲自然语言微调（再欢快/纯音乐/换女声/长一点）

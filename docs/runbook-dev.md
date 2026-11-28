@@ -374,15 +374,84 @@ adb -s 8b1e8747 exec-out screencap -p > /tmp/c1.png   # 证据留档（→ tmp/e
 adb -s 8b1e8747 shell dumpsys media_session        # 播控/锁屏验收
 ```
 
-### 6.3 BLOCKED（真机侧）
+### 6.3 打包与装机（**硬性规则**，破一条就白测半天）
 
-- **本机无 `flutter`** → `flutter run` / `flutter build apk` 在本机做不了；`builds/` 目录也不存在（无现成 APK）。
-  出路：本机装 Flutter SDK（Dart `^3.6.0`），或在别的机器出包后 `adb install`。
-  打包期基址用 `--dart-define=MUSICBOX_BASE_URL=http://192.168.1.10:7900`（`src/app/lib/core/config.dart`），
-  或走 App 内「服务器设置」页填同值——**两条都填成 127.0.0.1 就是 §6.1 的坑**。
+> 由来：2026-11-27 K90 真机调测，因为"debug 包签错库 → 只能卸载重装"和"装没装上没验"两件事，
+> 白跑三轮，并且**销毁了 K90 上的 prefs（含 `identity_device_key`）**。以下五条是把那次教训固化。
+
+**R1 · debug 包必须与正式包同签名。** `android/app/buildTypes.debug` 与 `release` 一样取 `key.properties` 的库
+（签名者 `CN=TongYiLite, OU=Dev, O=DGXSpark`）。用 Android 通用调试库出 debug 包，装到已装正式包的测试机上必报
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，看起来"只能卸载重装"—— 而卸载会把 prefs 一起带走（含 `identity_device_key`），
+等于把这台机器的游客号连同本地设置一起销毁，正是契约 v5.6「身份可恢复」要防的事。出包后**必做**这一行自检：
+
+```bash
+cd src/app && keytool -printcert -jarfile build/app/outputs/flutter-apk/app-debug.apk | grep 所有者
+# 期望：CN=TongYiLite, OU=Dev, O=DGXSpark, L=Wuhan, ST=Hubei, C=CN
+# 出现 CN=Android Debug 就是签错库 —— 别装，先回去看 build.gradle 的 debug 块
+```
+
+**R2 · 基址按「这台设备可达」定，不按本机方便。** 先探后打，判据在**设备上**做（不是本机 curl）：
+
+```bash
+adb -s <serial> shell "toybox nc -w2 100.81.83.59 7900 </dev/null && echo TCP_OK_TAILSCALE"
+adb -s <serial> shell "toybox nc -w2 192.168.1.10 7900 </dev/null && echo TCP_OK_LAN"
+```
+
+实测：K90（`M332BF`/Android 17，`100.75.247.55:5555`）与 `2211133C` 都在 `192.168.0.x`，**与服务器 `192.168.1.10` 不同网段，
+LAN 基址不可达**，只有 Tailscale 通 → 打包固定用
+
+```bash
+export PATH="$HOME/flutter/bin:$PATH"      # R5：flutter 不在 PATH
+flutter build apk --debug --dart-define=MUSICBOX_BASE_URL=http://100.81.83.59:7900
+```
+
+（`192.168.1.10:7900` 只对同 LAN 的红米 `8b1e8747` 成立 —— §6.2 那句对 K90 不适用。）
+
+**R3 · 装没装上以设备状态为准，不看 `adb install` 有没有报错。**
+
+```bash
+adb -s <serial> shell dumpsys package com.musicbox.musicbox | grep -E "lastUpdateTime|versionName"
+# lastUpdateTime 必须就是刚才那一分钟
+```
+
+两类**假成功**都遇到过：① 输出停在 `Performing Streamed Install` 而没有 `Success`；
+② MIUI/HyperOS 拦 adb 安装 → `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`
+（机上安全中心有等待确认的弹窗，前台变 `com.miui.securitycenter`；要么机上点「允许」，要么开发者选项开「通过 USB 安装」）。
+旧包最容易露的马脚：App 起来自带 `缺少设备标识（device_key）… 请更新到最新版本后重试` ——
+那是**旧包在打新服务端**（服务端已按 V36-① 强制 device_key），不是你这次改坏了。
+
+**R4 · 覆盖安装只允许 `adb install -r`；禁止为了装上就 `uninstall`**（理由见 R1）。
+确实非卸不可时，先确认那个游客号的备份码已在「我的 → 身份备份」里存过。
+
+**R5 · 工具链位置**：本机 flutter 在 `~/flutter/bin/flutter`（**不在 PATH**，脚本先 export）。
+Flutter 3.29 / Dart 3.7。闸门 `scripts/verify.sh` 的 4.5/4.6 已含 `flutter analyze` + `flutter test`，出包前先跑绿。
+
 - 签名件 `src/app/android/key.properties` 在位但**不入仓**；APK/keystore 一律不进 git。
+  没有 `key.properties` 的机器（CI）会自动回落 debug 库 —— 那种包**不要**往测试机上装，只能自己机上用。
 
 ---
+
+**R6 · 删代码不许按正则切区，必须唯一锚点 + 尺寸护栏**（2026-11-28 立的，起因见下）
+
+批量删源码（Dart/JS）时，禁止用「从某标记一直删到下一个 `class`/`final`/`function`」这类
+**正则找边界**的写法。踩过的坑：一次删 `refreshPricing` 方法，边界正则只认列 0 的
+`class |final |enum `，于是把类里后续 11.5KB 全部吞掉（`_onEvent`/`_push`/`_fail`/
+`_rebuildBrief`/`_ControllerListenable`/`agentUiProvider` 一起没了），而且这个文件
+**git 从未跟踪**，没有任何副本可回滚。
+
+规矩：
+
+1. 每段删除必须给**首尾两个唯一锚点**（`count()==1` 断言），并断言删除长度落在预期区间
+   `lo<=n<=hi` 内；越界即**中止且不写盘**。
+2. 删除前把 `起/止` 各 40 字符打印出来过目，别相信"我以为边界在哪"。
+3. 动手前先 `cp` 一份还原点到 `/tmp`（未跟踪文件尤其如此）。
+4. 改完必须立刻让编译器裁决（`flutter analyze` / `node --check`），别攒着。
+
+真机/真跑过一次的恢复手段（本次靠它救回，别指望次次管用）：debug 构建的 kernel
+（`build/**/app.dill`、`kernel_blob.bin`、`cache.dill.track.dill`）里**嵌着原始源码文本**
+（含 `///` 文档注释），`grep -aoP` 定位后按 `\x00` 截断即可整文件取回。这是最后一根绳子，
+不是备份策略 —— 该 `git add` 的文件请尽早 `git add`。
+
 
 ## 7. 上线前必做（安全）— 三条凭据必须显式设置
 

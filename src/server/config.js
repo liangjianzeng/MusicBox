@@ -67,6 +67,11 @@ const config = {
   upload: {
     voiceMaxMb: 10, voiceMaxSec: 60, voiceExts: ['m4a', 'wav'],
     imageMaxMb: 8, imageExts: ['jpg', 'jpeg', 'png'],
+    // 复刻参考曲上传（契约 v5.7.3）：≤20MB 是 SenseVoice worker 的硬上限（app.py 尺寸闸），
+    // 服务端先拦在同一个数，别让文件进了 uploads 才在 worker 处被拒。时长 ≤240s 对齐生成上限；
+    // mp3 无服务端时长解析器（audioDurationSec 只认 wav 头 / m4a mvhd），只能按大小粗限，
+    // 精确时长校验交给分析侧（超时/失败如实报，v5.7.10）。
+    replicaMaxMb: 20, replicaMaxSec: 240, replicaExts: ['mp3', 'wav', 'm4a'],
     personaMinSec: 20, personaMaxSec: 40,
     // 「从作品提声纹」要在服务端裁剪音频。这台机器有 ffmpeg 就能用；
     // 没有就必须**明确失败**（503 + 让用户改走录音登记），绝不许静默把整条作品当声纹 ——

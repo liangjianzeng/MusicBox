@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../creation/tier_config.dart';
+import '../agent/agent_bootstrap.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -31,8 +33,17 @@ Future<void> showMusicAssistant(
   bool chatEnabled = false,
   String? modeHint,
 }) {
-  return showGlobalAssistant(context, surface: 'music',
-      refs: [AssistantRef(subjectType, subjectId)]);
+  // 板块小助手（弱层）灰度分流（契约 v5.5 / 方案 §2.3）：
+  // 命中 createAgentMode → 封顶形态（单轮、不问三题、答不了必须显式上交并给去向）；
+  // 未命中 → **原样**走统一助手，一行行为都不变（红线：规则模式永远可用，关档即回到今天）。
+  final ref = ProviderScope.containerOf(context, listen: false);
+  return openPanelAssistant(
+    context,
+    panelId: 'music_$subjectType',
+    cocreateEnabled: cocreateEnabledOf(ref.read(remoteConfigProvider)),
+    legacy: () => showGlobalAssistant(context,
+        surface: 'music', refs: [AssistantRef(subjectType, subjectId)]),
+  );
 }
 
 /// 端侧禁词/引擎名过滤（与 MV mvHuman 同口径的最小集，避免跨域 import）。

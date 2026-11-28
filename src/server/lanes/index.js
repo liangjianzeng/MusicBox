@@ -14,8 +14,11 @@ const LANES = {
   },
   intent: {
     // intent_text：端侧转写 / 确认页改字 → 只过理解不过 ASR，同 lane 复用（2026-11-24）
-    types: ['intent_voice', 'intent_image', 'intent_text'],
+    // replica_analyze（契约 v5.7.4）：复刻参考曲分析 —— 同 lane（ASR 模式同源），per-type 超时 300s：
+    // 整首歌远超 intent 语音 60s 的设计目标，不能吃 lane 级 90s
+    types: ['intent_voice', 'intent_image', 'intent_text', 'replica_analyze'],
     timeoutMs: 90000,
+    timeouts: { replica_analyze: 300000 },
     ladder(payload) { return { ...payload }; },
   },
   ffmpeg: {

@@ -268,4 +268,40 @@ async function runImage(job, ctx) {
   return { result: card, files: [] };
 }
 
-module.exports = { runVoice, runImage, runText, DEFAULT_INTENT_SYSTEM, extractJson, heuristicCard, sanitizeCard };
+// ---------- 复刻分析线（契约 v5.7.4）：取件 → :8191 ASR → raw 特征回传 ----------
+// 执行器只做特征采集（ASR 情绪/事件/时长 + 转写文本），LLM 归纳在服务端 completeReplicaAnalyze。
+// 转写文本经 complete 上报属**瞬态**：服务端落库的 job.result 是净化版（v5.7.5），执行器侧不留档。
+async function runReplicaAnalyze(job, ctx) {
+  const p = job.payload || {};
+  await ctx.progress(10, '正在读取参考音频');
+  const srcAbs = await resolveSrc(p.src_path, ctx);
+  if (!srcAbs) throw Object.assign(new Error('参考音频不可达'), { failCode: 'SRC_MISSING', failMessage: '参考音频文件不存在或已过期，请重新上传' });
+  await ctx.progress(35, '正在识别参考曲');
+  let asr = null;
+  try {
+    // 整首歌远超 intent 语音 60s 的设计目标（SenseVoice 未实测长音频）：放宽超时 + 失败诚实回落，
+    // 由服务端按可用元数据走规则画像（v5.7.10），绝不伪造观测
+    const res = await net.request('POST', String(ctx.cfg.asrUrl).replace(/\/+$/, '') + '/asr', {
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: srcAbs }),
+      timeoutMs: 150000,
+    });
+    if (res.status === 200) asr = res.json();
+    else ctx.log('参考曲识别返回 ' + res.status);
+  } catch (e) {
+    ctx.log('识别服务不可用：' + e.message);
+  }
+  await ctx.progress(80, asr && asr.text ? '识别完成，交由服务端归纳' : '识别不可用，交由服务端按可用信息归纳');
+  const result = {
+    asr: asr ? {
+      emotion: asr.emotion || null,
+      events: Array.isArray(asr.events) ? asr.events : [],
+      duration: Number.isFinite(Number(asr.duration)) ? Number(asr.duration) : null,
+      text: String(asr.text || '').slice(0, 2000),
+    } : null,
+    fallback: !asr,
+  };
+  return { result, files: [] };
+}
+
+module.exports = { runVoice, runImage, runText, runReplicaAnalyze, DEFAULT_INTENT_SYSTEM, extractJson, heuristicCard, sanitizeCard };

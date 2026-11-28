@@ -8,6 +8,7 @@ const U = require('../core/util');
 const AC = require('../core/appconfig');
 const lex = require('../rules/mv_lexicon');
 const gov = require('../l2/governance_core');
+const FL = require('../core/fields');
 
 const AUDIT = 'assistant';
 const REF_TYPES = ['work', 'intent', 'job', 'project', 'shot', 'persona', 'image'];
@@ -24,14 +25,10 @@ const TOOLS = {
   'music.query_status': { params: {}, readOnly: true },
   'music.set_title': { params: { title: { kind: 'string', min: 1, max: 60 } } },
   'music.set_card': {
-    params: {
-      mood: { kind: 'string', min: 1, max: gov.FIELD_LIMITS.mood, optional: true }, // 单一真源，防与 l2music 漂移
-      vocal: { kind: 'enum', values: ['song', 'instrumental', 'unknown'], optional: true },
-      sec: { kind: 'integer', min: config.gen.sec_min, max: config.gen.sec_max, optional: true },
-      bpm: { kind: 'integer', min: 40, max: 200, optional: true },
-      count: { kind: 'integer', min: config.gen.count_min, max: config.gen.count_max, optional: true },
-      scene_desc: { kind: 'string', min: 1, max: 300, optional: true },
-    },
+    // 参数表收敛到 core/fields.SET_CARD_PARAMS（唯一真源，v5.5.9）：
+    // 此前 governance_core 会把未声明的键静默丢掉，漏抄 genre_hypotheses/voice 就表现为
+    // 「助手说改好了，卡其实没动」且零报错。加参数只改 core/fields.js 一处。
+    params: FL.SET_CARD_PARAMS,
   },
   'work.explain': { params: {}, readOnly: true },
   'music.adjust_params': { params: { text: { kind: 'string', min: 1, max: 200 } }, expensive: true },
@@ -76,7 +73,9 @@ function audit(kind, obj) { store.log('assistant.' + kind, Object.assign({ user_
 function cleanText(s, max) { return lex.sanitize(String(s == null ? '' : s)).replace(/\s+/g, ' ').trim().slice(0, max || 300); }
 function cleanMeta(meta) {
   const src = meta && typeof meta === 'object' ? meta : {};
-  const allowed = ['mode', 'intent', 'tool', 'status', 'ticket_id', 'rejected', 'via', 'kind', 'credits', 'failure_code', 'session_id', 'subject_type', 'subject_id'];
+  // fused 必须进白名单，否则"是被预算护栏挡了还是没听懂"客户端只能读中文文案猜 ——
+  // 这正是 v5.4.5 给 gated 记过的那类观测缺口。gated 本身仍按 v5.4.5 留给产品定，这里不擅自加。
+  const allowed = ['mode', 'intent', 'tool', 'status', 'ticket_id', 'rejected', 'via', 'kind', 'credits', 'failure_code', 'session_id', 'subject_type', 'subject_id', 'fused'];
   const out = {};
   for (const k of allowed) if (src[k] !== undefined && src[k] !== null) {
     out[k] = typeof src[k] === 'string' ? cleanText(src[k], 160) : src[k];
@@ -270,9 +269,39 @@ function listTickets(user, limit) {
   const rows = store.all("SELECT * FROM chat_tickets WHERE scope='assistant' AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?", user.id, clampInt(limit, 50, 1, 50));
   return rows.map((r) => ticketShape(r, true));
 }
+// ———— 预算熔断（契约 v5.5.7）————
+// 此前统一助手**没有任何**预算护栏：l2music/l2mv 各自接了 governance_core.fuseCheck，唯独 l2assistant 没接。
+// 单轮助手靠"一轮最多一张票"侥幸兜住；多步智能体会连发票，侥幸就没了。
+// 位置是刻意的：放在「签发确认票的唯一咽喉」内部，而不是某个调用方之前 ——
+// prepareWrite 有 7 个付费分支，任何一处忘了调就是旁路；熔断的可信度等于它有没有旁路。
+const ASSISTANT_FUSE_BASE = 100; // 会话软预算基准，超 FUSE_RATIO(1.2)=120% 双熔断；与 l2music 同值同语义
+const CREDITS_SCOPE = 300;       // 无基准时的 scope 级兜底
+function assistantSpent(user) {
+  const r = store.get("SELECT COALESCE(SUM(est_credits),0) AS s FROM chat_tickets WHERE scope='assistant' AND user_id=? AND status='consumed'", user.id);
+  return (r && r.s) || 0;
+}
+function fuseGate(user, session, credits) {
+  return gov.fuseCheck(session, { scope: 'assistant', type: 'user', id: user.id }, credits,
+    {
+      auditKind: AUDIT, scopeBudget: CREDITS_SCOPE,
+      baseResolver: () => ASSISTANT_FUSE_BASE, spentResolver: () => assistantSpent(user),
+    });
+}
 function issueTicket(user, session, action, args, est, meta) {
   if (!TOOLS[action] || !WRITE_ACTIONS.includes(action)) throw new U.ApiError('FORBIDDEN', '该操作不在统一助手白名单内');
   if (PAID_ACTIONS.includes(action) && !AC.featureOn('assistant_actions', user.id)) throw new U.ApiError('FORBIDDEN', '付费助手动作尚未开放');
+  // 只有付费票进熔断：免费写票 est.credits=0，fuseCheck 自身即放行（不白置 broken）。
+  const cost = Math.trunc(Number(est && est.credits) || 0);
+  if (cost > 0 && session) {
+    const f = fuseGate(user, session, cost);
+    if (f.broken) {
+      // 文案必须诚实：spent 按**账号**累计（沿用 l2music 语义），新开一个会话并不会把它清零。
+      // 写"请新开会话继续"是把用户支使去撞第二道墙，属 v5.4.2 诚实纪律禁止的那类假出路。
+      const e = new U.ApiError('SESSION_BROKEN', '本次助手的累计花费已超过软预算上限，为守住你的积分，我已暂停这个会话。该额度按账号累计，新开会话不会把它清零；请稍后再试，或让运营调整助手预算后再继续。', 409);
+      e.fused = true; e.fuse = f;
+      throw e;
+    }
+  }
   sweepTickets();
   const issued = gov.issueTicket(TOOLS, user, { scope: 'assistant', type: 'user', id: user.id }, action, args, est, { auditKind: AUDIT });
   store.run('UPDATE chat_tickets SET session_id=?,meta_json=?,expires_at=? WHERE id=?', session.id, U.jstr(meta || {}), issued.ttl_expire_at, issued.id);
@@ -452,6 +481,7 @@ function notifyJob(job, status) {
 
 module.exports = {
   AUDIT, TOOLS, PAID_ACTIONS, WRITE_ACTIONS,
+  ASSISTANT_FUSE_BASE, CREDITS_SCOPE, assistantSpent, fuseGate,
   audit, cleanText, cleanMeta, validSurface, resolveRefs, refOf, imageRow, contextSummary, withEvents, ticketEvent,
   createSession, ownSession, recentSession, sessionShape, touchSession,
   appendMessage, getMessages, storedResponse,

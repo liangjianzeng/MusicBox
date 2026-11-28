@@ -281,15 +281,41 @@ class _StepLookState extends ConsumerState<StepLook> {
               ),
             ),
           SizedBox(height: 12),
-          const _Label('定妆视频（多角度转头 · 约 5 秒）'),
+          // 没出片时不许顶着「约 5 秒」的标题摆一张人像 —— 封面是首帧，不是成片（契约 v5.6.20）
+          _Label(castVideo.isEmpty
+              ? '定妆视频（未拍 · 下方是你选中的首帧）'
+              : '定妆视频（多角度转头 · 约 5 秒）'),
           SizedBox(height: 8),
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
-            child: MvVideoPlayer(
-              url: castVideo.isEmpty ? null : castVideo,
-              coverUrl: pickedUrl.isEmpty ? null : pickedUrl,
-              aspectRatio: 9 / 16,
-              placeholderHint: '定妆视频待执行器出片后显示',
+            child: Stack(
+              children: [
+                MvVideoPlayer(
+                  url: castVideo.isEmpty ? null : castVideo,
+                  coverUrl: pickedUrl.isEmpty ? null : pickedUrl,
+                  aspectRatio: 9 / 16,
+                  placeholderHint: '定妆视频待执行器出片后显示',
+                ),
+                if (castVideo.isEmpty)
+                  Positioned(
+                    left: 10,
+                    top: 10,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.62),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Text('未拍',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
           SizedBox(height: 16),

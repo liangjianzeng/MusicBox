@@ -300,6 +300,7 @@ class FakeExecutor {
     if (type === 'music') return this._music(job);
     if (type === 'transcode') return this._transcode(job);
     if (type === 'intent_voice' || type === 'intent_image' || type === 'intent_text') return this._intent(job);
+    if (type === 'replica_analyze') return this._replicaAnalyze(job); // 契约 v5.7.4（复刻）：mock 先行，确定性假观测
     if (type === 'mv_cast_image') return this._mvCastImage(job);
     if (type === 'mv_cast_video') return this._mvCastVideo(job);
     if (type === 'mv_storyboard') return this._mvStoryboard(job);
@@ -460,6 +461,30 @@ class FakeExecutor {
       },
     });
     if (!r.ok) this.errors.push('transcode complete 失败 ' + job.id + ' → ' + r.status + ' ' + r.text.slice(0, 200));
+  }
+
+  // replica_analyze（契约 v5.7.4 mock 先行）：确定性假观测 —— 有文本/情绪/事件，
+  // 服务端规则画像能从文本命中词典词（与 src/executor/lanes/mock.js 同一形状）。
+  // LLM 归纳在服务端 completeReplicaAnalyze；闸门默认 LLM 不可达 → 走规则画像（degraded=1）。
+  async _replicaAnalyze(job) {
+    const r = await this.api('POST', `/executor/jobs/${job.id}/complete`, {
+      executorToken: EXECUTOR_TOKEN, headers: this._exHeaders(),
+      multipart: {
+        fields: {
+          result: JSON.stringify({
+            asr: {
+              emotion: 'happy', events: ['BGM'], duration: 45,
+              text: 'mock 参考曲转写：轻快的电子节拍，温暖的钢琴与弦乐铺底，女声气声唱法',
+            },
+            fallback: false,
+          }),
+          executor_id: this._exId,
+        },
+        files: [],
+      },
+    });
+    if (!r.ok) this.errors.push('replica_analyze complete 失败 ' + job.id + ' → ' + r.status + ' ' + r.text.slice(0, 200));
+    return;
   }
 
   // intent：按上传字节里有无 HIGHCONF 标记决定高/低置信意图卡（V8 用它驱动服务端澄清纪律断言）

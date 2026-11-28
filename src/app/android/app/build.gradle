@@ -63,6 +63,24 @@ android {
             def keystorePropsFile = rootProject.file("key.properties")
             signingConfig = keystorePropsFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
+        // debug 也用正式库签名（真机调测必须）。
+        // 否则 debug 包 = Android Debug 通用库、正式包 = key.properties 里的库，两者签名不同，
+        // 装到已装正式包的测试机上就是 INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 只能先卸载，
+        // 而卸载会把 prefs 一起带走（含 identity_device_key），真机身份与本地设置一并丢。
+        // 用同一个库签名后 `adb install -r` 直接覆盖，数据不动。无 key.properties 时照旧回落 debug 库。
+        debug {
+            def keystorePropsFile = rootProject.file("key.properties")
+            signingConfig = keystorePropsFile.exists() ? signingConfigs.release : signingConfigs.debug
+            // 并存逃生口（默认关闭，不设环境变量时包名一字不变，不影响任何人的装机与设备身份）：
+            // 上面那条同签名纪律解决的是「同仓库 debug 覆盖 release」。剩下一类它解决不了 ——
+            // 测试机上躺着**别人用另一把密钥**签的包（本次：小米13 上 11-28 02:17 那个 release，
+            // 签名 9dc5cef8，run-as 还进不去），`-r` 必然 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
+            // 而 R4 禁止 uninstall（卸载会带走那台机上的游客身份）。这时只有一条不毁数据的路：
+            // 换个包名并排放。用法 MB_APP_ID_SUFFIX=.mi13 flutter build apk --debug
+            if (System.getenv('MB_APP_ID_SUFFIX') != null && System.getenv('MB_APP_ID_SUFFIX') != '') {
+                applicationIdSuffix System.getenv('MB_APP_ID_SUFFIX')
+            }
+        }
     }
 }
 

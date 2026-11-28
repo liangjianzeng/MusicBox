@@ -17,6 +17,9 @@ import 'features/library/library_page.dart';
 import 'features/me/me_page.dart';
 import 'features/mv/mv_page.dart';
 import 'features/persona/persona_page.dart';
+import 'features/agent/agent_bootstrap.dart';
+import 'features/agent/ui/agent_cocreate_page.dart';
+import 'features/creation/tier_config.dart';
 import 'features/player/mini_player_bar.dart';
 
 /// 全局壳：创建 / 曲库 / 人格 / 我的 / MV + 常驻 mini player
@@ -33,15 +36,10 @@ class _RootShellState extends ConsumerState<RootShell> {
   @override
   void initState() {
     super.initState();
-    ref.listen(_tabProvider, (_, index) {
-      ref.read(assistantContextProvider.notifier).state = AssistantContext(
-          surface: switch (index) {
-        1 => 'library',
-        2 => 'mv',
-        4 => 'settings',
-        _ => 'create',
-      });
-    });
+    // ⚠ 两条 ref.listen 必须在 build() 里，不能留在这里：riverpod 的 WidgetRef.listen
+    // 带 `debugDoingBuild` 断言，在 ConsumerState.initState 里调用会直接抛
+    // （'ref.listen can only be used within the build method of a ConsumerWidget'）。
+    // 真机 K90 上整屏皆红就是它 —— release 关掉 Dart 断言，所以这坑一直没人看见。
     // 进入主界面即预热人格列表 / 刷新积分
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(personasProvider.notifier).load();
@@ -83,6 +81,27 @@ class _RootShellState extends ConsumerState<RootShell> {
 
   @override
   Widget build(BuildContext context) {
+    // 必须写在 build 里（见 initState 上方那条 ⚠ 与 test/riverpod_listen_rule_test.dart）。
+    // ⚠ 原来这里写的是"见 test/root_shell_nav_test.dart"——那个文件并不存在，空头指针比没指针更坏，
+    //   已改指真实存在的用例；底部导航与助手入口的去留由 test/agent_entry_routing_test.dart 钉住。
+    // 板块小助手「去伴创」的落地处：只接受这一个跳转请求（见 cocreateJumpRequestProvider 的说明）。
+    // 放在这里而不是 _BottomNav：tab 状态本就由这里的 IndexedStack 持有，导航条只负责显示。
+    ref.listen(cocreateJumpRequestProvider, (prev, next) {
+      if (prev != next) ref.read(_tabProvider.notifier).state = 3;
+    });
+    // 「我的 → 复刻偏好」回创建页复刻档的落地处（契约 v5.7.9 主权复用入口）。
+    ref.listen(replicaJumpRequestProvider, (prev, next) {
+      if (prev != next) ref.read(_tabProvider.notifier).state = 0;
+    });
+    ref.listen(_tabProvider, (_, index) {
+      ref.read(assistantContextProvider.notifier).state = AssistantContext(
+          surface: switch (index) {
+        1 => 'library',
+        2 => 'mv',
+        4 => 'settings',
+        _ => 'create',
+      });
+    });
     final tab = ref.watch(_tabProvider);
     final rc = ref.watch(remoteConfigProvider);
     final session = ref.watch(sessionProvider);
@@ -107,7 +126,12 @@ class _RootShellState extends ConsumerState<RootShell> {
                       CreatePage(keyboardOpen: keyboardOpen),
                       const LibraryPage(),
                       const MvPage(),
-                      const PersonaPage(),
+                      // 第 4 槽位数据驱动（D-3）：伴创灰度命中就顶替「人格」，**始终 5 个 tab**，
+                      // 不破"不加第六个一级页"的红线。人格在灰度开启时从「我的 → 声音与人格」进入，
+                      // 所以这个 swap 必须与 me_page 的入口同批上线，单独上线会让人格变成孤儿页。
+                      cocreateEnabledOf(rc)
+                          ? const AgentCocreatePage(tierLabel: '智能体')
+                          : const PersonaPage(),
                       const MePage(),
                     ],
                   ),
@@ -116,17 +140,27 @@ class _RootShellState extends ConsumerState<RootShell> {
       ),
       bottomNavigationBar: rc != null && rc.forceUpdate
           ? null
-          : const Column(
+          : Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                AssistantDock(),
-                MiniPlayerBar(),
-                _BottomNav(),
+                // 智能体那一格不给助手悬浮入口（2026-11-28 产品拍板）：那一格就是老大本人，
+                // 底栏再挂一个「助手」等于鼓动用户往下找小弟，与"层级单向、只向上交"相反。
+                if (showAssistantDockAt(rc, tab)) const AssistantDock(),
+                const MiniPlayerBar(),
+                const _BottomNav(),
               ],
             ),
     );
   }
 }
+
+/// 第 4 格 = 智能体时，**不**渲染底部助手入口；其余各格照旧。
+///
+/// 刻意抽成纯函数而不是埋在 widget 里：这条是产品口径（"智能体下面就别出助手的入口链接了"），
+/// 得起个名字、能被用例直接钉住，而不是靠人眼在 build 里数 `if`。
+/// 注意灰度未命中时第 4 格是「人格」页 —— 那时助手入口必须照常给，别把它一起砍了。
+bool showAssistantDockAt(RemoteConfig? rc, int tab) =>
+    !(cocreateEnabledOf(rc) && tab == 3);
 
 /// 离线兜底提示：游客登录连续失败时展示（每 10s 自动重试，恢复在线后自动消失）。
 ///
@@ -294,19 +328,26 @@ class _BottomNav extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 与 RootShell 的 IndexedStack 共享 tab：用 holder Provider 同步
     final tab = ref.watch(_tabProvider);
+    final rc = ref.watch(remoteConfigProvider);
+    // 列表顺序即显示顺序；第 4 槽位随灰度换人，数量恒为 5（红线：不新增底部一级页）
+    final cocreate = cocreateEnabledOf(rc);
+    final destinations = <NavigationDestination>[
+      const NavigationDestination(icon: Icon(Icons.auto_awesome), label: '创建'),
+      const NavigationDestination(icon: Icon(Icons.library_music), label: '曲库'),
+      const NavigationDestination(
+          icon: Icon(Icons.movie_creation_outlined), label: 'MV'),
+      cocreate
+          ? const NavigationDestination(
+              icon: Icon(Icons.auto_awesome_motion_outlined), label: '智能体')
+          : const NavigationDestination(icon: Icon(Icons.mic), label: '人格'),
+      const NavigationDestination(icon: Icon(Icons.person_outline), label: '我的'),
+    ];
     return NavigationBar(
-      selectedIndex: tab,
+      selectedIndex: tab.clamp(0, destinations.length - 1),
       height: 64,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       onDestinationSelected: (i) => ref.read(_tabProvider.notifier).state = i,
-      destinations: const [
-        NavigationDestination(icon: Icon(Icons.auto_awesome), label: '创建'),
-        NavigationDestination(icon: Icon(Icons.library_music), label: '曲库'),
-        NavigationDestination(
-            icon: Icon(Icons.movie_creation_outlined), label: 'MV'),
-        NavigationDestination(icon: Icon(Icons.mic), label: '人格'),
-        NavigationDestination(icon: Icon(Icons.person_outline), label: '我的'),
-      ],
+      destinations: destinations,
     );
   }
 }

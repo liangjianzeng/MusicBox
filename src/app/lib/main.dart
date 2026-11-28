@@ -10,6 +10,8 @@ import 'core/config.dart';
 import 'core/db.dart';
 import 'core/speech/speech_service.dart';
 import 'core/state.dart';
+import 'features/agent/agent_bootstrap.dart';
+import 'features/agent/ui/agent_view_model.dart';
 import 'features/auth/session_gate.dart';
 
 Future<void> main() async {
@@ -32,6 +34,11 @@ Future<void> main() async {
     overrides: [
       prefsProvider.overrideWithValue(prefs),
       localDbProvider.overrideWithValue(db),
+      // 伴创（第 4 档位）的会话实现：引擎（features/agent/engine）经防腐层接到界面。
+      // overrideWith 是惰性的 —— 灰度未命中时第 4 档位整档隐藏、没人 watch 它，
+      // 于是"灰度关着"和"没接线"是两件可区分的事，不会互相冒充（D-3）。
+      agentSessionProvider.overrideWith(
+          (ref) => buildCocreateSession(ref.watch(apiClientProvider))),
     ],
     child: const MusicBoxApp(),
   ));

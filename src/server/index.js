@@ -20,6 +20,8 @@ const executorApi = require('./api/executor');
 const mvApi = require('./api/mv');
 const musicAssistantApi = require('./api/music_assistant');
 const assistantApi = require('./api/assistant');
+const agentApi = require('./api/agent');
+const replicaApi = require('./api/replica');
 const adminAuth = require('./api/admin');
 const modelnodesApi = require('./api/modelnodes');
 const appconfigApi = require('./api/appconfig');
@@ -37,7 +39,7 @@ function addRoute(m, p, h, opts) {
   }).join('/') + '$';
   routes.push({ m, re: new RegExp(regexSrc), names, h, literal: p.split('/').filter(s => s && !s.startsWith(':')).length, opts: opts || {} });
 }
-for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi, mvApi, musicAssistantApi, assistantApi, adminAuth, modelnodesApi, appconfigApi, adminOpsApi]) {
+for (const mod of [auth, creditsApi, worksApi, intentApi, personasApi, executorApi, mvApi, musicAssistantApi, assistantApi, agentApi, replicaApi, adminAuth, modelnodesApi, appconfigApi, adminOpsApi]) {
   for (const r of mod.routes) addRoute(r.m, r.p, r.h, r);
 }
 routes.sort((a, b) => b.literal - a.literal);
@@ -237,6 +239,7 @@ function main() {
   const modelnodes = require('./core/modelnodes');
   modelnodes.initDefaultNodes();
   require('./core/appconfig').initDefaults(); // 功能开关种子（mv/dsp/persona/assistant_chat）
+  require('./core/agentskills').ensureSeeds(); // 技能目录种子（契约 v5.5.12，rank 150 服务端下发）
   adminAuth.initDefaultAdmin();
   engine.start();
   const server = http.createServer((req, res) => {
