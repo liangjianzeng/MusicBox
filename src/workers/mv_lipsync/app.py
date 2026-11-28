@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -55,6 +56,55 @@ def runtime_configured():
         return False
 
 
+def command_ready():
+    """配了命令模板 **且首项真的能执行** 才算就绪。
+
+    只看"配没配"会漏掉最坑的一类：模板写了、二进制没装/路径错了，于是派单一路跑到
+    /lipsync 才 500。健康口提前把它说清，闸门就不会拿着"已配置"的假信号放行。
+    """
+    try:
+        template = _command_env("MB_LIPSYNC_COMMAND")
+    except RuntimeError:
+        return False
+    if not template:
+        return False
+    exe = template[0]
+    return bool(shutil.which(exe)) or Path(exe).is_file()
+
+
+def score_configured():
+    try:
+        return _command_env("MB_LIPSYNC_SYNC_COMMAND") is not None
+    except RuntimeError:
+        return False
+
+
+def weights_root() -> Path:
+    """权重落盘位：与 deploy/spark/mv-lipsync.service 的 MODELSCOPE_CACHE 同源。"""
+    return Path(os.environ.get("MODELSCOPE_CACHE") or (Path.home() / "MusicBox" / "var" / "models")).resolve()
+
+
+WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pth", ".pt", ".onnx"}
+
+
+def weights_present() -> bool:
+    """权重目录里有没有**非空**权重文件（递归找，ModelScope 缓存带模型 id 目录层）。
+
+    语义边界要写死在话里：这只证明"下载完整"，不做前向校验 —— 所以真机判词（V14/V15）
+    仍然必须真跑一次 /lipsync 才算过，不许拿这个字段当"引擎可用"的通行证。
+    引擎无关：本 worker 是外部运行时适配（EchoMimicV3-Flash / MuseTalk / LatentSync 都能
+    通过 MB_LIPSYNC_COMMAND 接进来），所以不硬编码某一家的权重文件名。
+    """
+    root = weights_root()
+    if not root.is_dir():
+        return False
+    try:
+        return any(p.is_file() and p.suffix.lower() in WEIGHT_SUFFIXES and p.stat().st_size > 0
+                   for p in root.rglob("*"))
+    except OSError:
+        return False
+
+
 def local_file(value: str, max_bytes=MAX_INPUT_BYTES) -> Path:
     path = Path(value).resolve()
     if not any(path == root or root in path.parents for root in ROOTS):
@@ -95,10 +145,22 @@ class LipsyncReq(BaseModel):
     text: str = ""
 
 
+@app.get("/healthz")
 @app.get("/health")
 def health():
-    return {"ok": True, "engine": "echomimic_v3_flash", "configured": runtime_configured(),
-            "loaded": False, "scaffold": False}
+    """能力如实上报。
+
+    2026-11-28 现场：这里原本只有 `/health`，且把 `loaded` **硬编码成 False**。
+    而真机判词 V14/V15 探的是 `/healthz` + `weights_loaded`（与 mv_asr/sensevoice 的
+    路由约定一致）——路由名和字段名两头对不上，探针恒缺，于是 15 条真机用例无论装没装
+    权重都以 skip 呈现：闸门看起来全绿，MV 真机侧一次都没跑过。
+    现在两套路由都挂同一个处理器，字段如实反映"权重在位/命令可执行/评分已配"。
+    """
+    return {"ok": True, "engine": "echomimic_v3_flash",
+            "weights_loaded": weights_present(), "weights_dir": str(weights_root()),
+            "configured": runtime_configured(), "command_ready": command_ready(),
+            "score_configured": score_configured(), "loaded": command_ready() and weights_present(),
+            "scaffold": False}
 
 
 @app.post("/lipsync")
