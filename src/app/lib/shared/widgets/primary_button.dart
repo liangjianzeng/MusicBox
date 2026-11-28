@@ -44,16 +44,25 @@ class PrimaryButton extends StatelessWidget {
           Icon(icon ?? Icons.play_arrow_rounded, color: foreground),
         const SizedBox(width: 9),
         Flexible(
-          child: Text(
-            text,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: big ? 16 : 15,
-              fontWeight: FontWeight.w700,
-              color: foreground,
-              letterSpacing: .1,
+          // 文案**只准一行**，装不下就整体缩放，绝不折行、绝不省略号：
+          // ① 折行会让按钮随宽度长高（实测 248px 宽 71 高 → 123px 宽 114 高，
+          //    在 320×568 + 2 倍字号下把整页挤出 21px，`create_layout_test` 抓到）；
+          // ② 更要命的是 ellipsis 会把「· 45⚡」这种**价格**截成「生成 3 首 ·…」，
+          //    用户看不见的支出等于没征得同意（契约 v5.6.15）。
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.center,
+            child: Text(
+              text,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              softWrap: false,
+              style: TextStyle(
+                fontSize: big ? 16 : 15,
+                fontWeight: FontWeight.w700,
+                color: foreground,
+                letterSpacing: .1,
+              ),
             ),
           ),
         ),

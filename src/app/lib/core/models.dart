@@ -49,17 +49,45 @@ class AppUser {
 }
 
 class Credits {
-  Credits({required this.balance, required this.dailyQuota, required this.dailyUsed});
+  Credits(
+      {required this.balance,
+      required this.dailyQuota,
+      required this.dailyUsed,
+      this.prices = const <String, int>{}});
 
   final int balance;
   final int dailyQuota;
   final int dailyUsed;
 
+  /// 单价的**唯一真源**：服务端 `/v1/credits` 的 prices 字段，取自运营配置中心（热改）。
+  /// 端侧 `credit_guard.dart` 里那几个常量只是老服务端不下发时的兜底，**不许**当权威价：
+  /// 2026-11-28 之前界面拿着手抄的 15 做扣费闸门，运营一改价就变成"界面说了不算"
+  /// （闸门按旧价放行，派单时被服务端拒），见契约 v5.6.15 / 判词 V41。
+  final Map<String, int> prices;
+
+  /// 取单价；服务端没下发（老服务端）才退回兜底值。
+  int priceFor(String key, int fallback) {
+    final v = prices[key];
+    return (v == null || v <= 0) ? fallback : v;
+  }
+
   factory Credits.fromMap(Map m) => Credits(
         balance: _asInt(m['balance']),
         dailyQuota: _asInt(m['daily_quota']),
         dailyUsed: _asInt(m['daily_used']),
+        prices: _asPrices(m['prices']),
       );
+}
+
+Map<String, int> _asPrices(Object? raw) {
+  if (raw is! Map) return const <String, int>{};
+  final out = <String, int>{};
+  raw.forEach((k, v) {
+    final key = k.toString();
+    final n = v is int ? v : int.tryParse('$v');
+    if (n != null && n > 0) out[key] = n;
+  });
+  return out;
 }
 
 /// POST /v1/me 响应

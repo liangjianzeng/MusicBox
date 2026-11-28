@@ -10,6 +10,7 @@ import 'credit_guard.dart';
 import 'style_options.dart';
 import 'creation_state.dart';
 import 'creation_ui.dart';
+import 'count_picker.dart';
 import 'intent_flow_page.dart';
 import 'progress_page.dart';
 import 'shelf_store.dart';
@@ -28,6 +29,10 @@ class ShellStandard extends ConsumerStatefulWidget {
 
 class _ShellStandardState extends ConsumerState<ShellStandard> {
   bool _busy = false;
+
+  /// 出几首 —— 标准档以前**根本没有数量控件**，发单写死 3 首（一键 45⚡，每日免费才 50）。
+  /// 默认 1 首，用户要几首自己说；价格写在按钮上（契约 v5.6.15）。
+  int _count = 1;
   final TextEditingController _prompt = TextEditingController();
 
   @override
@@ -108,8 +113,10 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
     }
     setState(() => _busy = true);
     try {
-      if (!await ensureCredits(context, ref, kCreditGenerateEach * 3,
-          action: '标准生成')) {
+      final n = _count.clamp(1, 4);
+      // 单价取服务端 /v1/credits 的 prices（运营配置中心热改），端侧那份常量只是兜底
+      final unit = creditPrice(ref, 'per_candidate', kCreditGenerateEach);
+      if (!await ensureCredits(context, ref, unit * n, action: '标准生成')) {
         return;
       }
       final cat = styleCatalogOf(ref);
@@ -126,7 +133,7 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
         'mood': st.mood.join(','),
         'tags': tags.join(','),
         'sec': st.sec,
-        'count': 3,
+        'count': n,
         if (st.personaId != null) 'persona_id': st.personaId,
       };
       final model = ref.read(musicModelProvider);
@@ -139,10 +146,10 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
           st,
           prompt: _prompt.text.trim(),
           tags: tags,
-          count: 3,
+          count: n,
           personaName: st.personaId == null ? null : '已选人格',
         ).copyLike(sourceLabel: '轻参数直接生成'),
-        plannedCount: 3,
+        plannedCount: n,
         onRetry: () async {
           try {
             final rr =
@@ -174,6 +181,9 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
     final keyboardOpen =
         widget.keyboardOpen ?? MediaQuery.viewInsetsOf(context).bottom > 0;
     final shortScreen = MediaQuery.sizeOf(context).height < 640;
+    // 按钮上的数量与价格必须和服务端真扣的同一个数（判词 V41-③ 钉死）
+    final n = _count.clamp(1, 4);
+    final unit = creditPrice(ref, 'per_candidate', kCreditGenerateEach);
     return Column(
       children: [
         Expanded(
@@ -353,13 +363,26 @@ class _ShellStandardState extends ConsumerState<ShellStandard> {
                 const SizedBox(height: 12),
               ],
               if (st.intentId == null)
-                PrimaryButton(
-                  text: '生成 3 首',
-                  big: true,
-                  gradient: true,
-                  icon: Icons.auto_awesome_rounded,
-                  loading: _busy,
-                  onPressed: _busy ? null : _generateFromParams,
+                Row(
+                  children: [
+                    Expanded(
+                      child: PrimaryButton(
+                        text: '生成 $n 首 · ${unit * n}⚡',
+                        big: true,
+                        gradient: true,
+                        icon: Icons.auto_awesome_rounded,
+                        loading: _busy,
+                        onPressed: _busy ? null : _generateFromParams,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    CountPicker(
+                      count: n,
+                      unit: unit,
+                      max: 4,
+                      onChanged: (v) => setState(() => _count = v),
+                    ),
+                  ],
                 )
               else
                 Text(

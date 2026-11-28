@@ -1,4 +1,4 @@
-﻿// 积分：每日免费 50 惰性重置（daily_expire+daily_free 成对入账）、扣分/退款原语、/v1/credits（2026-11-23）
+// 积分：每日免费 50 惰性重置（daily_expire+daily_free 成对入账）、扣分/退款原语、/v1/credits（2026-11-23）
 'use strict';
 const config = require('../config');
 const store = require('../core/store');
@@ -73,14 +73,28 @@ function summary(userId) {
   return { balance, daily_quota: COST().daily_free, daily_used: Math.max(0, (used && used.used) || 0) };
 }
 
-// GET /v1/credits → {balance, daily_quota, daily_used, items}
+// GET /v1/credits → {balance, daily_quota, daily_used, prices, items}
+// prices 必须来自 COST()（运营配置中心，热改）——**不能**用 config.js 的默认值：
+// 端侧的扣费闸门与价格展示都吃这个字段，给一个"看起来对"的默认值 = 运营一改价，
+// 界面就拿着旧价格放行用户，然后在派单处被服务端拒绝（界面说了不算）。
+function prices() {
+  const c = COST();
+  return {
+    per_candidate: c.per_candidate,
+    adjust: c.adjust,
+    extend: c.extend,
+    cover: c.cover,
+    dsp: c.dsp,
+  };
+}
+
 function getCredits(ctx) {
   const user = ctx.requireUser();
   const s = summary(user.id);
   const items = store.all(
     'SELECT delta,reason,balance_after,ref_type,ref_id,created_at FROM credit_ledger WHERE user_id=? ORDER BY rowid DESC LIMIT 50', user.id)
     .map(r => ({ delta: r.delta, reason: r.reason, balance_after: r.balance_after, ref_type: r.ref_type, ref_id: r.ref_id, created_at: r.created_at }));
-  return { status: 200, body: { ...s, items } };
+  return { status: 200, body: { ...s, prices: prices(), items } };
 }
 
-module.exports = { ensureDaily, charge, refund, summary, routes: [{ m: 'GET', p: '/v1/credits', h: getCredits }] };
+module.exports = { ensureDaily, charge, refund, summary, prices, routes: [{ m: 'GET', p: '/v1/credits', h: getCredits }] };

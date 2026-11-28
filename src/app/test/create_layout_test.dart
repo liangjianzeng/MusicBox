@@ -130,26 +130,33 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('创作三档不呈现积分信息', (tester) async {
+  testWidgets('创作三档必须在按下去之前写清真花费', (tester) async {
+    // 这条以前叫「创作三档不呈现积分信息」，断言按钮必须写死「生成 3 首」、界面不许出现价格。
+    // 它把 bug 供成了规范：简约/标准档把候选数量写死 3 首，一键闷声扣 45⚡，而每日免费才 50；
+    // 单价还是端侧手抄的 15（真价在运营配置中心）。用户在按之前既不知道几首也不知道多少钱
+    // —— 看不见的花费不算他同意过的花费（2026-11-28，用户：「这就是测试，你自己充值1万自己搞啊」）。
+    // 契约 v5.6.15 反转该决定：花费必须在**按之前**可见（判词 V41 + easy_count_price_test）。
+    // 原测试里唯一还站得住的是"别拿 ⚡ 图标刷营销存在感"，保留。
     await _pump(
       tester,
       size: const Size(390, 844),
       child: const CreatePage(),
     );
 
-    void expectNoCredits() {
-      expect(find.textContaining('积分'), findsNothing);
-      expect(find.byIcon(Icons.bolt_rounded), findsNothing);
-      expect(find.text('生成 3 首'), findsOneWidget);
+    void expectCostVisible() {
+      expect(find.textContaining('⚡'), findsWidgets,
+          reason: '按钮必须写明"几首 · 多少⚡"，看不见的支出等于没征得同意');
+      expect(find.byIcon(Icons.bolt_rounded), findsNothing,
+          reason: '价格用文字讲清即可，不许刷图标营造"免费狂欢"氛围');
     }
 
-    expectNoCredits();
+    expectCostVisible();
     await tester.tap(find.text('标准'));
     await tester.pumpAndSettle();
-    expectNoCredits();
+    expectCostVisible();
     await tester.tap(find.text('深度'));
     await tester.pumpAndSettle();
-    expectNoCredits();
+    expectCostVisible();
   });
 
   testWidgets('简约档语音与生成动作位于屏幕下半部', (tester) async {

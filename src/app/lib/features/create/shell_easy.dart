@@ -6,6 +6,7 @@ import '../../core/state.dart';
 import '../../shared/widgets/primary_button.dart';
 import 'creation_state.dart';
 import 'creation_ui.dart';
+import 'count_picker.dart';
 import 'credit_guard.dart';
 import 'intent_flow_page.dart';
 import '../../shared/widgets/mood_chips.dart';
@@ -32,6 +33,11 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
   /// 简约档也要能回答「谁来唱」：性别是这首歌最贵的选择，不该只有标准/深度档才配决定。
   /// 三档一致是产品底线（同一个用户在三档之间来回，不该发现某档锁不住性别）。
   String? _voice;
+
+  /// 出几首 —— 以前这里**写死 3 首**：一键出歌 = 闷声扣 45⚡（每日免费才 50），
+  /// 用户既不能改也没看到价格（2026-11-28）。默认 1 首：先给你一首听的，要几首你自己说。
+  /// 本地状态，不碰跨档共享的 count —— 在深度档调过数量，回简约档不该被带着走。
+  int _count = 1;
   final TextEditingController _text = TextEditingController();
 
   @override
@@ -111,15 +117,17 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
     if (prompt.isEmpty) return;
     setState(() => _busy = true);
     try {
-      if (!await ensureCredits(context, ref, kCreditGenerateEach * 3,
-          action: '一键出歌')) {
+      final n = _count.clamp(1, 3);
+      // 单价取服务端 /v1/credits 的 prices（运营配置中心热改），不是端侧抄的 15
+      final unit = creditPrice(ref, 'per_candidate', kCreditGenerateEach);
+      if (!await ensureCredits(context, ref, unit * n, action: '一键出歌')) {
         return;
       }
       final cat = styleCatalogOf(ref);
       final body = <String, dynamic>{
         'mode': 'simple',
         'prompt': prompt,
-        'count': 3,
+        'count': n,
         // 谁来唱：简约档也必须能锁性别。走 tags 的规范词（中文标签→服务端词典的 wire 词），
         // 与标准/深度档同一真源，绝不在端侧另立一套词表。
         if (_voice != null) 'tags': [cat.wireOf(_voice!)],
@@ -131,10 +139,10 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
       ProgressPage.push(
         context,
         '${r['job_id']}',
-        brief: const TaskBrief(
-                action: '生成', tierLabel: '简约', sourceLabel: '一句话', count: 3)
+        brief: TaskBrief(
+                action: '生成', tierLabel: '简约', sourceLabel: '一句话', count: n)
             .copyLike(prompt: prompt),
-        plannedCount: 3,
+        plannedCount: n,
         onRetry: () async {
           try {
             final rr =
@@ -162,6 +170,9 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
     final keyboardOpen =
         widget.keyboardOpen ?? MediaQuery.viewInsetsOf(context).bottom > 0;
     final shortScreen = MediaQuery.sizeOf(context).height < 640;
+    // 按钮上的价格必须和服务端真扣的同一个数（判词 V41-③ 钉死），拿不到才退回兜底常量
+    final n = _count.clamp(1, 3);
+    final unit = creditPrice(ref, 'per_candidate', kCreditGenerateEach);
     return Column(
       children: [
         Expanded(
@@ -336,14 +347,31 @@ class _ShellEasyState extends ConsumerState<ShellEasy> {
                 ),
                 SizedBox(height: shortScreen ? 9 : 12),
               ],
-              PrimaryButton(
-                text: '生成 3 首',
-                // 小屏下变矮但仍可见可用：主操作放不下 = 用户没法拍板
-                big: !shortScreen,
-                gradient: true,
-                icon: Icons.auto_awesome_rounded,
-                loading: _busy,
-                onPressed: _busy ? null : _onText,
+              // 数量选择器挤在按钮**同一行**：这个档位在 320×568 + 2 倍字号下是 0 余量，
+              // 另起一行会把主按钮挤出屏幕（create_layout_test 抓到过 114px 溢出）。
+              Row(
+                children: [
+                  Expanded(
+                    child: PrimaryButton(
+                      // 花费写在按钮上；主按钮已改成"装不下就缩放、不折行不省略"，
+                      // 所以这句在 320px 窄屏也不会被截成「生成 3 首 ·…」（价格被省略=没说）
+                      text: '生成 $n 首 · ${unit * n}⚡',
+                      // 小屏下变矮但仍可见可用：主操作放不下 = 用户没法拍板
+                      big: !shortScreen,
+                      gradient: true,
+                      icon: Icons.auto_awesome_rounded,
+                      loading: _busy,
+                      onPressed: _busy ? null : _onText,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  CountPicker(
+                    count: n,
+                    unit: unit,
+                    max: 3,
+                    onChanged: (v) => setState(() => _count = v),
+                  ),
+                ],
               ),
             ],
           ),

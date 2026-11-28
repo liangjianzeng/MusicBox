@@ -119,7 +119,8 @@ class _ShellProState extends ConsumerState<ShellPro> {
     }
     setState(() => _busy = true);
     try {
-      if (!await ensureCredits(context, ref, kCreditGenerateEach * st.count,
+      if (!await ensureCredits(context, ref,
+          creditPrice(ref, 'per_candidate', kCreditGenerateEach) * st.count,
           action: '深度生成 ${st.count} 首')) {
         return;
       }
@@ -203,6 +204,8 @@ class _ShellProState extends ConsumerState<ShellPro> {
       }
     });
     final st = ref.watch(creationProvider);
+    // 按钮上的价格必须就是服务端真扣的那个（运营配置中心热改，判词 V41-③）
+    final unit = creditPrice(ref, 'per_candidate', kCreditGenerateEach);
     final notifier = ref.read(creationProvider.notifier);
     final personas = ref.watch(personasProvider);
     final cat = styleCatalogOf(ref);
@@ -573,7 +576,7 @@ class _ShellProState extends ConsumerState<ShellPro> {
             mainAxisSize: MainAxisSize.min,
             children: [
               PrimaryButton(
-                text: '生成 ${st.count} 首',
+                text: '生成 ${st.count} 首 · ${unit * st.count}⚡',
                 big: true,
                 gradient: true,
                 icon: Icons.auto_awesome_rounded,
